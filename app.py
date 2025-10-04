@@ -756,21 +756,34 @@ def assistant_command():
     try:
         # Obtener información del tenant actual
         current_user = g.current_user
+        
+        # DEBUG: Verificar tipo de current_user
+        app.logger.info(f"DEBUG - Tipo de current_user: {type(current_user)}")
+        app.logger.info(f"DEBUG - Contenido de current_user: {current_user}")
+        
+        # Si current_user es una tupla, extraer el diccionario
+        if isinstance(current_user, tuple):
+            app.logger.warning("current_user es una tupla, extrayendo primer elemento")
+            current_user = current_user[0] if len(current_user) > 0 else {}
+        
         tenant_id = get_current_tenant_id()
-        user_role = current_user.get('rol', '')
+        user_role = current_user.get('rol', '') if isinstance(current_user, dict) else ''
         
         # Inicializar cliente OpenAI por request (multi-tenant)
         openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        
+        # Obtener empresa_nombre de forma segura
+        empresa_nombre = current_user.get('empresa_nombre', 'la organización') if isinstance(current_user, dict) else 'la organización'
         
         # Construir mensajes con contexto del tenant
         messages = [
             {
                 "role": "system",
-                "content": f"""Eres un asistente de reclutamiento experto para {current_user.get('empresa_nombre', 'la organización')}. 
+                "content": f"""Eres un asistente de reclutamiento experto para {empresa_nombre}. 
                 Tu personalidad es proactiva, eficiente y directa.
                 
                 CONTEXTO ACTUAL:
-                - Organización: {current_user.get('empresa_nombre', 'N/A')}
+                - Organización: {empresa_nombre}
                 - Tu rol: {user_role}
                 - Tenant ID: {tenant_id}
                 
