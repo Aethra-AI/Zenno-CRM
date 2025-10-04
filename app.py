@@ -776,7 +776,7 @@ def assistant_command():
         empresa_nombre = current_user.get('empresa_nombre', 'la organización') if isinstance(current_user, dict) else 'la organización'
         
         # Construir mensajes con contexto del tenant
-               messages = [
+        messages = [
                    {
                        "role": "system",
                        "content": f"""Eres un asistente de reclutamiento experto para {empresa_nombre}.
