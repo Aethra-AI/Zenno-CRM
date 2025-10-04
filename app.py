@@ -776,26 +776,44 @@ def assistant_command():
         empresa_nombre = current_user.get('empresa_nombre', 'la organización') if isinstance(current_user, dict) else 'la organización'
         
         # Construir mensajes con contexto del tenant
-        messages = [
-            {
-                "role": "system",
-                "content": f"""Eres un asistente de reclutamiento experto para {empresa_nombre}. 
-                Tu personalidad es proactiva, eficiente y directa.
-                
-                CONTEXTO ACTUAL:
-                - Organización: {empresa_nombre}
-                - Tu rol: {user_role}
-                - Tenant ID: {tenant_id}
-                
-                REGLAS CRÍTICAS:
-                1. Aislamiento de datos: Solo puedes acceder a datos del tenant {tenant_id}
-                2. Uso de Herramientas: Para cualquier acción que implique buscar, postular, agendar o actualizar datos, DEBES usar una herramienta
-                3. Contexto: Presta atención al historial para entender órdenes de seguimiento
-                4. Clarificación: Si una orden es ambigua, pregunta para clarificar antes de usar una herramienta
-                5. Identificadores: Prioriza IDs numéricos si están disponibles en el historial
-                """
-            }
-        ]
+               messages = [
+                   {
+                       "role": "system",
+                       "content": f"""Eres un asistente de reclutamiento experto para {empresa_nombre}.
+                       Tu personalidad es proactiva, eficiente y directa.
+
+                       CONTEXTO ACTUAL:
+                       - Organización: {empresa_nombre}
+                       - Tu rol: {user_role}
+                       - Tenant ID: {tenant_id}
+
+                       FUNCIONALIDADES DISPONIBLES:
+                       🔍 BÚSQUEDA DE CANDIDATOS:
+                       - Por ID: "busca el candidato con id 1" → usar search_candidates con candidate_id
+                       - Por nombre: "busca Juan Pérez" → usar search_candidates con term
+                       - Por experiencia: "busca desarrolladores" → usar search_candidates con experience
+                       - Por ciudad: "busca en Madrid" → usar search_candidates con city
+                       
+                       📋 GESTIÓN DE VACANTES:
+                       - Ver vacantes: "muestra las vacantes disponibles"
+                       - Buscar por ciudad: "vacantes en Barcelona"
+                       
+                       📊 REPORTES:
+                       - Dashboard: "muestra estadísticas del dashboard"
+                       
+                       📱 WHATSAPP:
+                       - Campañas: "envía mensaje a candidato 1"
+                       
+                       REGLAS CRÍTICAS:
+                       1. Aislamiento de datos: Solo puedes acceder a datos del tenant {tenant_id}
+                       2. Uso de Herramientas: Para cualquier acción que implique buscar, postular, agendar o actualizar datos, DEBES usar una herramienta
+                       3. Contexto: Presta atención al historial para entender órdenes de seguimiento
+                       4. Clarificación: Si una orden es ambigua, pregunta para clarificar antes de usar una herramienta
+                       5. Identificadores: Prioriza IDs numéricos si están disponibles en el historial
+                       6. Búsqueda por ID: Cuando el usuario mencione "id" seguido de un número, usa candidate_id
+                       """
+                   }
+               ]
         
         # Agregar historial
         for item in history:
@@ -818,9 +836,10 @@ def assistant_command():
                         "properties": {
                             "term": {"type": "string", "description": "Término de búsqueda"},
                             "tags": {"type": "string", "description": "Tags a buscar"},
-                            "experience": {"type": "string", "description": "Años de experiencia"},
+                            "experience": {"type": "string", "description": "Años de experiencia o texto de experiencia"},
                             "city": {"type": "string", "description": "Ciudad"},
-                            "recency_days": {"type": "integer", "description": "Días desde registro"}
+                            "recency_days": {"type": "integer", "description": "Días desde registro"},
+                            "candidate_id": {"type": "integer", "description": "ID específico del candidato a buscar"}
                         }, 
                         "required": []
                     }
@@ -1126,7 +1145,8 @@ def assistant_command():
 # ===============================================================
 
 def search_candidates_multi_tenant(tenant_id: int, term: str = None, tags: str = None, 
-                                 experience: str = None, city: str = None, recency_days: int = None):
+                                 experience: str = None, city: str = None, recency_days: int = None,
+                                 candidate_id: int = None):
     """Busca candidatos del tenant actual con aislamiento de datos"""
     conn = get_db_connection()
     if not conn: 
@@ -1134,6 +1154,29 @@ def search_candidates_multi_tenant(tenant_id: int, term: str = None, tags: str =
     
     cursor = conn.cursor(dictionary=True)
     try:
+        # Si se busca por ID específico, usar consulta directa
+        if candidate_id:
+            cursor.execute("""
+                SELECT a.id_afiliado, a.nombre_completo, a.email, a.telefono, a.ciudad, 
+                       a.experiencia, a.fecha_registro, a.estado
+                FROM Afiliados a
+                WHERE a.tenant_id = %s AND a.id_afiliado = %s
+            """, (tenant_id, candidate_id))
+            candidates = cursor.fetchall()
+            
+            # Convertir fechas para JSON
+            for candidate in candidates:
+                if candidate.get('fecha_registro'):
+                    candidate['fecha_registro'] = candidate['fecha_registro'].isoformat()
+            
+            return json.dumps({
+                "success": True,
+                "data": candidates,
+                "count": len(candidates),
+                "tenant_id": tenant_id,
+                "search_type": "by_id"
+            })
+        
         # Construir consulta con filtro de tenant
         base_query = """
             SELECT a.id_afiliado, a.nombre_completo, a.email, a.telefono, a.ciudad, 
@@ -1153,8 +1196,14 @@ def search_candidates_multi_tenant(tenant_id: int, term: str = None, tags: str =
             params.append(f"%{city}%")
         
         if experience:
-            base_query += " AND a.experiencia >= %s"
-            params.append(int(experience))
+            # Si experience es un número, filtrar por años de experiencia
+            if experience.isdigit():
+                base_query += " AND a.experiencia >= %s"
+                params.append(int(experience))
+            else:
+                # Si es texto, buscar en el campo experiencia como texto
+                base_query += " AND a.experiencia LIKE %s"
+                params.append(f"%{experience}%")
         
         if recency_days:
             base_query += " AND a.fecha_registro >= DATE_SUB(NOW(), INTERVAL %s DAY)"
