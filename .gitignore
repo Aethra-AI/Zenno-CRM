@@ -1,0 +1,19 @@
+# Archivos sensibles
+*.key
+*.pem
+*.ppk
+.env
+*.db
+*.log
+
+# Carpetas innecesarias
+sessions/
+temp_uploads/
+temp_jobs/
+__pycache__/
+node_modules/
+
+# Archivos de sistema
+.DS_Store
+*.tmp
+*.backup

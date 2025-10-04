@@ -1,0 +1,21 @@
+# Configuración de la base de datos
+DB_HOST=localhost
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=crm_henmir
+
+# Configuración de la aplicación
+SECRET_KEY=tu_clave_secreta_muy_segura_aqui
+FLASK_ENV=development
+
+# API Keys de Gemini (reemplaza con tus claves reales)
+GEMINI_API_KEY_1=tu_api_key_gemini_1_aqui
+GEMINI_API_KEY_2=tu_api_key_gemini_2_aqui
+GEMINI_API_KEY_3=tu_api_key_gemini_3_aqui
+
+# OpenAI API Key (opcional)
+OPENAI_API_KEY=tu_openai_api_key_aqui
+
+# Configuración de archivos
+UPLOAD_FOLDER=temp_uploads
+MAX_FILE_SIZE=10485760
