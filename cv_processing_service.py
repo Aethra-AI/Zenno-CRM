@@ -7,6 +7,7 @@ import logging
 from typing import Dict, Any, Optional, List
 import requests
 from io import BytesIO
+from datetime import datetime
 
 # PDF y DOCX processing
 try:

@@ -9,10 +9,19 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Tuple
 import logging
 
-import oci
-from oci.object_storage import ObjectStorageClient
-from oci.object_storage.models import CreatePreauthenticatedRequestDetails
-from oci.exceptions import ServiceError
+# Importaciones opcionales para OCI
+try:
+    import oci
+    from oci.object_storage import ObjectStorageClient
+    from oci.object_storage.models import CreatePreauthenticatedRequestDetails
+    from oci.exceptions import ServiceError
+    OCI_AVAILABLE = True
+except ImportError:
+    OCI_AVAILABLE = False
+    oci = None
+    ObjectStorageClient = None
+    CreatePreauthenticatedRequestDetails = None
+    ServiceError = Exception
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +32,10 @@ class OCIStorageService:
     
     def __init__(self):
         """Inicializar cliente de OCI"""
+        if not OCI_AVAILABLE:
+            logger.error("OCI SDK no está disponible. Instale con: pip install oci")
+            raise ImportError("OCI SDK no está disponible")
+            
         try:
             # Configuración de OCI
             self.config = oci.config.from_file()

@@ -29,9 +29,16 @@ from flask import Flask, jsonify, request, Response, send_file, send_from_direct
 import jwt
 import bcrypt
 
-# Importaciones para OCI Object Storage
-from oci_storage_service import oci_storage_service
-from cv_processing_service import cv_processing_service
+# Importaciones para OCI Object Storage (opcionales)
+try:
+    from oci_storage_service import oci_storage_service
+    from cv_processing_service import cv_processing_service
+    OCI_SERVICES_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Servicios OCI no disponibles: {str(e)}")
+    OCI_SERVICES_AVAILABLE = False
+    oci_storage_service = None
+    cv_processing_service = None
 
 # --- WHATSAPP MULTI-TENANT IMPORTS ---
 from whatsapp_config_manager import config_manager, get_tenant_whatsapp_config, create_tenant_whatsapp_config, update_tenant_whatsapp_config
@@ -8779,6 +8786,9 @@ def upload_cv_to_oci():
     """
     Subir CV individual a OCI Object Storage con procesamiento completo
     """
+    if not OCI_SERVICES_AVAILABLE:
+        return jsonify({'error': 'Servicios OCI no disponibles. Contacte al administrador.'}), 503
+        
     try:
         tenant_id = get_current_tenant_id()
         user_id = g.current_user.get('id') or g.current_user.get('user_id')
@@ -9051,6 +9061,9 @@ def bulk_upload_cvs_to_oci():
     """
     Subir múltiples CVs (hasta 100) a OCI Object Storage con procesamiento en lotes
     """
+    if not OCI_SERVICES_AVAILABLE:
+        return jsonify({'error': 'Servicios OCI no disponibles. Contacte al administrador.'}), 503
+        
     try:
         tenant_id = get_current_tenant_id()
         user_id = g.current_user.get('id') or g.current_user.get('user_id')
