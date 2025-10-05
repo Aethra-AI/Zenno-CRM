@@ -38,7 +38,7 @@ class CVProcessingService:
         # Filtrar APIs válidas
         self.gemini_api_keys = [key for key in self.gemini_api_keys if key]
         
-        self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent')
+        self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent')
         
         # Rate limiting: 5 peticiones por minuto por API
         self.rate_limit_per_api = 5
