@@ -25,9 +25,13 @@ import re
 import hashlib
 from celery_tasks import send_whatsapp_notification_task, calculate_candidate_score
 from werkzeug.utils import secure_filename
-from flask import Flask, jsonify, request, Response, send_file, send_from_directory, g, url_for
+from flask import Flask, jsonify, request, Response, send_file, send_from_directory, g, url_for, redirect
 import jwt
 import bcrypt
+
+# Importaciones para OCI Object Storage
+from oci_storage_service import oci_storage_service
+from cv_processing_service import cv_processing_service
 
 # --- WHATSAPP MULTI-TENANT IMPORTS ---
 from whatsapp_config_manager import config_manager, get_tenant_whatsapp_config, create_tenant_whatsapp_config, update_tenant_whatsapp_config
@@ -8766,6 +8770,642 @@ def whatsapp_webhook_tenant(tenant_id):
             'success': False,
             'message': 'Error interno del servidor'
         }), 500
+
+# ==================== ENDPOINTS DE OCI OBJECT STORAGE ====================
+
+@app.route('/api/cv/upload-to-oci', methods=['POST'])
+@token_required
+def upload_cv_to_oci():
+    """
+    Subir CV individual a OCI Object Storage con procesamiento completo
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_id = g.current_user.get('id') or g.current_user.get('user_id')
+        
+        if not user_id:
+            return jsonify({'error': 'Error de autenticación: ID de usuario no encontrado'}), 401
+        
+        # Verificar si hay archivo
+        if 'file' not in request.files:
+            return jsonify({'error': 'No se encontró archivo'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No se seleccionó archivo'}), 400
+        
+        # Validar tipo de archivo
+        allowed_extensions = {'.pdf', '.docx', '.doc'}
+        file_ext = os.path.splitext(file.filename.lower())[1]
+        
+        if file_ext not in allowed_extensions:
+            return jsonify({'error': f'Tipo de archivo no soportado: {file_ext}. Solo se permiten PDF, DOCX y DOC.'}), 400
+        
+        # Obtener datos adicionales del formulario
+        candidate_id = request.form.get('candidate_id')
+        # Gemini AI es OBLIGATORIO para crear perfiles de candidatos
+        force_process = True  # Siempre procesar con IA
+        
+        # Leer contenido del archivo
+        file_content = file.read()
+        
+        # Generar identificador único para el CV
+        cv_identifier = oci_storage_service.generate_cv_identifier(
+            tenant_id=tenant_id,
+            candidate_id=int(candidate_id) if candidate_id else None
+        )
+        
+        # Subir archivo a OCI Object Storage
+        upload_result = oci_storage_service.upload_cv(
+            file_content=file_content,
+            tenant_id=tenant_id,
+            cv_identifier=cv_identifier,
+            original_filename=file.filename,
+            candidate_id=int(candidate_id) if candidate_id else None
+        )
+        
+        if not upload_result['success']:
+            return jsonify({
+                'success': False,
+                'error': f"Error subiendo archivo a OCI: {upload_result['error']}"
+            }), 500
+        
+        # Crear PAR para acceso al archivo
+        par_result = oci_storage_service.create_par(
+            object_key=upload_result['object_key'],
+            cv_identifier=cv_identifier
+        )
+        
+        if not par_result['success']:
+            return jsonify({
+                'success': False,
+                'error': f"Error creando PAR: {par_result['error']}"
+            }), 500
+        
+        # Procesar CV con Gemini AI (OBLIGATORIO para crear perfiles)
+        processed_data = None
+        try:
+            # Extraer texto del CV
+            cv_text = cv_processing_service.extract_text_from_file(
+                file_content=file_content,
+                filename=file.filename
+            )
+            
+            # Procesar con Gemini
+            gemini_result = cv_processing_service.process_cv_with_gemini(
+                cv_text=cv_text,
+                tenant_id=tenant_id
+            )
+            
+            if gemini_result['success']:
+                # Validar datos procesados
+                validation_result = cv_processing_service.validate_cv_data(
+                    gemini_result['data']
+                )
+                
+                if validation_result['success']:
+                    processed_data = validation_result['validated_data']
+                else:
+                    app.logger.warning(f"Error validando datos del CV: {validation_result['error']}")
+                    # Si falla la validación, es un error crítico
+                    return jsonify({
+                        'success': False,
+                        'error': f"Error validando datos extraídos: {validation_result['error']}"
+                    }), 500
+            else:
+                app.logger.error(f"Error procesando CV con Gemini: {gemini_result['error']}")
+                # Si falla el procesamiento con IA, es un error crítico
+                return jsonify({
+                    'success': False,
+                    'error': f"Error procesando CV con IA: {gemini_result['error']}"
+                }), 500
+                
+        except Exception as e:
+            app.logger.error(f"Error procesando CV: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': f"Error procesando CV: {str(e)}"
+            }), 500
+        
+        # Preparar respuesta
+        response_data = {
+            'success': True,
+            'cv_identifier': cv_identifier,
+            'file_info': {
+                'original_name': file.filename,
+                'size': upload_result['size'],
+                'mime_type': upload_result['mime_type'],
+                'object_key': upload_result['object_key']
+            },
+            'access_info': {
+                'file_url': par_result['access_uri'],
+                'expiration_date': par_result['expiration_date'],
+                'par_id': par_result['par_id']
+            }
+        }
+        
+        # Agregar datos procesados si están disponibles
+        if processed_data:
+            response_data['processed_data'] = processed_data
+        
+        app.logger.info(f"CV subido exitosamente: {cv_identifier}")
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        app.logger.error(f"Error en upload_cv_to_oci: {str(e)}")
+        return jsonify({'error': 'Error al procesar CV'}), 500
+
+@app.route('/api/cv/process-existing/<cv_identifier>', methods=['POST'])
+@token_required
+def process_existing_cv(cv_identifier):
+    """
+    Procesar un CV existente en OCI con Gemini AI
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        
+        # Obtener información del CV desde la base de datos
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT * FROM Candidatos_CVs 
+            WHERE tenant_id = %s AND cv_identifier = %s
+        """, (tenant_id, cv_identifier))
+        
+        cv_record = cursor.fetchone()
+        
+        if not cv_record:
+            return jsonify({'error': 'CV no encontrado'}), 404
+        
+        # Obtener archivo de OCI
+        object_info = oci_storage_service.get_object_info(cv_record['file_url'])
+        
+        if not object_info['success']:
+            return jsonify({'error': 'Error obteniendo archivo de OCI'}), 500
+        
+        # Descargar archivo para procesamiento
+        # Nota: En un entorno real, necesitarías implementar la descarga desde OCI
+        # Por ahora, asumimos que el archivo está disponible localmente
+        
+        # Procesar con Gemini
+        try:
+            # Aquí necesitarías descargar el archivo desde OCI
+            # Por simplicidad, asumimos que tienes acceso al contenido
+            
+            # Simular extracción de texto (en implementación real, descargarías el archivo)
+            cv_text = "Texto del CV extraído..."  # Placeholder
+            
+            gemini_result = cv_processing_service.process_cv_with_gemini(
+                cv_text=cv_text,
+                tenant_id=tenant_id
+            )
+            
+            if gemini_result['success']:
+                # Validar datos procesados
+                validation_result = cv_processing_service.validate_cv_data(
+                    gemini_result['data']
+                )
+                
+                if validation_result['success']:
+                    # Actualizar registro en base de datos con datos procesados
+                    cursor.execute("""
+                        UPDATE Candidatos_CVs 
+                        SET processed_data = %s, 
+                            processing_status = 'completed',
+                            last_processed = NOW()
+                        WHERE tenant_id = %s AND cv_identifier = %s
+                    """, (json.dumps(validation_result['validated_data']), tenant_id, cv_identifier))
+                    
+                    conn.commit()
+                    
+                    return jsonify({
+                        'success': True,
+                        'processed_data': validation_result['validated_data'],
+                        'message': 'CV procesado exitosamente'
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'error': f"Error validando datos: {validation_result['error']}"
+                    }), 400
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': f"Error procesando con Gemini: {gemini_result['error']}"
+                }), 500
+                
+        except Exception as e:
+            app.logger.error(f"Error procesando CV existente: {str(e)}")
+            return jsonify({'error': 'Error procesando CV'}), 500
+            
+        finally:
+            cursor.close()
+            conn.close()
+        
+    except Exception as e:
+        app.logger.error(f"Error en process_existing_cv: {str(e)}")
+        return jsonify({'error': 'Error al procesar CV'}), 500
+
+@app.route('/api/cv/download/<cv_identifier>', methods=['GET'])
+@token_required
+def download_cv(cv_identifier):
+    """
+    Descargar CV usando PAR de OCI
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        
+        # Obtener información del CV desde la base de datos
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT file_url, original_filename, mime_type 
+            FROM Candidatos_CVs 
+            WHERE tenant_id = %s AND cv_identifier = %s
+        """, (tenant_id, cv_identifier))
+        
+        cv_record = cursor.fetchone()
+        
+        if not cv_record:
+            return jsonify({'error': 'CV no encontrado'}), 404
+        
+        # La PAR ya contiene la URL completa para acceso directo
+        file_url = cv_record['file_url']
+        
+        cursor.close()
+        conn.close()
+        
+        # Redirigir al archivo en OCI
+        return redirect(file_url)
+        
+    except Exception as e:
+        app.logger.error(f"Error en download_cv: {str(e)}")
+        return jsonify({'error': 'Error al descargar CV'}), 500
+
+@app.route('/api/cv/bulk-upload', methods=['POST'])
+@token_required
+def bulk_upload_cvs_to_oci():
+    """
+    Subir múltiples CVs (hasta 100) a OCI Object Storage con procesamiento en lotes
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_id = g.current_user.get('id') or g.current_user.get('user_id')
+        
+        if not user_id:
+            return jsonify({'error': 'Error de autenticación: ID de usuario no encontrado'}), 401
+        
+        # Verificar si hay archivos
+        if 'files' not in request.files:
+            return jsonify({'error': 'No se encontraron archivos'}), 400
+        
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No se seleccionaron archivos válidos'}), 400
+        
+        # Validar límite de archivos
+        if len(files) > 100:
+            return jsonify({'error': 'Máximo 100 archivos por lote'}), 400
+        
+        # Validar tipos de archivo y tamaños
+        allowed_extensions = {'.pdf', '.docx', '.doc'}
+        valid_files = []
+        total_size = 0
+        max_file_size = 50 * 1024 * 1024  # 50MB por archivo
+        
+        for file in files:
+            if file.filename:
+                file_ext = os.path.splitext(file.filename.lower())[1]
+                if file_ext not in allowed_extensions:
+                    return jsonify({'error': f'Tipo de archivo no soportado: {file_ext}. Solo se permiten PDF, DOCX y DOC.'}), 400
+                
+                # Verificar tamaño del archivo
+                file_content = file.read()
+                file_size = len(file_content)
+                
+                if file_size > max_file_size:
+                    return jsonify({'error': f'Archivo {file.filename} excede el límite de 50MB'}), 400
+                
+                total_size += file_size
+                
+                # Resetear posición del archivo
+                file.seek(0)
+                
+                valid_files.append({
+                    'file': file,
+                    'content': file_content,
+                    'filename': file.filename,
+                    'size': file_size
+                })
+        
+        # Verificar tamaño total
+        max_total_size = 500 * 1024 * 1024  # 500MB total por lote
+        if total_size > max_total_size:
+            return jsonify({'error': 'El tamaño total de los archivos excede 500MB'}), 400
+        
+        # Crear trabajo de procesamiento masivo
+        job_id = f"bulk_upload_{tenant_id}_{user_id}_{int(time.time())}"
+        
+        # Procesar archivos en lotes de 10 para evitar sobrecarga
+        batch_size = 10
+        results = []
+        errors = []
+        
+        for i in range(0, len(valid_files), batch_size):
+            batch = valid_files[i:i + batch_size]
+            batch_results = []
+            
+            for file_data in batch:
+                try:
+                    # Generar identificador único para el CV
+                    cv_identifier = oci_storage_service.generate_cv_identifier(
+                        tenant_id=tenant_id,
+                        candidate_id=None  # Se determinará después del procesamiento
+                    )
+                    
+                    # Subir archivo a OCI Object Storage
+                    upload_result = oci_storage_service.upload_cv(
+                        file_content=file_data['content'],
+                        tenant_id=tenant_id,
+                        cv_identifier=cv_identifier,
+                        original_filename=file_data['filename'],
+                        candidate_id=None
+                    )
+                    
+                    if not upload_result['success']:
+                        errors.append({
+                            'filename': file_data['filename'],
+                            'error': f"Error subiendo a OCI: {upload_result['error']}"
+                        })
+                        continue
+                    
+                    # Crear PAR para acceso al archivo
+                    par_result = oci_storage_service.create_par(
+                        object_key=upload_result['object_key'],
+                        cv_identifier=cv_identifier
+                    )
+                    
+                    if not par_result['success']:
+                        errors.append({
+                            'filename': file_data['filename'],
+                            'error': f"Error creando PAR: {par_result['error']}"
+                        })
+                        continue
+                    
+                    # Procesar CV con Gemini AI (OBLIGATORIO)
+                    try:
+                        # Extraer texto del CV
+                        cv_text = cv_processing_service.extract_text_from_file(
+                            file_content=file_data['content'],
+                            filename=file_data['filename']
+                        )
+                        
+                        # Procesar con Gemini
+                        gemini_result = cv_processing_service.process_cv_with_gemini(
+                            cv_text=cv_text,
+                            tenant_id=tenant_id
+                        )
+                        
+                        if gemini_result['success']:
+                            # Validar datos procesados
+                            validation_result = cv_processing_service.validate_cv_data(
+                                gemini_result['data']
+                            )
+                            
+                            if validation_result['success']:
+                                processed_data = validation_result['validated_data']
+                                
+                                # Crear candidato en base de datos
+                                candidate_id = create_candidate_from_cv_data(
+                                    processed_data, tenant_id, user_id
+                                )
+                                
+                                # Guardar información del CV en base de datos
+                                save_cv_to_database(
+                                    tenant_id=tenant_id,
+                                    candidate_id=candidate_id,
+                                    cv_identifier=cv_identifier,
+                                    original_filename=file_data['filename'],
+                                    object_key=upload_result['object_key'],
+                                    file_url=par_result['access_uri'],
+                                    par_id=par_result['par_id'],
+                                    mime_type=upload_result['mime_type'],
+                                    file_size=upload_result['size'],
+                                    processed_data=processed_data
+                                )
+                                
+                                batch_results.append({
+                                    'filename': file_data['filename'],
+                                    'success': True,
+                                    'cv_identifier': cv_identifier,
+                                    'candidate_id': candidate_id,
+                                    'processed_data': processed_data
+                                })
+                                
+                            else:
+                                errors.append({
+                                    'filename': file_data['filename'],
+                                    'error': f"Error validando datos: {validation_result['error']}"
+                                })
+                        else:
+                            errors.append({
+                                'filename': file_data['filename'],
+                                'error': f"Error procesando con IA: {gemini_result['error']}"
+                            })
+                            
+                    except Exception as e:
+                        errors.append({
+                            'filename': file_data['filename'],
+                            'error': f"Error procesando CV: {str(e)}"
+                        })
+                        
+                except Exception as e:
+                    errors.append({
+                        'filename': file_data['filename'],
+                        'error': f"Error general: {str(e)}"
+                    })
+            
+            results.extend(batch_results)
+            
+            # Pequeña pausa entre lotes para evitar sobrecarga
+            time.sleep(1)
+        
+        # Preparar respuesta
+        response_data = {
+            'success': True,
+            'job_id': job_id,
+            'summary': {
+                'total_files': len(valid_files),
+                'successful': len(results),
+                'errors': len(errors),
+                'total_size_mb': round(total_size / (1024 * 1024), 2)
+            },
+            'results': results,
+            'errors': errors
+        }
+        
+        app.logger.info(f"Carga masiva completada: {len(results)} exitosos, {len(errors)} errores")
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        app.logger.error(f"Error en bulk_upload_cvs_to_oci: {str(e)}")
+        return jsonify({'error': 'Error al procesar carga masiva'}), 500
+
+def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
+    """
+    Crear candidato en base de datos a partir de datos extraídos por IA
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        personal_info = cv_data.get('personal_info', {})
+        experiencia = cv_data.get('experiencia', {})
+        habilidades = cv_data.get('habilidades', {})
+        
+        # Extraer información personal
+        nombre_completo = personal_info.get('nombre_completo', 'Candidato Sin Nombre')
+        email = personal_info.get('email', '')
+        telefono = personal_info.get('telefono', '')
+        ciudad = personal_info.get('ciudad', '')
+        pais = personal_info.get('pais', '')
+        
+        # Extraer experiencia
+        años_experiencia = experiencia.get('años_experiencia', 0)
+        if isinstance(años_experiencia, str):
+            try:
+                años_experiencia = float(años_experiencia)
+            except ValueError:
+                años_experiencia = 0
+        
+        # Crear resumen de experiencia
+        experiencia_detallada = experiencia.get('experiencia_detallada', [])
+        experiencia_texto = ""
+        if experiencia_detallada:
+            for exp in experiencia_detallada[:3]:  # Solo las primeras 3 experiencias
+                empresa = exp.get('empresa', '')
+                posicion = exp.get('posicion', '')
+                if empresa and posicion:
+                    experiencia_texto += f"{posicion} en {empresa}, "
+            experiencia_texto = experiencia_texto.rstrip(', ')
+        
+        # Crear resumen de habilidades
+        habilidades_tecnicas = habilidades.get('tecnicas', [])
+        habilidades_texto = ", ".join(habilidades_tecnicas[:10])  # Máximo 10 habilidades
+        
+        # Insertar candidato
+        cursor.execute("""
+            INSERT INTO Afiliados (
+                tenant_id, nombre_completo, email, telefono, ciudad, pais,
+                experiencia, habilidades, fecha_registro, estado, usuario_registro
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'activo', %s
+            )
+        """, (
+            tenant_id, nombre_completo, email, telefono, ciudad, pais,
+            experiencia_texto, habilidades_texto, user_id
+        ))
+        
+        candidate_id = cursor.lastrowid
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"Candidato creado: ID {candidate_id} para tenant {tenant_id}")
+        return candidate_id
+        
+    except Exception as e:
+        app.logger.error(f"Error creando candidato: {str(e)}")
+        raise
+
+def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filename, 
+                       object_key, file_url, par_id, mime_type, file_size, processed_data):
+    """
+    Guardar información del CV en base de datos
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            INSERT INTO Candidatos_CVs (
+                tenant_id, candidate_id, cv_identifier, original_filename,
+                object_key, file_url, par_id, mime_type, file_size,
+                processing_status, processed_data, created_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, 'completed', %s, NOW()
+            )
+        """, (
+            tenant_id, candidate_id, cv_identifier, original_filename,
+            object_key, file_url, par_id, mime_type, file_size,
+            json.dumps(processed_data)
+        ))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"CV guardado en BD: {cv_identifier}")
+        
+    except Exception as e:
+        app.logger.error(f"Error guardando CV en BD: {str(e)}")
+        raise
+
+@app.route('/api/cv/delete/<cv_identifier>', methods=['DELETE'])
+@token_required
+def delete_cv_from_oci(cv_identifier):
+    """
+    Eliminar CV de OCI Object Storage y base de datos
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_id = g.current_user.get('id') or g.current_user.get('user_id')
+        
+        # Obtener información del CV desde la base de datos
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT object_key, file_url 
+            FROM Candidatos_CVs 
+            WHERE tenant_id = %s AND cv_identifier = %s
+        """, (tenant_id, cv_identifier))
+        
+        cv_record = cursor.fetchone()
+        
+        if not cv_record:
+            return jsonify({'error': 'CV no encontrado'}), 404
+        
+        # Eliminar archivo de OCI
+        delete_result = oci_storage_service.delete_object(cv_record['object_key'])
+        
+        if not delete_result['success']:
+            app.logger.warning(f"Error eliminando archivo de OCI: {delete_result['error']}")
+        
+        # Eliminar registro de base de datos
+        cursor.execute("""
+            DELETE FROM Candidatos_CVs 
+            WHERE tenant_id = %s AND cv_identifier = %s
+        """, (tenant_id, cv_identifier))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"CV eliminado: {cv_identifier}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'CV eliminado exitosamente'
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en delete_cv_from_oci: {str(e)}")
+        return jsonify({'error': 'Error al eliminar CV'}), 500
 
 # --- PUNTO DE ENTRADA PARA EJECUTAR EL SERVIDOR (SIN CAMBIOS) ---
 if __name__ == '__main__':

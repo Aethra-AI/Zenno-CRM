@@ -1,0 +1,83 @@
+# Configuración de OCI Object Storage para CRM
+# Copiar este archivo como .oci/config en el servidor
+
+[DEFAULT]
+user=ocid1.user.oc1..aaaaaaaa...
+fingerprint=aa:bb:cc:dd:ee:ff:gg:hh:ii:jj:kk:ll:mm:nn:oo:pp
+key_file=~/.oci/oci_api_key.pem
+tenancy=ocid1.tenancy.oc1..aaaaaaaa...
+region=us-ashburn-1
+
+# Variables de entorno para el CRM
+# Agregar al archivo .env del backend:
+
+# OCI Object Storage Configuration
+OCI_NAMESPACE=your-namespace-name
+OCI_BUCKET_NAME=crm-cvs
+OCI_REGION=us-ashburn-1
+
+# Gemini AI Configuration (ya existente)
+GEMINI_API_KEY=your-gemini-api-key-here
+GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent
+
+# Configuración adicional
+MAX_FILE_SIZE_MB=50
+PAR_EXPIRATION_YEARS=10
+AUTO_PROCESS_CVS=true
+
+# Instrucciones de instalación:
+
+# 1. Instalar dependencias de Python:
+pip install -r requirements_oci.txt
+
+# 2. Configurar OCI CLI:
+# - Instalar OCI CLI: https://docs.oracle.com/en-us/iaas/Content/API/SDKDocs/cliinstall.htm
+# - Configurar credenciales: oci setup config
+# - Verificar configuración: oci iam user get --user-id $USER_OCID
+
+# 3. Crear bucket en OCI Object Storage:
+# - Ir a Oracle Cloud Console > Object Storage > Buckets
+# - Crear bucket con nombre "crm-cvs"
+# - Configurar políticas de acceso según sea necesario
+
+# 4. Configurar políticas IAM en OCI:
+# {
+#   "Version": "2012-10-17",
+#   "Statement": [
+#     {
+#       "Effect": "Allow",
+#       "Principal": {
+#         "Service": "objectstorage"
+#       },
+#       "Action": [
+#         "object:read",
+#         "object:write",
+#         "object:delete"
+#       ],
+#       "Resource": [
+#         "arn:oci:objectstorage:::b/crm-cvs/*"
+#       ]
+#     }
+#   ]
+# }
+
+# 5. Ejecutar script SQL para crear tablas:
+# mysql -u username -p database_name < create_cv_tables.sql
+
+# 6. Reiniciar servicio del backend para cargar nuevas dependencias
+
+# Estructura de archivos en OCI:
+# Bucket: crm-cvs
+# Estructura: tenants/{tenant_id}/cvs/{cv_identifier}{ext}
+# Ejemplo: tenants/1/cvs/tenant_1_cv_20241201_123456_abc123.pdf
+
+# PARs (Pre-Authenticated Requests):
+# - Duración: 10 años por defecto
+# - Acceso: Solo lectura (ObjectRead)
+# - URL generada: https://objectstorage.region.oraclecloud.com/p/n/namespace/b/bucket/o/object
+
+# Monitoreo y logs:
+# - Logs de procesamiento en tabla CV_Processing_Logs
+# - Métricas de uso en Oracle Cloud Monitoring
+# - Alertas configuradas para errores de procesamiento
+

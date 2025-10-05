@@ -1,0 +1,16 @@
+# OCI Object Storage requirements
+oci==2.119.0
+oci-cli==3.37.3
+
+# PDF processing
+PyPDF2==3.0.1
+python-docx==1.1.0
+
+# File handling
+python-magic==0.4.27
+mimetypes==1.0
+
+# Additional dependencies
+requests==2.31.0
+urllib3==2.0.7
+
