@@ -24,15 +24,30 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class CVProcessingService:
-    """Servicio para procesar CVs con Gemini AI"""
+    """Servicio para procesar CVs con Gemini AI usando múltiples APIs"""
     
     def __init__(self):
-        """Inicializar servicio de procesamiento"""
-        self.gemini_api_key = os.getenv('GEMINI_API_KEY')
+        """Inicializar servicio de procesamiento con múltiples APIs"""
+        # Obtener las 3 APIs de Gemini disponibles
+        self.gemini_api_keys = [
+            os.getenv('GEMINI_API_KEY_1'),
+            os.getenv('GEMINI_API_KEY_2'),
+            os.getenv('GEMINI_API_KEY_3')
+        ]
+        
+        # Filtrar APIs válidas
+        self.gemini_api_keys = [key for key in self.gemini_api_keys if key]
+        
         self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent')
         
-        if not self.gemini_api_key:
-            logger.warning("GEMINI_API_KEY no encontrada en variables de entorno")
+        # Rate limiting: 5 peticiones por minuto por API
+        self.rate_limit_per_api = 5
+        self.rate_limit_window = 60  # segundos
+        
+        if not self.gemini_api_keys:
+            logger.warning("No se encontraron APIs de Gemini en variables de entorno")
+        else:
+            logger.info(f"Inicializado con {len(self.gemini_api_keys)} APIs de Gemini disponibles")
     
     def extract_text_from_pdf(self, file_content: bytes) -> str:
         """
@@ -115,20 +130,25 @@ class CVProcessingService:
             logger.error(f"Error extrayendo texto del archivo {filename}: {str(e)}")
             raise
     
-    def process_cv_with_gemini(self, cv_text: str, tenant_id: int) -> Dict[str, Any]:
+    def process_cv_with_gemini(self, cv_text: str, tenant_id: int, api_index: int = 0) -> Dict[str, Any]:
         """
         Procesar CV con Gemini AI para extraer información estructurada
         
         Args:
             cv_text: Texto del CV
             tenant_id: ID del tenant
+            api_index: Índice de la API a usar (0, 1, 2)
             
         Returns:
             Dict con información estructurada del candidato
         """
         try:
-            if not self.gemini_api_key:
-                raise ValueError("GEMINI_API_KEY no configurada")
+            if not self.gemini_api_keys:
+                raise ValueError("No hay APIs de Gemini configuradas")
+            
+            # Seleccionar API usando round-robin
+            selected_api_key = self.gemini_api_keys[api_index % len(self.gemini_api_keys)]
+            logger.info(f"Usando Gemini API {api_index % len(self.gemini_api_keys) + 1} para procesar CV")
             
             # Prompt para Gemini
             prompt = f"""
@@ -232,9 +252,9 @@ class CVProcessingService:
                 }
             }
             
-            # Llamar a Gemini API
+            # Llamar a Gemini API con la API seleccionada
             response = requests.post(
-                f"{self.gemini_api_url}?key={self.gemini_api_key}",
+                f"{self.gemini_api_url}?key={selected_api_key}",
                 headers=headers,
                 json=data,
                 timeout=30
@@ -347,6 +367,43 @@ class CVProcessingService:
                 'success': False,
                 'error': str(e)
             }
+    
+    def process_cv_batch(self, cv_texts: List[str], tenant_id: int) -> List[Dict[str, Any]]:
+        """
+        Procesar lote de CVs distribuyendo la carga entre múltiples APIs
+        
+        Args:
+            cv_texts: Lista de textos de CVs
+            tenant_id: ID del tenant
+            
+        Returns:
+            Lista de resultados procesados
+        """
+        results = []
+        
+        for i, cv_text in enumerate(cv_texts):
+            try:
+                # Usar round-robin para distribuir entre APIs
+                api_index = i % len(self.gemini_api_keys)
+                
+                logger.info(f"Procesando CV {i+1}/{len(cv_texts)} con API {api_index + 1}")
+                
+                result = self.process_cv_with_gemini(cv_text, tenant_id, api_index)
+                results.append(result)
+                
+                # Pequeña pausa para evitar rate limiting
+                if i < len(cv_texts) - 1:
+                    import time
+                    time.sleep(2)  # 2 segundos entre peticiones
+                    
+            except Exception as e:
+                logger.error(f"Error procesando CV {i+1}: {str(e)}")
+                results.append({
+                    'success': False,
+                    'error': str(e)
+                })
+        
+        return results
 
 # Instancia global del servicio
 cv_processing_service = CVProcessingService()
