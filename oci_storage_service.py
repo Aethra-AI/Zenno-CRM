@@ -127,14 +127,7 @@ class OCIStorageService:
                 bucket_name=self.bucket_name,
                 object_name=object_key,
                 put_object_body=file_content,
-                content_type=mime_type,
-                metadata={
-                    'tenant_id': str(tenant_id),
-                    'cv_identifier': cv_identifier,
-                    'original_filename': original_filename,
-                    'upload_timestamp': datetime.now().isoformat(),
-                    'candidate_id': str(candidate_id) if candidate_id else ''
-                }
+                content_type=mime_type
             )
             
             logger.info(f"CV subido exitosamente: {object_key}")
