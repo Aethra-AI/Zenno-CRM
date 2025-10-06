@@ -4311,8 +4311,9 @@ def get_candidate_profile(candidate_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
         
-        # Obtener información básica del candidato
+        # Obtener información básica del candidato con validación de tenant
         cursor.execute("""
             SELECT 
                 a.id_afiliado, 
@@ -4334,14 +4335,14 @@ def get_candidate_profile(candidate_id):
                 a.fecha_nacimiento,
                 a.nacionalidad
             FROM Afiliados a
-            WHERE a.id_afiliado = %s
-        """, (candidate_id,))
+            WHERE a.id_afiliado = %s AND a.tenant_id = %s
+        """, (candidate_id, tenant_id))
         
         candidate = cursor.fetchone()
         if not candidate:
             return jsonify({"error": "Candidato no encontrado"}), 404
         
-        # Obtener aplicaciones del candidato
+        # Obtener aplicaciones del candidato con validación de tenant
         cursor.execute("""
             SELECT 
                 p.id_postulacion,
@@ -4358,13 +4359,13 @@ def get_candidate_profile(candidate_id):
             FROM Postulaciones p
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
             JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE p.id_afiliado = %s
+            WHERE p.id_afiliado = %s AND v.tenant_id = %s
             ORDER BY p.fecha_aplicacion DESC
-        """, (candidate_id,))
+        """, (candidate_id, tenant_id))
         
         applications = cursor.fetchall()
         
-        # Obtener estadísticas
+        # Obtener estadísticas con validación de tenant
         cursor.execute("""
             SELECT 
                 COUNT(*) as total_aplicaciones,
@@ -4373,8 +4374,9 @@ def get_candidate_profile(candidate_id):
                 COUNT(CASE WHEN p.estado = 'En Revisión' THEN 1 END) as en_revision,
                 COUNT(CASE WHEN p.estado = 'Rechazado' THEN 1 END) as rechazado
             FROM Postulaciones p
-            WHERE p.id_afiliado = %s
-        """, (candidate_id,))
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE p.id_afiliado = %s AND v.tenant_id = %s
+        """, (candidate_id, tenant_id))
         
         stats = cursor.fetchone()
         
@@ -4384,8 +4386,10 @@ def get_candidate_profile(candidate_id):
         return jsonify({
             'success': True,
             'data': {
-                'candidate': candidate,
-                'applications': applications,
+                'infoBasica': candidate,
+                'postulaciones': applications,
+                'entrevistas': [],
+                'tags': [],
                 'statistics': stats
             }
         })
