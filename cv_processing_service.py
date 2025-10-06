@@ -38,7 +38,7 @@ class CVProcessingService:
         # Filtrar APIs válidas
         self.gemini_api_keys = [key for key in self.gemini_api_keys if key]
         
-        self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent')
+        self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')
         
         # Rate limiting: 5 peticiones por minuto por API
         self.rate_limit_per_api = 5
@@ -247,8 +247,7 @@ class CVProcessingService:
                 "generationConfig": {
                     "temperature": 0.1,
                     "topK": 1,
-                    "topP": 1,
-                    "maxOutputTokens": 2048,
+                    "topP": 1
                 }
             }
             
@@ -257,7 +256,7 @@ class CVProcessingService:
                 f"{self.gemini_api_url}?key={selected_api_key}",
                 headers=headers,
                 json=data,
-                timeout=30
+                timeout=120
             )
             
             if response.status_code != 200:
