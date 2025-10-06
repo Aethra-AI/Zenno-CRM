@@ -4156,7 +4156,7 @@ def get_candidates():
         status = request.args.get('status', '')
         sort_order = request.args.get('sort', 'newest')  # newest o oldest
         
-        # Construir consulta base con más información
+        # Construir consulta base con estructura limpia
         query = """
             SELECT 
                 a.id_afiliado, 
@@ -4169,12 +4169,17 @@ def get_candidates():
                 a.experiencia,
                 a.grado_academico,
                 a.puntuacion as score,
-                a.disponibilidad,
+                a.disponibilidad_rotativos,
                 a.cv_url,
                 a.linkedin,
                 a.portfolio,
                 a.skills,
-                a.comentarios,
+                a.observaciones,
+                a.transporte_propio,
+                a.cargo_solicitado,
+                a.fuente_reclutamiento,
+                a.fecha_nacimiento,
+                a.ultimo_contacto,
                 (SELECT COUNT(*) FROM Postulaciones p WHERE p.id_afiliado = a.id_afiliado) as total_aplicaciones,
                 (SELECT GROUP_CONCAT(DISTINCT c.empresa SEPARATOR ', ') 
                  FROM Postulaciones p 
@@ -4203,7 +4208,7 @@ def get_candidates():
             params.append(status)
         
         # Obtener total de registros
-        count_query = query.replace("SELECT \n                a.id_afiliado, \n                a.nombre_completo as nombre, \n                a.email, \n                a.telefono, \n                a.ciudad, \n                a.fecha_registro, \n                a.estado, \n                a.experiencia,\n                a.grado_academico,\n                a.puntuacion as score,\n                a.disponibilidad,\n                a.cv_url,\n                a.linkedin,\n                a.portfolio,\n                a.skills,\n                a.comentarios,\n                (SELECT COUNT(*) FROM Postulaciones p WHERE p.id_afiliado = a.id_afiliado) as total_aplicaciones,\n                (SELECT GROUP_CONCAT(DISTINCT c.empresa SEPARATOR ', ') \n                 FROM Postulaciones p \n                 JOIN Vacantes v ON p.id_vacante = v.id_vacante \n                 JOIN Clientes c ON v.id_cliente = c.id_cliente \n                 WHERE p.id_afiliado = a.id_afiliado) as empresas_aplicadas", "SELECT COUNT(*) as total")
+        count_query = query.replace("SELECT \n                a.id_afiliado, \n                a.nombre_completo as nombre, \n                a.email, \n                a.telefono, \n                a.ciudad, \n                a.fecha_registro, \n                a.estado, \n                a.experiencia,\n                a.grado_academico,\n                a.puntuacion as score,\n                a.disponibilidad_rotativos,\n                a.cv_url,\n                a.linkedin,\n                a.portfolio,\n                a.skills,\n                a.observaciones,\n                a.transporte_propio,\n                a.cargo_solicitado,\n                a.fuente_reclutamiento,\n                a.fecha_nacimiento,\n                a.ultimo_contacto,\n                (SELECT COUNT(*) FROM Postulaciones p WHERE p.id_afiliado = a.id_afiliado) as total_aplicaciones,\n                (SELECT GROUP_CONCAT(DISTINCT c.empresa SEPARATOR ', ') \n                 FROM Postulaciones p \n                 JOIN Vacantes v ON p.id_vacante = v.id_vacante \n                 JOIN Clientes c ON v.id_cliente = c.id_cliente \n                 WHERE p.id_afiliado = a.id_afiliado) as empresas_aplicadas", "SELECT COUNT(*) as total")
         cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
         
@@ -4256,12 +4261,12 @@ def create_candidate():
         if cursor.fetchone():
             return jsonify({'error': 'Ya existe un candidato con este email'}), 409
         
-        # Insertar nuevo candidato
+        # Insertar nuevo candidato con estructura limpia
         sql = """
             INSERT INTO Afiliados (
                 nombre_completo, email, telefono, ciudad, cargo_solicitado,
-                experiencia, grado_academico, disponibilidad, cv_url,
-                linkedin, portfolio, skills, comentarios, tenant_id, fecha_registro
+                experiencia, grado_academico, disponibilidad_rotativos, cv_url,
+                linkedin, portfolio, skills, observaciones, tenant_id, fecha_registro
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
         """
         
@@ -4273,12 +4278,12 @@ def create_candidate():
             data.get('cargo_solicitado', ''),
             data.get('experiencia', ''),
             data.get('grado_academico', ''),
-            data.get('disponibilidad', ''),
+            data.get('disponibilidad_rotativos', 'no'),
             data.get('cv_url', ''),
             data.get('linkedin', ''),
             data.get('portfolio', ''),
             data.get('skills', ''),
-            data.get('comentarios', ''),
+            data.get('observaciones', ''),
             tenant_id
         ))
         
@@ -4313,7 +4318,7 @@ def get_candidate_profile(candidate_id):
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
         
-        # Obtener información básica del candidato con validación de tenant
+        # Obtener información básica del candidato con estructura limpia
         cursor.execute("""
             SELECT 
                 a.id_afiliado, 
@@ -4326,14 +4331,17 @@ def get_candidate_profile(candidate_id):
                 a.experiencia,
                 a.grado_academico,
                 a.puntuacion as score,
-                a.disponibilidad,
+                a.disponibilidad_rotativos,
                 a.cv_url,
                 a.linkedin,
                 a.portfolio,
                 a.skills,
-                a.comentarios,
+                a.observaciones,
+                a.transporte_propio,
+                a.cargo_solicitado,
+                a.fuente_reclutamiento,
                 a.fecha_nacimiento,
-                a.nacionalidad
+                a.ultimo_contacto
             FROM Afiliados a
             WHERE a.id_afiliado = %s AND a.tenant_id = %s
         """, (candidate_id, tenant_id))
@@ -4867,7 +4875,7 @@ def handle_candidate_profile(id_afiliado):
             data = request.get_json()
             update_fields = []
             params = []
-            allowed_fields = ['nombre_completo', 'telefono', 'email', 'experiencia', 'ciudad', 'grado_academico', 'observaciones']
+            allowed_fields = ['nombre_completo', 'telefono', 'email', 'experiencia', 'ciudad', 'grado_academico', 'observaciones', 'disponibilidad_rotativos', 'transporte_propio', 'estado', 'linkedin', 'portfolio', 'skills', 'cargo_solicitado', 'fuente_reclutamiento', 'fecha_nacimiento']
             for field in allowed_fields:
                 if field in data:
                     update_fields.append(f"{field} = %s")
