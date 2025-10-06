@@ -8901,7 +8901,7 @@ def upload_cv_to_oci():
             'access_info': {
                 'download_url': par_result['access_uri'],
                 'par_id': par_result['par_id'],
-                'expires_at': par_result['expires_at']
+                'expires_at': par_result['expiration_date']
             },
             'processing_status': 'processing'
         }
