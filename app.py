@@ -31,8 +31,9 @@ import bcrypt
 
 # Importaciones para OCI Object Storage (opcionales)
 try:
-    from oci_storage_service import oci_storage_service
-    from cv_processing_service import cv_processing_service
+from oci_storage_service import oci_storage_service
+from cv_processing_service import cv_processing_service
+from optimized_bulk_processing import process_batch_optimized
     OCI_SERVICES_AVAILABLE = True
 except ImportError as e:
     logger.warning(f"Servicios OCI no disponibles: {str(e)}")
@@ -8917,6 +8918,39 @@ def upload_cv_to_oci():
         # Agregar datos procesados si están disponibles
         if processed_data:
             response_data['processed_data'] = processed_data
+            
+            # Crear candidato en base de datos si no existe candidate_id
+            if not candidate_id:
+                try:
+                    candidate_id = create_candidate_from_cv_data(
+                        cv_data=processed_data,
+                        tenant_id=tenant_id,
+                        user_id=user_id
+                    )
+                    response_data['candidate_id'] = candidate_id
+                    app.logger.info(f"Candidato creado: ID {candidate_id}")
+                except Exception as e:
+                    app.logger.error(f"Error creando candidato: {str(e)}")
+                    # No fallar el proceso, solo loggear el error
+            
+            # Guardar CV en base de datos
+            try:
+                save_cv_to_database(
+                    tenant_id=tenant_id,
+                    candidate_id=int(candidate_id) if candidate_id else None,
+                    cv_identifier=cv_identifier,
+                    original_filename=file.filename,
+                    object_key=upload_result['object_key'],
+                    file_url=par_result['access_uri'],
+                    par_id=par_result['par_id'],
+                    mime_type=upload_result['mime_type'],
+                    file_size=upload_result['size'],
+                    processed_data=processed_data
+                )
+                app.logger.info(f"CV guardado en base de datos: {cv_identifier}")
+            except Exception as e:
+                app.logger.error(f"Error guardando CV en BD: {str(e)}")
+                # No fallar el proceso, solo loggear el error
         
         app.logger.info(f"CV subido exitosamente: {cv_identifier}")
         
@@ -9122,126 +9156,19 @@ def bulk_upload_cvs_to_oci():
         # Crear trabajo de procesamiento masivo
         job_id = f"bulk_upload_{tenant_id}_{user_id}_{int(time.time())}"
         
-        # Procesar archivos en lotes de 10 para evitar sobrecarga
-        batch_size = 10
+        # Procesar archivos en lotes de 30 para optimizar con procesamiento paralelo
+        batch_size = 30
         results = []
         errors = []
         
         for i in range(0, len(valid_files), batch_size):
             batch = valid_files[i:i + batch_size]
-            batch_results = []
             
-            for file_data in batch:
-                try:
-                    # Generar identificador único para el CV
-                    cv_identifier = oci_storage_service.generate_cv_identifier(
-                        tenant_id=tenant_id,
-                        candidate_id=None  # Se determinará después del procesamiento
-                    )
-                    
-                    # Subir archivo a OCI Object Storage
-                    upload_result = oci_storage_service.upload_cv(
-                        file_content=file_data['content'],
-                        tenant_id=tenant_id,
-                        cv_identifier=cv_identifier,
-                        original_filename=file_data['filename'],
-                        candidate_id=None
-                    )
-                    
-                    if not upload_result['success']:
-                        errors.append({
-                            'filename': file_data['filename'],
-                            'error': f"Error subiendo a OCI: {upload_result['error']}"
-                        })
-                        continue
-                    
-                    # Crear PAR para acceso al archivo
-                    par_result = oci_storage_service.create_par(
-                        object_key=upload_result['object_key'],
-                        cv_identifier=cv_identifier
-                    )
-                    
-                    if not par_result['success']:
-                        errors.append({
-                            'filename': file_data['filename'],
-                            'error': f"Error creando PAR: {par_result['error']}"
-                        })
-                        continue
-                    
-                    # Procesar CV con Gemini AI (OBLIGATORIO)
-                    try:
-                        # Extraer texto del CV
-                        cv_text = cv_processing_service.extract_text_from_file(
-                            file_content=file_data['content'],
-                            filename=file_data['filename']
-                        )
-                        
-                        # Procesar con Gemini
-                        gemini_result = cv_processing_service.process_cv_with_gemini(
-                            cv_text=cv_text,
-                            tenant_id=tenant_id
-                        )
-                        
-                        if gemini_result['success']:
-                            # Validar datos procesados
-                            validation_result = cv_processing_service.validate_cv_data(
-                                gemini_result['data']
-                            )
-                            
-                            if validation_result['success']:
-                                processed_data = validation_result['validated_data']
-                                
-                                # Crear candidato en base de datos
-                                candidate_id = create_candidate_from_cv_data(
-                                    processed_data, tenant_id, user_id
-                                )
-                                
-                                # Guardar información del CV en base de datos
-                                save_cv_to_database(
-                                    tenant_id=tenant_id,
-                                    candidate_id=candidate_id,
-                                    cv_identifier=cv_identifier,
-                                    original_filename=file_data['filename'],
-                                    object_key=upload_result['object_key'],
-                                    file_url=par_result['access_uri'],
-                                    par_id=par_result['par_id'],
-                                    mime_type=upload_result['mime_type'],
-                                    file_size=upload_result['size'],
-                                    processed_data=processed_data
-                                )
-                                
-                                batch_results.append({
-                                    'filename': file_data['filename'],
-                                    'success': True,
-                                    'cv_identifier': cv_identifier,
-                                    'candidate_id': candidate_id,
-                                    'processed_data': processed_data
-                                })
-                                
-                            else:
-                                errors.append({
-                                    'filename': file_data['filename'],
-                                    'error': f"Error validando datos: {validation_result['error']}"
-                                })
-                        else:
-                            errors.append({
-                                'filename': file_data['filename'],
-                                'error': f"Error procesando con IA: {gemini_result['error']}"
-                            })
-                            
-                    except Exception as e:
-                        errors.append({
-                            'filename': file_data['filename'],
-                            'error': f"Error procesando CV: {str(e)}"
-                        })
-                        
-                except Exception as e:
-                    errors.append({
-                        'filename': file_data['filename'],
-                        'error': f"Error general: {str(e)}"
-                    })
+            # Usar procesamiento optimizado en paralelo
+            batch_result = process_batch_optimized(batch, tenant_id, user_id)
             
-            results.extend(batch_results)
+            results.extend(batch_result['results'])
+            errors.extend(batch_result['errors'])
             
             # Pequeña pausa entre lotes para evitar sobrecarga
             time.sleep(1)

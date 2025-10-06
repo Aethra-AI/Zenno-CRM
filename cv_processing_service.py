@@ -40,8 +40,8 @@ class CVProcessingService:
         
         self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')
         
-        # Rate limiting: 5 peticiones por minuto por API
-        self.rate_limit_per_api = 5
+        # Rate limiting: 15 peticiones por minuto por API (Gemini 2.5 Flash Lite)
+        self.rate_limit_per_api = 15
         self.rate_limit_window = 60  # segundos
         
         if not self.gemini_api_keys:
@@ -369,7 +369,7 @@ class CVProcessingService:
     
     def process_cv_batch(self, cv_texts: List[str], tenant_id: int) -> List[Dict[str, Any]]:
         """
-        Procesar lote de CVs distribuyendo la carga entre múltiples APIs
+        Procesar lote de CVs con procesamiento paralelo entre múltiples APIs
         
         Args:
             cv_texts: Lista de textos de CVs
@@ -378,29 +378,55 @@ class CVProcessingService:
         Returns:
             Lista de resultados procesados
         """
-        results = []
+        import concurrent.futures
+        import time
+        from threading import Lock
         
-        for i, cv_text in enumerate(cv_texts):
+        results = [None] * len(cv_texts)  # Mantener orden original
+        api_counters = {i: 0 for i in range(len(self.gemini_api_keys))}  # Contador por API
+        counters_lock = Lock()
+        
+        def process_single_cv(index_and_text):
+            index, cv_text = index_and_text
+            
             try:
                 # Usar round-robin para distribuir entre APIs
-                api_index = i % len(self.gemini_api_keys)
+                with counters_lock:
+                    api_index = index % len(self.gemini_api_keys)
+                    api_counters[api_index] += 1
+                    current_count = api_counters[api_index]
                 
-                logger.info(f"Procesando CV {i+1}/{len(cv_texts)} con API {api_index + 1}")
+                logger.info(f"Procesando CV {index+1}/{len(cv_texts)} con API {api_index + 1} (petición #{current_count})")
+                
+                # Calcular delay basado en rate limiting (15 peticiones/minuto = 4 segundos entre peticiones)
+                delay = (current_count - 1) * 4  # 0, 4, 8, 12... segundos
+                if delay > 0:
+                    time.sleep(delay)
                 
                 result = self.process_cv_with_gemini(cv_text, tenant_id, api_index)
-                results.append(result)
-                
-                # Pequeña pausa para evitar rate limiting
-                if i < len(cv_texts) - 1:
-                    import time
-                    time.sleep(2)  # 2 segundos entre peticiones
+                return index, result
                     
             except Exception as e:
-                logger.error(f"Error procesando CV {i+1}: {str(e)}")
-                results.append({
+                logger.error(f"Error procesando CV {index+1}: {str(e)}")
+                return index, {
                     'success': False,
                     'error': str(e)
-                })
+                }
+        
+        # Procesar en paralelo con ThreadPoolExecutor
+        max_workers = min(len(self.gemini_api_keys), 3)  # Máximo 3 workers para 3 APIs
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Crear lista de tareas
+            tasks = [(i, cv_text) for i, cv_text in enumerate(cv_texts)]
+            
+            # Ejecutar tareas en paralelo
+            future_to_index = {executor.submit(process_single_cv, task): task[0] for task in tasks}
+            
+            # Recoger resultados
+            for future in concurrent.futures.as_completed(future_to_index):
+                index, result = future.result()
+                results[index] = result
         
         return results
 
