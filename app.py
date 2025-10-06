@@ -4836,7 +4836,7 @@ def handle_candidate_profile(id_afiliado):
                 FROM Postulaciones P 
                 JOIN Vacantes V ON P.id_vacante = V.id_vacante 
                 JOIN Clientes C ON V.id_cliente = C.id_cliente 
-                WHERE P.id_afiliado = %s AND V.id_cliente = %s
+                WHERE P.id_afiliado = %s AND V.tenant_id = %s
             """, (id_afiliado, tenant_id))
             perfil['postulaciones'] = cursor.fetchall()
             
@@ -4846,7 +4846,7 @@ def handle_candidate_profile(id_afiliado):
                 JOIN Postulaciones P ON E.id_postulacion = P.id_postulacion 
                 JOIN Vacantes V ON P.id_vacante = V.id_vacante 
                 JOIN Clientes C ON V.id_cliente = C.id_cliente 
-                WHERE P.id_afiliado = %s AND V.id_cliente = %s
+                WHERE P.id_afiliado = %s AND V.tenant_id = %s
             """, (id_afiliado, tenant_id))
             perfil['entrevistas'] = cursor.fetchall()
             
