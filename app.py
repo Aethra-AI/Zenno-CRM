@@ -9373,8 +9373,10 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
         telefono = personal_info.get('telefono', '')
         ciudad = personal_info.get('ciudad', '')
         pais = personal_info.get('pais', '')
+        linkedin = personal_info.get('linkedin', '')
+        portfolio = personal_info.get('portfolio', '')
         
-        # Extraer experiencia
+        # Extraer experiencia detallada
         años_experiencia = experiencia.get('años_experiencia', 0)
         if isinstance(años_experiencia, str):
             try:
@@ -9382,32 +9384,61 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
             except ValueError:
                 años_experiencia = 0
         
-        # Crear resumen de experiencia
+        # Crear resumen de experiencia más detallado
         experiencia_detallada = experiencia.get('experiencia_detallada', [])
         experiencia_texto = ""
+        especializaciones = experiencia.get('especializaciones', [])
+        
         if experiencia_detallada:
-            for exp in experiencia_detallada[:3]:  # Solo las primeras 3 experiencias
+            # Incluir más experiencias y más detalles
+            for exp in experiencia_detallada[:5]:  # Las primeras 5 experiencias
                 empresa = exp.get('empresa', '')
                 posicion = exp.get('posicion', '')
+                duracion = exp.get('duracion_meses', 0)
                 if empresa and posicion:
-                    experiencia_texto += f"{posicion} en {empresa}, "
+                    if duracion:
+                        experiencia_texto += f"{posicion} en {empresa} ({duracion} meses), "
+                    else:
+                        experiencia_texto += f"{posicion} en {empresa}, "
             experiencia_texto = experiencia_texto.rstrip(', ')
         
-        # Crear resumen de habilidades
-        habilidades_tecnicas = habilidades.get('tecnicas', [])
-        habilidades_texto = ", ".join(habilidades_tecnicas[:10])  # Máximo 10 habilidades
+        # Agregar especializaciones al texto de experiencia
+        if especializaciones:
+            especializaciones_texto = ", ".join(especializaciones[:3])
+            experiencia_texto += f" | Especializado en: {especializaciones_texto}"
         
-        # Insertar candidato en tabla Afiliados
+        # Crear resumen de habilidades más completo
+        habilidades_tecnicas = habilidades.get('tecnicas', [])
+        niveles_dominio = habilidades.get('niveles_dominio', {})
+        
+        # Combinar habilidades técnicas con niveles de dominio
+        habilidades_texto = ""
+        if niveles_dominio:
+            expert_skills = niveles_dominio.get('expert', [])
+            avanzado_skills = niveles_dominio.get('avanzado', [])
+            if expert_skills:
+                habilidades_texto += f"Experto: {', '.join(expert_skills[:3])}"
+            if avanzado_skills:
+                if habilidades_texto:
+                    habilidades_texto += f" | Avanzado: {', '.join(avanzado_skills[:3])}"
+                else:
+                    habilidades_texto = f"Avanzado: {', '.join(avanzado_skills[:3])}"
+        
+        # Si no hay niveles de dominio, usar habilidades técnicas simples
+        if not habilidades_texto and habilidades_tecnicas:
+            habilidades_texto = ", ".join(habilidades_tecnicas[:10])
+        
+        # Insertar candidato en tabla Afiliados con campos adicionales
         cursor.execute("""
             INSERT INTO Afiliados (
                 tenant_id, nombre_completo, email, telefono, ciudad,
-                experiencia, habilidades, estado, fecha_registro
+                experiencia, habilidades, linkedin, portfolio, estado, fecha_registro
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, 'Activo', NOW()
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Activo', NOW()
             )
         """, (
             tenant_id, nombre_completo, email, telefono, ciudad,
-            experiencia_texto, habilidades_texto
+            experiencia_texto, habilidades_texto, linkedin, portfolio
         ))
         
         candidate_id = cursor.lastrowid

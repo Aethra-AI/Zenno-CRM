@@ -172,10 +172,18 @@ class CVProcessingService:
             selected_api_key = self.gemini_api_keys[api_index % len(self.gemini_api_keys)]
             logger.info(f"Usando Gemini API {api_index % len(self.gemini_api_keys) + 1} para procesar CV")
             
-            # Prompt para Gemini
+            # Prompt mejorado para Gemini
             prompt = f"""
-            Analiza el siguiente CV y extrae la información en formato JSON estructurado.
+            Analiza DETALLADAMENTE el siguiente CV y extrae TODA la información disponible en formato JSON estructurado.
             El CV pertenece al tenant {tenant_id}.
+            
+            INSTRUCCIONES CRÍTICAS:
+            - Lee TODO el contenido del CV, no solo fragmentos
+            - Extrae TODA la experiencia laboral mencionada, sin omitir ningún trabajo
+            - Detalla cada logro, responsabilidad y tecnología mencionada
+            - Incluye TODAS las certificaciones, cursos y educación
+            - Extrae habilidades técnicas específicas y niveles de dominio
+            - Analiza el contexto completo para entender el perfil profesional
             
             Por favor, extrae y estructura la siguiente información:
             
@@ -188,20 +196,32 @@ class CVProcessingService:
                     "pais": "string",
                     "fecha_nacimiento": "string (YYYY-MM-DD o null si no se encuentra)",
                     "linkedin": "string o null",
-                    "github": "string o null"
+                    "github": "string o null",
+                    "portfolio": "string o null",
+                    "sitio_web": "string o null"
                 }},
                 "experiencia": {{
-                    "años_experiencia": "number",
+                    "años_experiencia": "number (calculado desde la primera experiencia)",
                     "experiencia_detallada": [
                         {{
                             "empresa": "string",
                             "posicion": "string",
                             "fecha_inicio": "string (YYYY-MM-DD)",
                             "fecha_fin": "string (YYYY-MM-DD o 'actual' si está trabajando)",
-                            "descripcion": "string",
-                            "tecnologias": ["array de strings"]
+                            "duracion_meses": "number",
+                            "descripcion_completa": "string (descripción detallada de responsabilidades)",
+                            "logros": ["array de strings con logros específicos"],
+                            "tecnologias": ["array de strings con todas las tecnologías mencionadas"],
+                            "herramientas": ["array de strings con herramientas usadas"],
+                            "tamaño_empresa": "string (startup/pequeña/mediana/grande/empresa)",
+                            "industria": "string",
+                            "reportes_a": "string o null",
+                            "equipo_a_cargo": "string o null"
                         }}
-                    ]
+                    ],
+                    "resumen_experiencia": "string (resumen de 3-4 líneas del perfil profesional)",
+                    "especializaciones": ["array de strings con áreas de especialización"],
+                    "logros_destacados": ["array de strings con logros más importantes"]
                 }},
                 "educacion": [
                     {{
@@ -209,43 +229,88 @@ class CVProcessingService:
                         "titulo": "string",
                         "fecha_inicio": "string (YYYY-MM-DD)",
                         "fecha_fin": "string (YYYY-MM-DD)",
-                        "grado": "string"
+                        "grado": "string",
+                        "estado": "string (completado/en_progreso)",
+                        "promedio": "string o null",
+                        "honores": "string o null"
                     }}
                 ],
-                "habilidades": {{
-                    "tecnicas": ["array de strings"],
-                    "blandas": ["array de strings"],
-                    "idiomas": ["array de strings con nivel"]
-                }},
                 "certificaciones": [
                     {{
                         "nombre": "string",
                         "institucion": "string",
                         "fecha_obtencion": "string (YYYY-MM-DD)",
-                        "vigencia": "string o null"
+                        "fecha_expiracion": "string (YYYY-MM-DD o null)",
+                        "vigencia": "string o null",
+                        "numero_certificado": "string o null",
+                        "url": "string o null"
                     }}
                 ],
-                "resumen": "string (resumen profesional en 2-3 líneas)",
+                "cursos_formacion": [
+                    {{
+                        "nombre": "string",
+                        "institucion": "string",
+                        "fecha": "string (YYYY-MM-DD)",
+                        "duracion": "string o null",
+                        "estado": "string (completado/en_progreso)"
+                    }}
+                ],
+                "habilidades": {{
+                    "tecnicas": ["array de strings con habilidades técnicas específicas"],
+                    "blandas": ["array de strings con habilidades blandas"],
+                    "idiomas": [
+                        {{
+                            "idioma": "string",
+                            "nivel_escrito": "string (básico/intermedio/avanzado/nativo)",
+                            "nivel_oral": "string (básico/intermedio/avanzado/nativo)",
+                            "certificacion": "string o null"
+                        }}
+                    ],
+                    "niveles_dominio": {{
+                        "expert": ["array de strings con tecnologías donde es experto"],
+                        "avanzado": ["array de strings con tecnologías avanzadas"],
+                        "intermedio": ["array de strings con tecnologías intermedias"],
+                        "básico": ["array de strings con tecnologías básicas"]
+                    }}
+                }},
+                "proyectos": [
+                    {{
+                        "nombre": "string",
+                        "descripcion": "string",
+                        "tecnologias": ["array de strings"],
+                        "fecha": "string (YYYY-MM-DD o período)",
+                        "url": "string o null",
+                        "rol": "string"
+                    }}
+                ],
+                "resumen": "string (resumen profesional detallado en 4-5 líneas)",
                 "expectativas": {{
                     "salario_minimo": "number o null",
                     "salario_deseado": "number o null",
                     "tipo_trabajo": "string (remoto/presencial/hibrido)",
-                    "disponibilidad": "string"
+                    "disponibilidad": "string",
+                    "ubicacion_preferida": "string o null",
+                    "tipo_empresa": "string o null"
                 }},
                 "metadata": {{
                     "calidad_datos": "string (alta/media/baja)",
                     "completitud": "number (0-100)",
                     "confiabilidad": "string (alta/media/baja)",
-                    "fecha_procesamiento": "{json.dumps(datetime.now().isoformat())}"
+                    "fecha_procesamiento": "{json.dumps(datetime.now().isoformat())}",
+                    "version_cv": "string o null",
+                    "idioma_cv": "string"
                 }}
             }}
             
-            IMPORTANTE:
+            INSTRUCCIONES CRÍTICAS:
+            - Extrae TODA la información disponible, no omitas detalles
+            - Para cada trabajo, incluye TODAS las responsabilidades mencionadas
+            - Lista TODAS las tecnologías, herramientas y frameworks mencionados
+            - Incluye logros específicos con números, fechas y resultados
             - Si no encuentras información específica, usa null
             - Para fechas, usa formato YYYY-MM-DD
             - Para números, usa solo el valor numérico
-            - Asegúrate de que el JSON sea válido
-            - El resumen debe ser conciso y profesional
+            - Asegúrate de que el JSON sea válido y completo
             
             CV a analizar:
             {cv_text}
