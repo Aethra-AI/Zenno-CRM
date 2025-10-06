@@ -302,6 +302,10 @@ class OCIStorageService:
                 'error': f"Error general: {str(e)}"
             }
 
-# Instancia global del servicio
-oci_storage_service = OCIStorageService()
+# Instancia global del servicio (solo si la configuración está disponible)
+try:
+    oci_storage_service = OCIStorageService()
+except Exception as e:
+    logger.error(f"Error inicializando OCI Storage Service: {e}")
+    oci_storage_service = None
 

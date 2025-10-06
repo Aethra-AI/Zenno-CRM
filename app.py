@@ -1,12 +1,48 @@
 # -*- coding: utf-8 -*-
 import os
-import requests
 import json
 import time
-from flask import Flask, jsonify, request, Response, send_file
-from flask_cors import CORS
-import mysql.connector
-from dotenv import load_dotenv
+import logging
+
+# Configurar logger
+logger = logging.getLogger(__name__)
+
+# Imports opcionales
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    requests = None
+    REQUESTS_AVAILABLE = False
+# Imports de Flask (opcionales)
+try:
+    from flask import Flask, jsonify, request, Response, send_file
+    from flask_cors import CORS
+    FLASK_AVAILABLE = True
+except ImportError:
+    Flask = None
+    jsonify = None
+    request = None
+    Response = None
+    send_file = None
+    CORS = None
+    FLASK_AVAILABLE = False
+
+# Imports de base de datos (opcionales)
+try:
+    import mysql.connector
+    MYSQL_AVAILABLE = True
+except ImportError:
+    mysql = None
+    MYSQL_AVAILABLE = False
+
+# Imports de configuración (opcionales)
+try:
+    from dotenv import load_dotenv
+    DOTENV_AVAILABLE = True
+except ImportError:
+    load_dotenv = None
+    DOTENV_AVAILABLE = False
 # ✨ REEMPLAZA la línea 'from datetime import datetime' CON ESTE BLOQUE COMPLETO ✨
 from datetime import datetime, date, timedelta
 from decimal import Decimal
@@ -31,8 +67,8 @@ import bcrypt
 
 # Importaciones para OCI Object Storage (opcionales)
 try:
-from oci_storage_service import oci_storage_service
-from cv_processing_service import cv_processing_service
+    from oci_storage_service import oci_storage_service
+    from cv_processing_service import cv_processing_service
     OCI_SERVICES_AVAILABLE = True
 except ImportError as e:
     logger.warning(f"Servicios OCI no disponibles: {str(e)}")

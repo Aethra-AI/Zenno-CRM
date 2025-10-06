@@ -5,12 +5,19 @@ import os
 import json
 import logging
 from typing import Dict, Any, Optional, List
-import requests
 from io import BytesIO
 from datetime import datetime
 import concurrent.futures
 import time
 from threading import Lock
+
+# Imports opcionales
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    requests = None
+    REQUESTS_AVAILABLE = False
 
 # PDF y DOCX processing
 try:
@@ -31,6 +38,18 @@ class CVProcessingService:
     
     def __init__(self):
         """Inicializar servicio de procesamiento con múltiples APIs"""
+        
+        # Verificar dependencias
+        if not REQUESTS_AVAILABLE:
+            logger.error("Módulo 'requests' no disponible. El servicio no funcionará correctamente.")
+            raise ImportError("Módulo 'requests' requerido para el servicio de procesamiento de CVs")
+        
+        if not PyPDF2:
+            logger.warning("Módulo 'PyPDF2' no disponible. No se podrán procesar archivos PDF.")
+        
+        if not docx:
+            logger.warning("Módulo 'python-docx' no disponible. No se podrán procesar archivos DOCX.")
+        
         # Obtener las 3 APIs de Gemini disponibles
         self.gemini_api_keys = [
             os.getenv('GEMINI_API_KEY_1'),
@@ -435,6 +454,10 @@ class CVProcessingService:
         
         return results
 
-# Instancia global del servicio
-cv_processing_service = CVProcessingService()
+# Instancia global del servicio (solo si las dependencias están disponibles)
+try:
+    cv_processing_service = CVProcessingService()
+except ImportError as e:
+    logger.error(f"No se pudo inicializar el servicio de procesamiento: {e}")
+    cv_processing_service = None
 
