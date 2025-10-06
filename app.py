@@ -3216,7 +3216,7 @@ def handle_candidate_tags(id_afiliado):
                 SELECT T.id_tag, T.nombre_tag 
                 FROM Afiliado_Tags AT 
                 JOIN Tags T ON AT.id_tag = T.id_tag 
-                WHERE AT.id_afiliado = %s AND T.id_cliente = %s
+                WHERE AT.id_afiliado = %s AND T.tenant_id = %s
             """
             cursor.execute(sql, (id_afiliado, tenant_id))
             return jsonify(cursor.fetchall())
@@ -4854,7 +4854,7 @@ def handle_candidate_profile(id_afiliado):
                 SELECT T.id_tag, T.nombre_tag 
                 FROM Afiliado_Tags AT 
                 JOIN Tags T ON AT.id_tag = T.id_tag 
-                WHERE AT.id_afiliado = %s AND T.id_cliente = %s
+                WHERE AT.id_afiliado = %s AND T.tenant_id = %s
             """, (id_afiliado, tenant_id))
             perfil['tags'] = cursor.fetchall()
             return jsonify(perfil)
