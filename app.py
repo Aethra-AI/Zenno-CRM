@@ -8888,107 +8888,94 @@ def upload_cv_to_oci():
                 'error': f"Error creando PAR: {par_result['error']}"
             }), 500
         
-        # Procesar CV con Gemini AI (OBLIGATORIO para crear perfiles)
-        processed_data = None
-        try:
-            # Extraer texto del CV
-            cv_text = cv_processing_service.extract_text_from_file(
-                file_content=file_content,
-                filename=file.filename
-            )
-            
-            # Procesar con Gemini
-            gemini_result = cv_processing_service.process_cv_with_gemini(
-                cv_text=cv_text,
-                tenant_id=tenant_id
-            )
-            
-            if gemini_result['success']:
-                # Validar datos procesados
-                validation_result = cv_processing_service.validate_cv_data(
-                    gemini_result['data']
-                )
-                
-                if validation_result['success']:
-                    processed_data = validation_result['validated_data']
-                else:
-                    app.logger.warning(f"Error validando datos del CV: {validation_result['error']}")
-                    # Si falla la validación, es un error crítico
-                    return jsonify({
-                        'success': False,
-                        'error': f"Error validando datos extraídos: {validation_result['error']}"
-                    }), 500
-            else:
-                app.logger.error(f"Error procesando CV con Gemini: {gemini_result['error']}")
-                # Si falla el procesamiento con IA, es un error crítico
-                return jsonify({
-                    'success': False,
-                    'error': f"Error procesando CV con IA: {gemini_result['error']}"
-                }), 500
-                
-        except Exception as e:
-            app.logger.error(f"Error procesando CV: {str(e)}")
-            return jsonify({
-                'success': False,
-                'error': f"Error procesando CV: {str(e)}"
-            }), 500
-        
-        # Preparar respuesta
+        # Responder inmediatamente al frontend con éxito
         response_data = {
             'success': True,
+            'message': 'CV subido exitosamente. Procesando con IA...',
             'cv_identifier': cv_identifier,
             'file_info': {
-                'original_name': file.filename,
+                'filename': file.filename,
                 'size': upload_result['size'],
-                'mime_type': upload_result['mime_type'],
-                'object_key': upload_result['object_key']
+                'mime_type': upload_result['mime_type']
             },
             'access_info': {
-                'file_url': par_result['access_uri'],
-                'expiration_date': par_result['expiration_date'],
-                'par_id': par_result['par_id']
-            }
+                'download_url': par_result['access_uri'],
+                'par_id': par_result['par_id'],
+                'expires_at': par_result['expires_at']
+            },
+            'processing_status': 'processing'
         }
         
-        # Agregar datos procesados si están disponibles
-        if processed_data:
-            response_data['processed_data'] = processed_data
-            
-            # Crear candidato en base de datos si no existe candidate_id
-            if not candidate_id:
-                try:
-                    candidate_id = create_candidate_from_cv_data(
-                        cv_data=processed_data,
-                        tenant_id=tenant_id,
-                        user_id=user_id
-                    )
-                    response_data['candidate_id'] = candidate_id
-                    app.logger.info(f"Candidato creado: ID {candidate_id}")
-                except Exception as e:
-                    app.logger.error(f"Error creando candidato: {str(e)}")
-                    # No fallar el proceso, solo loggear el error
-            
-            # Guardar CV en base de datos
+        # Procesar CV con Gemini AI en segundo plano (sin bloquear respuesta)
+        def process_cv_background():
             try:
-                save_cv_to_database(
-                    tenant_id=tenant_id,
-                    candidate_id=int(candidate_id) if candidate_id else None,
-                    cv_identifier=cv_identifier,
-                    original_filename=file.filename,
-                    object_key=upload_result['object_key'],
-                    file_url=par_result['access_uri'],
-                    par_id=par_result['par_id'],
-                    mime_type=upload_result['mime_type'],
-                    file_size=upload_result['size'],
-                    processed_data=processed_data
+                # Extraer texto del CV
+                cv_text = cv_processing_service.extract_text_from_file(
+                    file_content=file_content,
+                    filename=file.filename
                 )
-                app.logger.info(f"CV guardado en base de datos: {cv_identifier}")
+                
+                # Procesar con Gemini
+                gemini_result = cv_processing_service.process_cv_with_gemini(
+                    cv_text=cv_text,
+                    tenant_id=tenant_id
+                )
+                
+                if gemini_result['success']:
+                    # Validar datos procesados
+                    validation_result = cv_processing_service.validate_cv_data(
+                        gemini_result['data']
+                    )
+                    
+                    if validation_result['success']:
+                        processed_data = validation_result['validated_data']
+                        
+                        # Crear candidato si no existe
+                        candidate_id = None
+                        if not candidate_id:
+                            try:
+                                candidate_id = create_candidate_from_cv_data(
+                                    processed_data, tenant_id, user_id
+                                )
+                                app.logger.info(f"Candidato creado: ID {candidate_id} para tenant {tenant_id}")
+                            except Exception as e:
+                                app.logger.error(f"Error creando candidato: {str(e)}")
+                                # No fallar el proceso, solo loggear el error
+                        
+                        # Guardar CV en base de datos
+                        try:
+                            save_cv_to_database(
+                                tenant_id=tenant_id,
+                                candidate_id=int(candidate_id) if candidate_id else None,
+                                cv_identifier=cv_identifier,
+                                original_filename=file.filename,
+                                object_key=upload_result['object_key'],
+                                file_url=par_result['access_uri'],
+                                par_id=par_result['par_id'],
+                                mime_type=upload_result['mime_type'],
+                                file_size=upload_result['size'],
+                                processed_data=processed_data
+                            )
+                            app.logger.info(f"CV guardado en Afiliados: {cv_identifier} para candidato {candidate_id}")
+                        except Exception as e:
+                            app.logger.error(f"Error guardando CV en BD: {str(e)}")
+                            
+                    else:
+                        app.logger.warning(f"Error validando datos del CV: {validation_result['error']}")
+                else:
+                    app.logger.error(f"Error procesando CV con Gemini: {gemini_result['error']}")
+                    
             except Exception as e:
-                app.logger.error(f"Error guardando CV en BD: {str(e)}")
-                # No fallar el proceso, solo loggear el error
+                app.logger.error(f"Error procesando CV en segundo plano: {str(e)}")
         
+        # Ejecutar procesamiento en segundo plano
+        import threading
+        background_thread = threading.Thread(target=process_cv_background)
+        background_thread.daemon = True
+        background_thread.start()
+        
+        # Responder inmediatamente al frontend
         app.logger.info(f"CV subido exitosamente: {cv_identifier}")
-        
         return jsonify(response_data)
         
     except Exception as e:
