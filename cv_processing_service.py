@@ -8,6 +8,9 @@ from typing import Dict, Any, Optional, List
 import requests
 from io import BytesIO
 from datetime import datetime
+import concurrent.futures
+import time
+from threading import Lock
 
 # PDF y DOCX processing
 try:
@@ -378,9 +381,11 @@ class CVProcessingService:
         Returns:
             Lista de resultados procesados
         """
-        import concurrent.futures
-        import time
-        from threading import Lock
+        
+        # Validar que hay APIs disponibles
+        if not self.gemini_api_keys:
+            logger.error("No hay APIs de Gemini configuradas para procesamiento en lote")
+            return [{'success': False, 'error': 'No hay APIs de Gemini configuradas'} for _ in cv_texts]
         
         results = [None] * len(cv_texts)  # Mantener orden original
         api_counters = {i: 0 for i in range(len(self.gemini_api_keys))}  # Contador por API

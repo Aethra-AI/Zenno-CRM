@@ -9235,7 +9235,11 @@ def bulk_upload_cvs_to_oci():
                 gemini_results = cv_processing_service.process_cv_batch(cv_texts, tenant_id)
                 
                 # PASO 3: Crear candidatos y guardar en BD
-                for task, gemini_result in zip(upload_tasks, gemini_results):
+                # Asegurar que ambas listas tengan la misma longitud
+                min_length = min(len(upload_tasks), len(gemini_results))
+                for i in range(min_length):
+                    task = upload_tasks[i]
+                    gemini_result = gemini_results[i]
                     if gemini_result and gemini_result.get('success'):
                         try:
                             validation_result = cv_processing_service.validate_cv_data(
