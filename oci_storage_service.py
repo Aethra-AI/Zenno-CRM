@@ -196,7 +196,8 @@ class OCIStorageService:
             )
             
             # Construir URL completa de acceso
-            access_uri = f"https://objectstorage.{self.region}.oraclecloud.com{create_par_response.data.full_path}"
+            # full_path ya incluye el dominio completo, no necesitamos agregarlo
+            access_uri = create_par_response.data.full_path
             
             logger.info(f"PAR creada exitosamente: {access_uri}")
             
