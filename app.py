@@ -8940,7 +8940,7 @@ def process_existing_cv(cv_identifier):
         cursor = conn.cursor(dictionary=True)
         
         cursor.execute("""
-            SELECT * FROM Candidatos_CVs 
+            SELECT * FROM CV_Processing_Logs 
             WHERE tenant_id = %s AND cv_identifier = %s
         """, (tenant_id, cv_identifier))
         
@@ -8981,10 +8981,10 @@ def process_existing_cv(cv_identifier):
                 if validation_result['success']:
                     # Actualizar registro en base de datos con datos procesados
                     cursor.execute("""
-                        UPDATE Candidatos_CVs 
+                        UPDATE CV_Processing_Logs 
                         SET processed_data = %s, 
                             processing_status = 'completed',
-                            last_processed = NOW()
+                            created_at = NOW()
                         WHERE tenant_id = %s AND cv_identifier = %s
                     """, (json.dumps(validation_result['validated_data']), tenant_id, cv_identifier))
                     
@@ -9033,7 +9033,7 @@ def download_cv(cv_identifier):
         
         cursor.execute("""
             SELECT file_url, original_filename, mime_type 
-            FROM Candidatos_CVs 
+            FROM CV_Processing_Logs 
             WHERE tenant_id = %s AND cv_identifier = %s
         """, (tenant_id, cv_identifier))
         
@@ -9310,17 +9310,17 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
         habilidades_tecnicas = habilidades.get('tecnicas', [])
         habilidades_texto = ", ".join(habilidades_tecnicas[:10])  # Máximo 10 habilidades
         
-        # Insertar candidato
+        # Insertar candidato en tabla Afiliados
         cursor.execute("""
             INSERT INTO Afiliados (
-                tenant_id, nombre_completo, email, telefono, ciudad, pais,
-                experiencia, habilidades, fecha_registro, estado, usuario_registro
+                tenant_id, nombre_completo, email, telefono, ciudad,
+                experiencia, habilidades, estado, fecha_registro
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 'activo', %s
+                %s, %s, %s, %s, %s, %s, %s, 'Activo', NOW()
             )
         """, (
-            tenant_id, nombre_completo, email, telefono, ciudad, pais,
-            experiencia_texto, habilidades_texto, user_id
+            tenant_id, nombre_completo, email, telefono, ciudad,
+            experiencia_texto, habilidades_texto
         ))
         
         candidate_id = cursor.lastrowid
@@ -9338,14 +9338,23 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
 def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filename, 
                        object_key, file_url, par_id, mime_type, file_size, processed_data):
     """
-    Guardar información del CV en base de datos
+    Actualizar información del CV en tabla Afiliados
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
+        # Actualizar el registro del candidato con la información del CV
         cursor.execute("""
-            INSERT INTO Candidatos_CVs (
+            UPDATE Afiliados 
+            SET cv_url = %s, 
+                ultima_actualizacion = NOW()
+            WHERE id_afiliado = %s AND tenant_id = %s
+        """, (file_url, candidate_id, tenant_id))
+        
+        # Registrar en log de procesamiento
+        cursor.execute("""
+            INSERT INTO CV_Processing_Logs (
                 tenant_id, candidate_id, cv_identifier, original_filename,
                 object_key, file_url, par_id, mime_type, file_size,
                 processing_status, processed_data, created_at
@@ -9362,10 +9371,10 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
         cursor.close()
         conn.close()
         
-        app.logger.info(f"CV guardado en BD: {cv_identifier}")
+        app.logger.info(f"CV guardado en Afiliados: {cv_identifier} para candidato {candidate_id}")
         
     except Exception as e:
-        app.logger.error(f"Error guardando CV en BD: {str(e)}")
+        app.logger.error(f"Error guardando CV en Afiliados: {str(e)}")
         raise
 
 @app.route('/api/cv/delete/<cv_identifier>', methods=['DELETE'])
@@ -9384,7 +9393,7 @@ def delete_cv_from_oci(cv_identifier):
         
         cursor.execute("""
             SELECT object_key, file_url 
-            FROM Candidatos_CVs 
+            FROM CV_Processing_Logs 
             WHERE tenant_id = %s AND cv_identifier = %s
         """, (tenant_id, cv_identifier))
         
@@ -9399,9 +9408,15 @@ def delete_cv_from_oci(cv_identifier):
         if not delete_result['success']:
             app.logger.warning(f"Error eliminando archivo de OCI: {delete_result['error']}")
         
-        # Eliminar registro de base de datos
+        # Eliminar registro de logs y limpiar cv_url en Afiliados
         cursor.execute("""
-            DELETE FROM Candidatos_CVs 
+            UPDATE Afiliados 
+            SET cv_url = NULL, ultima_actualizacion = NOW()
+            WHERE tenant_id = %s AND cv_url = %s
+        """, (tenant_id, cv_record['file_url']))
+        
+        cursor.execute("""
+            DELETE FROM CV_Processing_Logs 
             WHERE tenant_id = %s AND cv_identifier = %s
         """, (tenant_id, cv_identifier))
         
