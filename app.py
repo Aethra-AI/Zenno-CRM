@@ -4873,6 +4873,9 @@ def handle_candidate_profile(id_afiliado):
             
         elif request.method == 'PUT':
             data = request.get_json()
+            app.logger.info(f"DEBUG: Actualizando perfil candidato {id_afiliado}, tenant_id: {tenant_id}")
+            app.logger.info(f"DEBUG: Datos recibidos: {data}")
+            
             update_fields = []
             params = []
             allowed_fields = ['nombre_completo', 'telefono', 'email', 'experiencia', 'ciudad', 'grado_academico', 'observaciones', 'disponibilidad_rotativos', 'transporte_propio', 'estado', 'linkedin', 'portfolio', 'skills', 'cargo_solicitado', 'fuente_reclutamiento', 'fecha_nacimiento']
@@ -4882,12 +4885,17 @@ def handle_candidate_profile(id_afiliado):
                     params.append(data[field])
 
             if not update_fields:
+                app.logger.error("DEBUG: No se proporcionaron campos para actualizar")
                 return jsonify({"error": "No se proporcionaron campos para actualizar."}), 400
 
             params.extend([id_afiliado, tenant_id])
             sql = f"UPDATE Afiliados SET {', '.join(update_fields)} WHERE id_afiliado = %s AND tenant_id = %s"
+            app.logger.info(f"DEBUG: SQL: {sql}")
+            app.logger.info(f"DEBUG: Params: {params}")
+            
             cursor.execute(sql, tuple(params))
             conn.commit()
+            app.logger.info("DEBUG: Perfil actualizado exitosamente")
             return jsonify({"success": True, "message": "Perfil actualizado."})
 
     except Exception as e: return jsonify({"error": str(e)}), 500
