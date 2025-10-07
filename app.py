@@ -4884,8 +4884,8 @@ def handle_candidate_profile(id_afiliado):
             if not update_fields:
                 return jsonify({"error": "No se proporcionaron campos para actualizar."}), 400
 
-            params.append(id_afiliado)
-            sql = f"UPDATE Afiliados SET {', '.join(update_fields)} WHERE id_afiliado = %s"
+            params.extend([id_afiliado, tenant_id])
+            sql = f"UPDATE Afiliados SET {', '.join(update_fields)} WHERE id_afiliado = %s AND tenant_id = %s"
             cursor.execute(sql, tuple(params))
             conn.commit()
             return jsonify({"success": True, "message": "Perfil actualizado."})
