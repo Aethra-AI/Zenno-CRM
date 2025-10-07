@@ -4893,10 +4893,16 @@ def handle_candidate_profile(id_afiliado):
             app.logger.info(f"DEBUG: SQL: {sql}")
             app.logger.info(f"DEBUG: Params: {params}")
             
-            cursor.execute(sql, tuple(params))
-            conn.commit()
-            app.logger.info("DEBUG: Perfil actualizado exitosamente")
-            return jsonify({"success": True, "message": "Perfil actualizado."})
+            try:
+                cursor.execute(sql, tuple(params))
+                conn.commit()
+                app.logger.info("DEBUG: Perfil actualizado exitosamente")
+                return jsonify({"success": True, "message": "Perfil actualizado."})
+            except Exception as sql_error:
+                app.logger.error(f"DEBUG: Error en consulta SQL: {str(sql_error)}")
+                app.logger.error(f"DEBUG: SQL que falló: {sql}")
+                app.logger.error(f"DEBUG: Parámetros que fallaron: {params}")
+                raise sql_error
 
     except Exception as e: return jsonify({"error": str(e)}), 500
     finally: cursor.close(); conn.close()
