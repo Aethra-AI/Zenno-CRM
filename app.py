@@ -3994,6 +3994,20 @@ def get_dashboard_data():
     except Exception as e: return jsonify({"success": False, "error": str(e)}), 500
     finally: cursor.close(); conn.close()
 
+@app.route('/api/test-tenant', methods=['GET'])
+@token_required
+def test_tenant():
+    """Endpoint de prueba para verificar tenant_id"""
+    try:
+        tenant_id = get_current_tenant_id()
+        return jsonify({
+            "success": True,
+            "tenant_id": tenant_id,
+            "message": "Tenant ID obtenido correctamente"
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/api/dashboard/metrics', methods=['GET'])
 @token_required
 def get_dashboard_metrics():
@@ -4004,20 +4018,26 @@ def get_dashboard_metrics():
     if not conn: return jsonify({"error": "Error de conexión"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
+        # Obtener tenant_id del usuario autenticado
+        tenant_id = get_current_tenant_id()
+        if not tenant_id:
+            return jsonify({"error": "No se pudo obtener tenant_id del usuario autenticado"}), 401
+        
         # 1. Candidatos activos totales
-        cursor.execute("SELECT COUNT(*) as total FROM Afiliados")
+        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE tenant_id = %s", (tenant_id,))
         total_candidatos = cursor.fetchone()['total']
         
         # 2. Candidatos activos hoy
-        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE DATE(fecha_registro) = CURDATE()")
+        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE DATE(fecha_registro) = CURDATE() AND tenant_id = %s", (tenant_id,))
         candidatos_hoy = cursor.fetchone()['total']
         
         # 3. Vacantes por estado
         cursor.execute("""
             SELECT estado, COUNT(*) as total 
             FROM Vacantes 
+            WHERE tenant_id = %s
             GROUP BY estado
-        """)
+        """, (tenant_id,))
         vacantes_por_estado = cursor.fetchall()
         
         # 4. Tasa de conversión (postulaciones → contrataciones)
@@ -4027,7 +4047,8 @@ def get_dashboard_metrics():
                 COUNT(DISTINCT c.id_contratado) as total_contrataciones
             FROM Postulaciones p
             LEFT JOIN Contratados c ON p.id_afiliado = c.id_afiliado AND p.id_vacante = c.id_vacante
-        """)
+            WHERE p.tenant_id = %s AND (c.tenant_id = %s OR c.tenant_id IS NULL)
+        """, (tenant_id, tenant_id))
         conversion_data = cursor.fetchone()
         tasa_conversion = (conversion_data['total_contrataciones'] / conversion_data['total_postulaciones'] * 100) if conversion_data['total_postulaciones'] > 0 else 0
         
@@ -4037,7 +4058,8 @@ def get_dashboard_metrics():
             FROM Contratados c
             JOIN Postulaciones p ON c.id_afiliado = p.id_afiliado AND c.id_vacante = p.id_vacante
             WHERE c.fecha_contratacion IS NOT NULL AND p.fecha_aplicacion IS NOT NULL
-        """)
+            AND c.tenant_id = %s AND p.tenant_id = %s
+        """, (tenant_id, tenant_id))
         tiempo_promedio = cursor.fetchone()['tiempo_promedio'] or 0
         
         # 6. Candidatos por mes (últimos 6 meses)
@@ -4047,9 +4069,10 @@ def get_dashboard_metrics():
                 COUNT(*) as total
             FROM Afiliados 
             WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+            AND tenant_id = %s
             GROUP BY DATE_FORMAT(fecha_registro, '%Y-%m')
             ORDER BY mes
-        """)
+        """, (tenant_id,))
         candidatos_por_mes = cursor.fetchall()
         
         # 7. Ingresos generados (si aplica)
@@ -4057,7 +4080,8 @@ def get_dashboard_metrics():
             SELECT SUM(COALESCE(tarifa_servicio, 0)) as ingresos_totales
             FROM Contratados
             WHERE fecha_contratacion >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
-        """)
+            AND tenant_id = %s
+        """, (tenant_id,))
         ingresos_totales = cursor.fetchone()['ingresos_totales'] or 0
         
         # 8. Top 5 clientes por actividad
@@ -4086,7 +4110,8 @@ def get_dashboard_metrics():
                 COUNT(DISTINCT co.id_contratado) as total_contrataciones
             FROM Postulaciones p
             LEFT JOIN Contratados co ON p.id_afiliado = co.id_afiliado AND p.id_vacante = co.id_vacante
-        """)
+            WHERE p.tenant_id = %s AND (co.tenant_id = %s OR co.tenant_id IS NULL)
+        """, (tenant_id, tenant_id))
         efectividad_usuario = cursor.fetchone()
         
         # 10. Tasa de éxito por tipo de vacante
@@ -4103,12 +4128,84 @@ def get_dashboard_metrics():
             FROM Vacantes v
             LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante
             LEFT JOIN Contratados co ON v.id_vacante = co.id_vacante
+            WHERE v.tenant_id = %s AND (p.tenant_id = %s OR p.tenant_id IS NULL) AND (co.tenant_id = %s OR co.tenant_id IS NULL)
             GROUP BY v.id_vacante, v.cargo_solicitado
             HAVING total_postulaciones > 0
             ORDER BY tasa_exito DESC
             LIMIT 5
-        """)
+        """, (tenant_id, tenant_id, tenant_id))
         tasa_exito_vacantes = cursor.fetchall()
+        
+        # 11. Candidatos más activos
+        cursor.execute("""
+            SELECT 
+                a.nombre_completo as nombre,
+                a.email,
+                a.ciudad,
+                COUNT(DISTINCT p.id_postulacion) as postulaciones,
+                COUNT(DISTINCT e.id_entrevista) as entrevistas,
+                COUNT(DISTINCT c.id_contratado) as contrataciones,
+                AVG(DATEDIFF(COALESCE(c.fecha_contratacion, NOW()), p.fecha_aplicacion)) as tiempoColocacion,
+                a.skills,
+                a.ultimo_contacto as ultimaActividad,
+                a.puntuacion as rating
+            FROM Afiliados a
+            LEFT JOIN Postulaciones p ON a.id_afiliado = p.id_afiliado AND p.tenant_id = %s
+            LEFT JOIN Entrevistas e ON p.id_postulacion = e.id_postulacion
+            LEFT JOIN Contratados c ON p.id_afiliado = c.id_afiliado AND p.id_vacante = c.id_vacante AND c.tenant_id = %s
+            WHERE a.tenant_id = %s
+            GROUP BY a.id_afiliado, a.nombre_completo, a.email, a.ciudad, a.skills, a.ultimo_contacto, a.puntuacion
+            HAVING postulaciones > 0
+            ORDER BY postulaciones DESC, rating DESC
+            LIMIT 5
+        """, (tenant_id, tenant_id, tenant_id))
+        candidatos_mas_activos = cursor.fetchall()
+        
+        # 12. Skills más demandados
+        cursor.execute("""
+            SELECT 
+                TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(a.skills, ',', numbers.n), ',', -1)) as skill,
+                COUNT(*) as demanda,
+                COUNT(*) as crecimiento
+            FROM Afiliados a
+            CROSS JOIN (
+                SELECT 1 n UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION
+                SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9 UNION SELECT 10
+            ) numbers
+            WHERE a.tenant_id = %s 
+            AND a.skills IS NOT NULL 
+            AND a.skills != ''
+            AND CHAR_LENGTH(a.skills) - CHAR_LENGTH(REPLACE(a.skills, ',', '')) >= numbers.n - 1
+            GROUP BY skill
+            HAVING skill != '' AND LENGTH(skill) > 2
+            ORDER BY demanda DESC
+            LIMIT 8
+        """, (tenant_id,))
+        skills_demandados = cursor.fetchall()
+        
+        # 13. Distribución por ciudades
+        cursor.execute("""
+            SELECT 
+                ciudad,
+                COUNT(*) as candidatos,
+                ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM Afiliados WHERE tenant_id = %s), 1) as porcentaje
+            FROM Afiliados 
+            WHERE tenant_id = %s AND ciudad IS NOT NULL AND ciudad != ''
+            GROUP BY ciudad
+            ORDER BY candidatos DESC
+            LIMIT 10
+        """, (tenant_id, tenant_id))
+        distribucion_ciudades = cursor.fetchall()
+        
+        # 14. Usuarios efectividad (para UserReports)
+        usuarios_efectividad = [{
+            'nombre': 'Usuario Demo',
+            'postulaciones': efectividad_usuario['total_postulaciones'],
+            'contrataciones': efectividad_usuario['total_contrataciones'],
+            'tasa_exito': round((efectividad_usuario['total_contrataciones'] / efectividad_usuario['total_postulaciones'] * 100) if efectividad_usuario['total_postulaciones'] > 0 else 0, 1),
+            'actividad_semanal': 15,
+            'ranking': 1
+        }]
         
         return jsonify({
             "success": True,
@@ -4122,12 +4219,18 @@ def get_dashboard_metrics():
                 "ingresos_totales": float(ingresos_totales),
                 "top_clientes": top_clientes,
                 "efectividad_usuario": efectividad_usuario,
-                "tasa_exito_vacantes": tasa_exito_vacantes
+                "tasa_exito_vacantes": tasa_exito_vacantes,
+                "candidatos_mas_activos": candidatos_mas_activos,
+                "skills_demandados": skills_demandados,
+                "distribucion_ciudades": distribucion_ciudades,
+                "usuarios_efectividad": usuarios_efectividad
             }
         })
         
     except Exception as e: 
+        import traceback
         app.logger.error(f"Error en dashboard metrics: {str(e)}")
+        app.logger.error(f"Traceback completo: {traceback.format_exc()}")
         return jsonify({"success": False, "error": str(e)}), 500
     finally: 
         cursor.close(); conn.close()
