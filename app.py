@@ -488,6 +488,120 @@ def add_tenant_filter(base_query, table_alias='', tenant_column='tenant_id'):
     
     return filtered_query, tenant_id
 
+def log_activity(activity_type, description, user_id=None, tenant_id=None, ip_address=None, user_agent=None):
+    """
+    Registra una actividad en UserActivityLog
+    
+    Args:
+        activity_type (str): Tipo de actividad (ej: 'postulacion_creada', 'candidato_creado', etc.)
+        description (str or dict): Descripción de la actividad (puede ser string o dict que se convertirá a JSON)
+        user_id (int): ID del usuario que realizó la acción (opcional, se obtiene del contexto)
+        tenant_id (int): ID del tenant (opcional, se obtiene del contexto)
+        ip_address (str): IP del usuario (opcional, se obtiene del request)
+        user_agent (str): User agent del navegador (opcional, se obtiene del request)
+    
+    Returns:
+        bool: True si se registró correctamente, False en caso contrario
+    """
+    conn = None
+    try:
+        # Obtener valores del contexto si no se proporcionaron
+        if user_id is None:
+            user_data = getattr(g, 'current_user', None)
+            user_id = user_data.get('user_id') if user_data else None
+        
+        if tenant_id is None:
+            tenant_id = get_current_tenant_id()
+        
+        if ip_address is None:
+            ip_address = request.remote_addr if request else None
+        
+        if user_agent is None:
+            user_agent = request.headers.get('User-Agent', 'Unknown') if request else 'Unknown'
+        
+        # Convertir description a JSON si es un diccionario
+        if isinstance(description, dict):
+            description = json.dumps(description, ensure_ascii=False)
+        
+        # Validar que tenemos los datos mínimos necesarios
+        if not user_id or not tenant_id:
+            app.logger.warning(f"No se pudo registrar actividad: user_id={user_id}, tenant_id={tenant_id}")
+            return False
+        
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO UserActivityLog 
+            (user_id, tenant_id, activity_type, description, ip_address, user_agent)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (user_id, tenant_id, activity_type, description, ip_address, user_agent))
+        
+        conn.commit()
+        app.logger.info(f"Actividad registrada: {activity_type} - Usuario: {user_id} - Tenant: {tenant_id}")
+        return True
+        
+    except Exception as e:
+        app.logger.error(f"Error al registrar actividad: {str(e)}")
+        if conn:
+            conn.rollback()
+        return False
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+
+def create_notification(user_id, tenant_id, tipo, titulo, mensaje, prioridad='media', metadata=None):
+    """
+    Crea una notificación para un usuario
+    
+    Args:
+        user_id (int): ID del usuario destinatario
+        tenant_id (int): ID del tenant
+        tipo (str): Tipo de notificación
+        titulo (str): Título de la notificación
+        mensaje (str): Mensaje de la notificación
+        prioridad (str): Prioridad (alta/media/baja)
+        metadata (dict): Datos adicionales en formato dict
+    
+    Returns:
+        int: ID de la notificación creada o None si hubo error
+    """
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        
+        cursor = conn.cursor()
+        
+        # Convertir metadata a JSON si se proporciona
+        metadata_json = json.dumps(metadata, ensure_ascii=False) if metadata else None
+        
+        cursor.execute("""
+            INSERT INTO notifications 
+            (user_id, tenant_id, tipo, titulo, mensaje, prioridad, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (user_id, tenant_id, tipo, titulo, mensaje, prioridad, metadata_json))
+        
+        conn.commit()
+        notification_id = cursor.lastrowid
+        
+        app.logger.info(f"Notificación creada: {notification_id} - Usuario: {user_id} - Tipo: {tipo}")
+        return notification_id
+        
+    except Exception as e:
+        app.logger.error(f"Error al crear notificación: {str(e)}")
+        if conn:
+            conn.rollback()
+        return None
+    finally:
+        if conn:
+            cursor.close()
+            conn.close()
+
 
 # --- ENDPOINTS DE AUTENTICACIÓN ADICIONALES ---
 
@@ -3459,8 +3573,32 @@ def update_application_status(id_postulacion):
         if not postulacion_data:
             return jsonify({"error": "Postulación no encontrada"}), 404
         
+        # Obtener información del candidato y vacante antes de actualizar
+        cursor.execute("""
+            SELECT a.nombre_completo, v.cargo_solicitado, p.estado as estado_anterior
+            FROM Postulaciones p
+            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE p.id_postulacion = %s
+        """, (id_postulacion,))
+        info_postulacion = cursor.fetchone()
+        
         # Actualizar el estado de la postulación
         cursor.execute("UPDATE Postulaciones SET estado = %s WHERE id_postulacion = %s", (nuevo_estado, id_postulacion))
+        
+        # Registrar actividad de cambio de estado
+        if info_postulacion:
+            log_activity(
+                activity_type='estado_postulacion_cambio',
+                description={
+                    'id_postulacion': id_postulacion,
+                    'candidato': info_postulacion[0],
+                    'cargo': info_postulacion[1],
+                    'estado_anterior': info_postulacion[2],
+                    'estado_nuevo': nuevo_estado
+                },
+                tenant_id=tenant_id
+            )
         
         # Si el nuevo estado es "Contratado", registrar en la tabla Contratados
         if nuevo_estado.lower() in ['contratado', 'hired', 'aceptado']:
@@ -3479,6 +3617,33 @@ def update_application_status(id_postulacion):
                     VALUES (%s, %s, NOW(), %s)
                 """, (id_afiliado, id_vacante, tenant_id))
                 app.logger.info(f"Candidato {id_afiliado} contratado para vacante {id_vacante}")
+                
+                # Registrar actividad de contratación
+                log_activity(
+                    activity_type='contratacion',
+                    description={
+                        'id_afiliado': id_afiliado,
+                        'id_vacante': id_vacante,
+                        'candidato': info_postulacion[0] if info_postulacion else 'Desconocido',
+                        'cargo': info_postulacion[1] if info_postulacion else 'Desconocido'
+                    },
+                    tenant_id=tenant_id
+                )
+                
+                # Crear notificación para el usuario
+                user_data = getattr(g, 'current_user', {})
+                create_notification(
+                    user_id=user_data.get('user_id'),
+                    tenant_id=tenant_id,
+                    tipo='contratacion',
+                    titulo='Nueva contratación registrada',
+                    mensaje=f"{info_postulacion[0] if info_postulacion else 'Candidato'} ha sido contratado/a",
+                    prioridad='alta',
+                    metadata={
+                        'id_afiliado': id_afiliado,
+                        'id_vacante': id_vacante
+                    }
+                )
         
         conn.commit()
         return jsonify({"success": True, "message": f"Postulación actualizada a {nuevo_estado}."})
@@ -4393,6 +4558,34 @@ def create_candidate():
         conn.commit()
         candidate_id = cursor.lastrowid
         
+        # Registrar actividad
+        log_activity(
+            activity_type='candidato_creado',
+            description={
+                'id_afiliado': candidate_id,
+                'nombre': data['nombre_completo'],
+                'email': data['email'],
+                'cargo_solicitado': data.get('cargo_solicitado', ''),
+                'ciudad': data.get('ciudad', '')
+            },
+            tenant_id=tenant_id
+        )
+        
+        # Crear notificación
+        user_data = getattr(g, 'current_user', {})
+        create_notification(
+            user_id=user_data.get('user_id'),
+            tenant_id=tenant_id,
+            tipo='candidato',
+            titulo='Nuevo candidato registrado',
+            mensaje=f"Se ha registrado al candidato {data['nombre_completo']}",
+            prioridad='baja',
+            metadata={
+                'id_afiliado': candidate_id,
+                'nombre': data['nombre_completo']
+            }
+        )
+        
         return jsonify({
             'success': True,
             'message': 'Candidato creado exitosamente',
@@ -4928,7 +5121,107 @@ def get_notifications():
         conn.close()
 
 
-
+@app.route('/api/activities', methods=['GET'])
+@token_required
+def get_activities():
+    """
+    Obtiene el registro de actividades del sistema
+    Soporta filtros por tipo, usuario y paginación
+    """
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Error de conexión"}), 500
+    
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = getattr(g, 'current_user', {})
+        user_id = user_data.get('user_id')
+        user_role = user_data.get('rol', '')
+        
+        # Parámetros de consulta
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 20)), 100)
+        activity_type = request.args.get('type', '')
+        user_filter = request.args.get('user_id', '')
+        
+        # Construir consulta base
+        base_query = """
+            SELECT 
+                ual.id,
+                ual.user_id,
+                ual.tenant_id,
+                ual.activity_type,
+                ual.description,
+                ual.ip_address,
+                ual.created_at,
+                u.nombre as user_name,
+                u.email as user_email
+            FROM UserActivityLog ual
+            LEFT JOIN Users u ON ual.user_id = u.id
+            WHERE ual.tenant_id = %s
+        """
+        params = [tenant_id]
+        
+        # Si el usuario no es admin, solo mostrar sus propias actividades
+        if user_role != 'Administrador':
+            base_query += " AND ual.user_id = %s"
+            params.append(user_id)
+        
+        # Filtro por tipo de actividad
+        if activity_type:
+            base_query += " AND ual.activity_type = %s"
+            params.append(activity_type)
+        
+        # Filtro por usuario específico (solo para admins)
+        if user_filter and user_role == 'Administrador':
+            base_query += " AND ual.user_id = %s"
+            params.append(user_filter)
+        
+        # Contar total de registros
+        count_query = f"SELECT COUNT(*) as total FROM ({base_query}) as count_table"
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()['total']
+        
+        # Agregar ordenamiento y paginación
+        offset = (page - 1) * limit
+        base_query += " ORDER BY ual.created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        
+        # Ejecutar consulta
+        cursor.execute(base_query, params)
+        activities = cursor.fetchall()
+        
+        # Procesar actividades para el frontend
+        for activity in activities:
+            # Parsear description si es JSON
+            if activity['description']:
+                try:
+                    activity['description'] = json.loads(activity['description'])
+                except:
+                    pass
+            
+            # Formatear timestamp
+            if activity['created_at']:
+                activity['created_at'] = activity['created_at'].isoformat()
+        
+        return jsonify({
+            'success': True,
+            'data': activities,
+            'pagination': {
+                'total': total,
+                'page': page,
+                'limit': limit,
+                'pages': (total + limit - 1) // limit
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en get_activities: {str(e)}")
+        return jsonify({"error": "Error al obtener actividades"}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @app.route('/api/candidate/profile/<int:id_afiliado>', methods=['GET', 'PUT'])
@@ -5100,15 +5393,62 @@ def handle_vacancies():
             
             # Crear la vacante con el cliente seleccionado y el tenant actual
             sql = """
-                INSERT INTO Vacantes (id_cliente, cargo_solicitado, ciudad, requisitos, salario, fecha_apertura, estado, tenant_id) 
-                VALUES (%s, %s, %s, %s, %s, CURDATE(), 'Abierta', %s)
+                INSERT INTO Vacantes (
+                    id_cliente, cargo_solicitado, descripcion, ciudad, requisitos, 
+                    salario_min, salario_max, salario, fecha_apertura, estado, tenant_id
+                ) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURDATE(), 'Abierta', %s)
             """
-            cursor.execute(sql, (id_cliente, data['cargo_solicitado'], data['ciudad'], data['requisitos'], data.get('salario'), tenant_id))
+            cursor.execute(sql, (
+                id_cliente, 
+                data['cargo_solicitado'], 
+                data.get('descripcion', ''),
+                data['ciudad'], 
+                data['requisitos'], 
+                data.get('salario_min'),
+                data.get('salario_max'),
+                data.get('salario'), 
+                tenant_id
+            ))
             conn.commit()
             
             # Obtener el ID de la vacante creada
             cursor.execute("SELECT LAST_INSERT_ID() as id_vacante")
             vacante_id = cursor.fetchone()['id_vacante']
+            
+            # Obtener información del cliente
+            cursor.execute("SELECT empresa FROM Clientes WHERE id_cliente = %s", (id_cliente,))
+            cliente_info = cursor.fetchone()
+            empresa = cliente_info['empresa'] if cliente_info else 'Desconocido'
+            
+            # Registrar actividad
+            log_activity(
+                activity_type='vacante_creada',
+                description={
+                    'id_vacante': vacante_id,
+                    'cargo': data['cargo_solicitado'],
+                    'ciudad': data['ciudad'],
+                    'empresa': empresa,
+                    'salario': float(data.get('salario', 0)) if data.get('salario') else None
+                },
+                tenant_id=tenant_id
+            )
+            
+            # Crear notificación
+            user_data = getattr(g, 'current_user', {})
+            create_notification(
+                user_id=user_data.get('user_id'),
+                tenant_id=tenant_id,
+                tipo='vacante',
+                titulo='Nueva vacante creada',
+                mensaje=f"Se ha creado la vacante: {data['cargo_solicitado']} en {data['ciudad']}",
+                prioridad='media',
+                metadata={
+                    'id_vacante': vacante_id,
+                    'cargo': data['cargo_solicitado'],
+                    'empresa': empresa
+                }
+            )
             
             return jsonify({
                 "success": True, 
@@ -5230,10 +5570,41 @@ def handle_applications():
             conn.commit()
 
             cursor.execute("""
-                SELECT a.telefono, a.nombre_completo, v.cargo_solicitado, v.ciudad, v.salario, v.requisitos
+                SELECT a.telefono, a.nombre_completo, v.cargo_solicitado, v.ciudad, v.salario, v.requisitos, v.tenant_id
                 FROM Afiliados a, Vacantes v WHERE a.id_afiliado = %s AND v.id_vacante = %s
             """, (data['id_afiliado'], data['id_vacante']))
             info = cursor.fetchone()
+            
+            # Registrar actividad
+            if info:
+                log_activity(
+                    activity_type='postulacion_creada',
+                    description={
+                        'id_postulacion': new_postulation_id,
+                        'id_afiliado': data['id_afiliado'],
+                        'id_vacante': data['id_vacante'],
+                        'candidato': info['nombre_completo'],
+                        'cargo': info['cargo_solicitado'],
+                        'ciudad': info['ciudad']
+                    },
+                    tenant_id=info.get('tenant_id')
+                )
+                
+                # Crear notificación para el usuario
+                user_data = getattr(g, 'current_user', {})
+                create_notification(
+                    user_id=user_data.get('user_id'),
+                    tenant_id=info.get('tenant_id'),
+                    tipo='postulacion',
+                    titulo='Nueva postulación creada',
+                    mensaje=f"{info['nombre_completo']} fue postulado/a a {info['cargo_solicitado']}",
+                    prioridad='media',
+                    metadata={
+                        'id_postulacion': new_postulation_id,
+                        'id_afiliado': data['id_afiliado'],
+                        'id_vacante': data['id_vacante']
+                    }
+                )
 
             if info and info.get('telefono'):
                 # Convertir Decimal a float si existe
@@ -5395,6 +5766,38 @@ def handle_interviews():
                     WHERE p.id_postulacion = %s
                 """, (id_postulacion,))
                 info = cursor.fetchone()
+                
+                # Registrar actividad
+                if info:
+                    log_activity(
+                        activity_type='entrevista_agendada',
+                        description={
+                            'id_entrevista': new_interview_id,
+                            'id_postulacion': id_postulacion,
+                            'candidato': info['nombre_completo'],
+                            'cargo': info['cargo_solicitado'],
+                            'empresa': info['empresa'],
+                            'fecha_hora': fecha_hora_str,
+                            'entrevistador': entrevistador
+                        },
+                        tenant_id=tenant_id
+                    )
+                    
+                    # Crear notificación
+                    user_data = getattr(g, 'current_user', {})
+                    create_notification(
+                        user_id=user_data.get('user_id'),
+                        tenant_id=tenant_id,
+                        tipo='entrevista',
+                        titulo='Entrevista agendada',
+                        mensaje=f"Entrevista agendada para {info['nombre_completo']} - {info['cargo_solicitado']}",
+                        prioridad='alta',
+                        metadata={
+                            'id_entrevista': new_interview_id,
+                            'candidato': info['nombre_completo'],
+                            'fecha_hora': fecha_hora_str
+                        }
+                    )
 
                 if info and info.get('telefono'):
                     fecha_obj = datetime.fromisoformat(fecha_hora_str)
@@ -5655,13 +6058,51 @@ def register_payment(id_contratado):
     try:
         tenant_id = get_current_tenant_id()
         
+        # Obtener información del contratado antes de actualizar
+        cursor.execute("""
+            SELECT c.id_afiliado, c.id_vacante, a.nombre_completo, v.cargo_solicitado, c.monto_pagado
+            FROM Contratados c
+            JOIN Afiliados a ON c.id_afiliado = a.id_afiliado
+            JOIN Vacantes v ON c.id_vacante = v.id_vacante
+            WHERE c.id_contratado = %s AND c.tenant_id = %s
+        """, (id_contratado, tenant_id))
+        contratado_info = cursor.fetchone()
+        
+        if not contratado_info:
+            return jsonify({"success": False, "error": "No se encontró el registro de contratación."}), 404
+        
         # Usamos una actualización atómica para evitar problemas de concurrencia
         sql = "UPDATE Contratados SET monto_pagado = monto_pagado + %s WHERE id_contratado = %s AND tenant_id = %s"
         cursor.execute(sql, (monto_float, id_contratado, tenant_id))
         conn.commit()
-
-        if cursor.rowcount == 0:
-            return jsonify({"success": False, "error": "No se encontró el registro de contratación."}), 404
+        
+        # Registrar actividad
+        log_activity(
+            activity_type='pago_registrado',
+            description={
+                'id_contratado': id_contratado,
+                'candidato': contratado_info[2],
+                'cargo': contratado_info[3],
+                'monto': monto_float,
+                'monto_total': float(contratado_info[4]) + monto_float if contratado_info[4] else monto_float
+            },
+            tenant_id=tenant_id
+        )
+        
+        # Crear notificación
+        user_data = getattr(g, 'current_user', {})
+        create_notification(
+            user_id=user_data.get('user_id'),
+            tenant_id=tenant_id,
+            tipo='pago',
+            titulo='Pago registrado',
+            mensaje=f"Se registró un pago de L. {monto_float:,.2f} para {contratado_info[2]}",
+            prioridad='media',
+            metadata={
+                'id_contratado': id_contratado,
+                'monto': monto_float
+            }
+        )
 
         return jsonify({"success": True, "message": "Pago registrado correctamente."})
     except Exception as e:
@@ -5731,6 +6172,38 @@ def handle_clients():
             sql = "INSERT INTO Clientes (empresa, contacto_nombre, telefono, email, sector, observaciones, tenant_id) VALUES (%s, %s, %s, %s, %s, %s, %s)"
             cursor.execute(sql, (data['empresa'], data['contacto_nombre'], data['telefono'], data['email'], data['sector'], data['observaciones'], tenant_id))
             conn.commit()
+            
+            # Obtener el ID del cliente creado
+            client_id = cursor.lastrowid
+            
+            # Registrar actividad
+            log_activity(
+                activity_type='cliente_agregado',
+                description={
+                    'id_cliente': client_id,
+                    'empresa': data['empresa'],
+                    'contacto': data['contacto_nombre'],
+                    'email': data['email'],
+                    'sector': data.get('sector', '')
+                },
+                tenant_id=tenant_id
+            )
+            
+            # Crear notificación
+            user_data = getattr(g, 'current_user', {})
+            create_notification(
+                user_id=user_data.get('user_id'),
+                tenant_id=tenant_id,
+                tipo='cliente',
+                titulo='Nuevo cliente agregado',
+                mensaje=f"Se ha agregado el cliente: {data['empresa']}",
+                prioridad='baja',
+                metadata={
+                    'id_cliente': client_id,
+                    'empresa': data['empresa']
+                }
+            )
+            
             return jsonify({"success": True, "message": "Cliente agregado."}), 201
             
     except Exception as e:
