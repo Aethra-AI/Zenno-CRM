@@ -1432,15 +1432,15 @@ def update_application_status_multi_tenant(tenant_id: int, postulation_id: int, 
             # Verificar si ya existe en Contratados
             cursor.execute("""
                 SELECT id_contratado FROM Contratados 
-                WHERE id_afiliado = %s AND id_vacante = %s
-            """, (id_afiliado, id_vacante))
+                WHERE id_afiliado = %s AND id_vacante = %s AND tenant_id = %s
+            """, (id_afiliado, id_vacante, tenant_id))
             
             if not cursor.fetchone():
-                # Insertar en Contratados
+                # Insertar en Contratados (sin id_cliente ya que no existe en la tabla)
                 cursor.execute("""
-                    INSERT INTO Contratados (id_afiliado, id_vacante, id_cliente, fecha_contratacion, estado, tenant_id)
-                    VALUES (%s, %s, %s, NOW(), 'Activo', %s)
-                """, (id_afiliado, id_vacante, id_cliente, tenant_id))
+                    INSERT INTO Contratados (id_afiliado, id_vacante, fecha_contratacion, tenant_id)
+                    VALUES (%s, %s, NOW(), %s)
+                """, (id_afiliado, id_vacante, tenant_id))
         
         conn.commit()
         
@@ -3469,15 +3469,15 @@ def update_application_status(id_postulacion):
             # Verificar si ya existe en Contratados
             cursor.execute("""
                 SELECT id_contratado FROM Contratados 
-                WHERE id_afiliado = %s AND id_vacante = %s
-            """, (id_afiliado, id_vacante))
+                WHERE id_afiliado = %s AND id_vacante = %s AND tenant_id = %s
+            """, (id_afiliado, id_vacante, tenant_id))
             
             if not cursor.fetchone():
-                # Insertar en tabla Contratados
+                # Insertar en tabla Contratados (sin id_cliente ya que no existe en la tabla)
                 cursor.execute("""
-                    INSERT INTO Contratados (id_afiliado, id_vacante, id_cliente, fecha_contratacion, estado, tenant_id)
-                    VALUES (%s, %s, %s, NOW(), 'Activo', %s)
-                """, (id_afiliado, id_vacante, id_cliente, tenant_id))
+                    INSERT INTO Contratados (id_afiliado, id_vacante, fecha_contratacion, tenant_id)
+                    VALUES (%s, %s, NOW(), %s)
+                """, (id_afiliado, id_vacante, tenant_id))
                 app.logger.info(f"Candidato {id_afiliado} contratado para vacante {id_vacante}")
         
         conn.commit()
@@ -5656,7 +5656,7 @@ def register_payment(id_contratado):
         tenant_id = get_current_tenant_id()
         
         # Usamos una actualización atómica para evitar problemas de concurrencia
-        sql = "UPDATE Contratados SET monto_pagado = monto_pagado + %s WHERE id_contratado = %s AND id_cliente = %s"
+        sql = "UPDATE Contratados SET monto_pagado = monto_pagado + %s WHERE id_contratado = %s AND tenant_id = %s"
         cursor.execute(sql, (monto_float, id_contratado, tenant_id))
         conn.commit()
 
