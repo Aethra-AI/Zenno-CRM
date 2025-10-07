@@ -3954,18 +3954,70 @@ def get_reports():
 # ===============================================================
 # SECCIÓN 6: ENDPOINTS PRINCIPALES (CRUDs Y BÚSQUEDAS)
 # ===============================================================
-# Endpoint legacy eliminado - usar /api/dashboard/activity en su lugar
+@app.route('/api/dashboard', methods=['GET'])
+@token_required
+def get_dashboard_data():
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Error de conexión"}), 500
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # Métricas básicas
+        cursor.execute("SELECT COUNT(*) as total FROM Entrevistas WHERE fecha_hora >= CURDATE()")
+        entrevistas_pendientes = cursor.fetchone()['total']
+        cursor.execute("SELECT COUNT(*) as total FROM Entrevistas WHERE fecha_hora < CURDATE() AND resultado = 'Programada'")
+        entrevistas_sin_resultado = cursor.fetchone()['total']
+        
+        # Estadísticas de vacantes
+        cursor.execute("SELECT V.cargo_solicitado, C.empresa, COUNT(P.id_postulacion) as postulantes FROM Postulaciones P JOIN Vacantes V ON P.id_vacante = V.id_vacante JOIN Clientes C ON V.id_cliente = C.id_cliente GROUP BY V.id_vacante, V.cargo_solicitado, C.empresa ORDER BY postulantes DESC")
+        estadisticas_vacantes = cursor.fetchall()
+        
+        # Candidatos
+        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE DATE(fecha_registro) = CURDATE()")
+        afiliados_hoy = cursor.fetchone()['total']
+        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE MONTH(fecha_registro) = MONTH(CURDATE()) AND YEAR(fecha_registro) = YEAR(CURDATE())")
+        afiliados_mes = cursor.fetchone()['total']
+        
+        # Top ciudades
+        cursor.execute("SELECT ciudad, COUNT(*) as total FROM Afiliados WHERE ciudad IS NOT NULL AND ciudad != '' GROUP BY ciudad ORDER BY total DESC LIMIT 5")
+        top_ciudades = cursor.fetchall()
+        
+        return jsonify({
+            "success": True, 
+            "entrevistasPendientes": entrevistas_pendientes,
+            "entrevistasSinResultado": entrevistas_sin_resultado,
+            "vacantesMasPostuladas": estadisticas_vacantes[:5],
+            "vacantesMenosPostuladas": sorted(estadisticas_vacantes, key=lambda x: x['postulantes'])[:5],
+            "afiliadosHoy": afiliados_hoy, 
+            "afiliadosEsteMes": afiliados_mes,
+            "topCiudades": top_ciudades
+        })
+    except Exception as e: return jsonify({"success": False, "error": str(e)}), 500
+    finally: cursor.close(); conn.close()
 
-# ===============================================================
-# ENDPOINTS LEGACY DEL DASHBOARD - ELIMINADOS
-# Usar los nuevos endpoints específicos:
-# - /api/dashboard/activity
-# - /api/dashboard/candidates  
-# - /api/dashboard/clients
-# - /api/dashboard/reports/activity
-# - /api/dashboard/reports/candidates
-# - /api/dashboard/reports/clients
-# ===============================================================
+@app.route('/api/dashboard/metrics', methods=['GET'])
+@token_required
+def get_dashboard_metrics():
+    """
+    Endpoint mejorado para métricas del dashboard con datos más completos
+    """
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Error de conexión"}), 500
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # 1. Candidatos activos totales
+        cursor.execute("SELECT COUNT(*) as total FROM Afiliados")
+        total_candidatos = cursor.fetchone()['total']
+        
+        # 2. Candidatos activos hoy
+        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE DATE(fecha_registro) = CURDATE()")
+        candidatos_hoy = cursor.fetchone()['total']
+        
+        # 3. Vacantes por estado
+        cursor.execute("""
+            SELECT estado, COUNT(*) as total 
+            FROM Vacantes 
+            GROUP BY estado
+        """)
         vacantes_por_estado = cursor.fetchall()
         
         # 4. Tasa de conversión (postulaciones → contrataciones)
@@ -7156,510 +7208,10 @@ def create_initial_user():
         cursor.close()
         conn.close()
 
-# ===============================================================
-# NUEVOS ENDPOINTS DEL DASHBOARD REORGANIZADO
-# ===============================================================
-
-@app.route('/api/dashboard/activity', methods=['GET'])
-@token_required
-def get_dashboard_activity():
-    """Obtiene actividades recientes del CRM filtradas por tenant y usuario."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        
-        # Obtener información del usuario actual
-        user_info = get_current_user()
-        user_id = user_info.get('id_usuario') if user_info else None
-        is_admin = user_info.get('rol') == 'admin' if user_info else False
-        
-        activities = []
-        
-        # 1. Nuevas postulaciones (últimas 24 horas)
-        cursor.execute("""
-            SELECT 
-                'postulacion' as tipo,
-                CONCAT(a.nombre_completo, ' se postuló a ', v.cargo_solicitado, ' en ', c.empresa) as descripcion,
-                p.fecha_aplicacion as fecha,
-                a.nombre_completo as usuario_nombre,
-                a.email as usuario_email,
-                'postulacion' as categoria
-            FROM Postulaciones p
-            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
-            JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE a.tenant_id = %s 
-            AND p.fecha_aplicacion >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-            ORDER BY p.fecha_aplicacion DESC
-            LIMIT 10
-        """, (tenant_id,))
-        
-        activities.extend(cursor.fetchall())
-        
-        # 2. Nuevos candidatos registrados (últimas 24 horas)
-        cursor.execute("""
-            SELECT 
-                'candidato' as tipo,
-                CONCAT('Nuevo candidato: ', nombre_completo) as descripcion,
-                fecha_registro as fecha,
-                nombre_completo as usuario_nombre,
-                email as usuario_email,
-                'candidato' as categoria
-            FROM Afiliados
-            WHERE tenant_id = %s 
-            AND fecha_registro >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-            ORDER BY fecha_registro DESC
-            LIMIT 10
-        """, (tenant_id,))
-        
-        activities.extend(cursor.fetchall())
-        
-        # 3. Ediciones de información de candidatos (últimas 24 horas)
-        cursor.execute("""
-            SELECT 
-                'edicion' as tipo,
-                CONCAT('Perfil actualizado: ', a.nombre_completo) as descripcion,
-                a.ultima_actualizacion as fecha,
-                a.nombre_completo as usuario_nombre,
-                a.email as usuario_email,
-                'edicion' as categoria
-            FROM Afiliados a
-            WHERE a.tenant_id = %s 
-            AND a.ultima_actualizacion >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-            AND a.ultima_actualizacion != a.fecha_registro
-            ORDER BY a.ultima_actualizacion DESC
-            LIMIT 10
-        """, (tenant_id,))
-        
-        activities.extend(cursor.fetchall())
-        
-        # 4. Contrataciones (últimas 24 horas)
-        cursor.execute("""
-            SELECT 
-                'contratacion' as tipo,
-                CONCAT(a.nombre_completo, ' fue contratado para ', v.cargo_solicitado, ' en ', c.empresa) as descripcion,
-                cont.fecha_contratacion as fecha,
-                a.nombre_completo as usuario_nombre,
-                a.email as usuario_email,
-                'contratacion' as categoria
-            FROM Contratados cont
-            JOIN Afiliados a ON cont.id_afiliado = a.id_afiliado
-            JOIN Vacantes v ON cont.id_vacante = v.id_vacante
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE a.tenant_id = %s 
-            AND cont.fecha_contratacion >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-            ORDER BY cont.fecha_contratacion DESC
-            LIMIT 10
-        """, (tenant_id,))
-        
-        activities.extend(cursor.fetchall())
-        
-        # Ordenar todas las actividades por fecha
-        activities.sort(key=lambda x: x['fecha'], reverse=True)
-        
-        return jsonify({
-            "success": True,
-            "activities": activities[:20],  # Limitar a 20 actividades más recientes
-            "filters": {
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "is_admin": is_admin
-            }
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en get_dashboard_activity: {str(e)}")
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/dashboard/candidates', methods=['GET'])
-@token_required
-def get_dashboard_candidates():
-    """Obtiene métricas y estadísticas de candidatos."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        
-        # 1. Métricas principales de candidatos
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_candidatos,
-                COUNT(CASE WHEN estado = 'active' THEN 1 END) as candidatos_activos,
-                COUNT(CASE WHEN DATE(fecha_registro) = CURDATE() THEN 1 END) as nuevos_hoy,
-                COUNT(CASE WHEN DATE(fecha_registro) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as nuevos_semana,
-                COUNT(CASE WHEN DATE(fecha_registro) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY) THEN 1 END) as nuevos_mes
-            FROM Afiliados
-            WHERE tenant_id = %s
-        """, (tenant_id,))
-        
-        metrics = cursor.fetchone()
-        
-        # 2. Nuevas postulaciones de candidatos
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_postulaciones,
-                COUNT(CASE WHEN DATE(p.fecha_aplicacion) = CURDATE() THEN 1 END) as postulaciones_hoy,
-                COUNT(CASE WHEN DATE(p.fecha_aplicacion) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as postulaciones_semana
-            FROM Postulaciones p
-            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
-            WHERE a.tenant_id = %s
-        """, (tenant_id,))
-        
-        postulaciones = cursor.fetchone()
-        
-        # 3. Ediciones de información recientes
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_ediciones,
-                COUNT(CASE WHEN DATE(ultima_actualizacion) = CURDATE() THEN 1 END) as ediciones_hoy,
-                COUNT(CASE WHEN DATE(ultima_actualizacion) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as ediciones_semana
-            FROM Afiliados
-            WHERE tenant_id = %s 
-            AND ultima_actualizacion != fecha_registro
-        """, (tenant_id,))
-        
-        ediciones = cursor.fetchone()
-        
-        # 4. Contrataciones de candidatos
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_contrataciones,
-                COUNT(CASE WHEN DATE(cont.fecha_contratacion) = CURDATE() THEN 1 END) as contrataciones_hoy,
-                COUNT(CASE WHEN DATE(cont.fecha_contratacion) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as contrataciones_semana
-            FROM Contratados cont
-            JOIN Afiliados a ON cont.id_afiliado = a.id_afiliado
-            WHERE a.tenant_id = %s
-        """, (tenant_id,))
-        
-        contrataciones = cursor.fetchone()
-        
-        # 5. Top candidatos por postulaciones
-        cursor.execute("""
-            SELECT 
-                a.nombre_completo,
-                a.email,
-                COUNT(p.id_postulacion) as total_postulaciones,
-                GROUP_CONCAT(DISTINCT c.empresa SEPARATOR ', ') as empresas
-            FROM Afiliados a
-            JOIN Postulaciones p ON a.id_afiliado = p.id_afiliado
-            JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE a.tenant_id = %s
-            GROUP BY a.id_afiliado
-            ORDER BY total_postulaciones DESC
-            LIMIT 5
-        """, (tenant_id,))
-        
-        top_candidatos = cursor.fetchall()
-        
-        return jsonify({
-            "success": True,
-            "metrics": metrics,
-            "postulaciones": postulaciones,
-            "ediciones": ediciones,
-            "contrataciones": contrataciones,
-            "top_candidatos": top_candidatos
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en get_dashboard_candidates: {str(e)}")
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/dashboard/clients', methods=['GET'])
-@token_required
-def get_dashboard_clients():
-    """Obtiene métricas y estadísticas de clientes."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        
-        # 1. Métricas principales de clientes
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_clientes,
-                COUNT(CASE WHEN estado = 'Activo' THEN 1 END) as clientes_activos,
-                COUNT(CASE WHEN DATE(fecha_registro) = CURDATE() THEN 1 END) as nuevos_hoy
-            FROM Clientes
-            WHERE tenant_id = %s
-        """, (tenant_id,))
-        
-        metrics = cursor.fetchone()
-        
-        # 2. Nuevas vacantes por cliente
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_vacantes,
-                COUNT(CASE WHEN DATE(v.fecha_apertura) = CURDATE() THEN 1 END) as vacantes_hoy,
-                COUNT(CASE WHEN DATE(v.fecha_apertura) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as vacantes_semana,
-                COUNT(CASE WHEN v.estado = 'Abierta' THEN 1 END) as vacantes_abiertas
-            FROM Vacantes v
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE c.tenant_id = %s
-        """, (tenant_id,))
-        
-        vacantes = cursor.fetchone()
-        
-        # 3. Nuevas postulaciones por cliente
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_postulaciones,
-                COUNT(CASE WHEN DATE(p.fecha_aplicacion) = CURDATE() THEN 1 END) as postulaciones_hoy,
-                COUNT(CASE WHEN DATE(p.fecha_aplicacion) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as postulaciones_semana
-            FROM Postulaciones p
-            JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE c.tenant_id = %s
-        """, (tenant_id,))
-        
-        postulaciones = cursor.fetchone()
-        
-        # 4. Contrataciones por cliente
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as total_contrataciones,
-                COUNT(CASE WHEN DATE(cont.fecha_contratacion) = CURDATE() THEN 1 END) as contrataciones_hoy,
-                COUNT(CASE WHEN DATE(cont.fecha_contratacion) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as contrataciones_semana
-            FROM Contratados cont
-            JOIN Vacantes v ON cont.id_vacante = v.id_vacante
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE c.tenant_id = %s
-        """, (tenant_id,))
-        
-        contrataciones = cursor.fetchone()
-        
-        # 5. Top clientes por actividad
-        cursor.execute("""
-            SELECT 
-                c.empresa,
-                c.contacto_principal,
-                COUNT(DISTINCT v.id_vacante) as total_vacantes,
-                COUNT(p.id_postulacion) as total_postulaciones,
-                COUNT(cont.id_contratado) as total_contrataciones,
-                ROUND(COUNT(cont.id_contratado) / COUNT(p.id_postulacion) * 100, 2) as tasa_conversion
-            FROM Clientes c
-            LEFT JOIN Vacantes v ON c.id_cliente = v.id_cliente
-            LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante
-            LEFT JOIN Contratados cont ON p.id_afiliado = cont.id_afiliado AND p.id_vacante = cont.id_vacante
-            WHERE c.tenant_id = %s
-            GROUP BY c.id_cliente
-            ORDER BY total_postulaciones DESC
-            LIMIT 10
-        """, (tenant_id,))
-        
-        top_clientes = cursor.fetchall()
-        
-        return jsonify({
-            "success": True,
-            "metrics": metrics,
-            "vacantes": vacantes,
-            "postulaciones": postulaciones,
-            "contrataciones": contrataciones,
-            "top_clientes": top_clientes
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en get_dashboard_clients: {str(e)}")
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/dashboard/reports/activity', methods=['GET'])
-@token_required
-def get_activity_reports():
-    """Obtiene reportes de actividad comparativos."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        
-        # 1. Actividad por mes (últimos 6 meses)
-        cursor.execute("""
-            SELECT 
-                DATE_FORMAT(fecha_registro, '%Y-%m') as mes,
-                COUNT(*) as candidatos_nuevos
-            FROM Afiliados
-            WHERE tenant_id = %s 
-            AND fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-            GROUP BY DATE_FORMAT(fecha_registro, '%Y-%m')
-            ORDER BY mes
-        """, (tenant_id,))
-        
-        candidatos_por_mes = cursor.fetchall()
-        
-        cursor.execute("""
-            SELECT 
-                DATE_FORMAT(p.fecha_aplicacion, '%Y-%m') as mes,
-                COUNT(*) as postulaciones
-            FROM Postulaciones p
-            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
-            WHERE a.tenant_id = %s 
-            AND p.fecha_aplicacion >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-            GROUP BY DATE_FORMAT(p.fecha_aplicacion, '%Y-%m')
-            ORDER BY mes
-        """, (tenant_id,))
-        
-        postulaciones_por_mes = cursor.fetchall()
-        
-        # 2. Comparación con mes anterior
-        cursor.execute("""
-            SELECT 
-                (SELECT COUNT(*) FROM Afiliados 
-                 WHERE tenant_id = %s AND DATE(fecha_registro) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')) as mes_actual,
-                (SELECT COUNT(*) FROM Afiliados 
-                 WHERE tenant_id = %s AND fecha_registro >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
-                 AND fecha_registro < DATE_FORMAT(CURDATE(), '%Y-%m-01')) as mes_anterior
-        """, (tenant_id, tenant_id))
-        
-        comparacion_candidatos = cursor.fetchone()
-        
-        return jsonify({
-            "success": True,
-            "candidatos_por_mes": candidatos_por_mes,
-            "postulaciones_por_mes": postulaciones_por_mes,
-            "comparacion_candidatos": comparacion_candidatos
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en get_activity_reports: {str(e)}")
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/dashboard/reports/candidates', methods=['GET'])
-@token_required
-def get_candidates_reports():
-    """Obtiene reportes de candidatos comparativos."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        
-        # 1. Postulaciones por vacante (top 10)
-        cursor.execute("""
-            SELECT 
-                v.cargo_solicitado,
-                c.empresa,
-                COUNT(p.id_postulacion) as total_postulaciones,
-                COUNT(cont.id_contratado) as contrataciones,
-                ROUND(COUNT(cont.id_contratado) / COUNT(p.id_postulacion) * 100, 2) as tasa_conversion
-            FROM Vacantes v
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante
-            LEFT JOIN Contratados cont ON p.id_afiliado = cont.id_afiliado AND p.id_vacante = cont.id_vacante
-            WHERE c.tenant_id = %s
-            GROUP BY v.id_vacante
-            ORDER BY total_postulaciones DESC
-            LIMIT 10
-        """, (tenant_id,))
-        
-        postulaciones_por_vacante = cursor.fetchall()
-        
-        # 2. Rendimiento por mes (últimos 6 meses)
-        cursor.execute("""
-            SELECT 
-                DATE_FORMAT(p.fecha_aplicacion, '%Y-%m') as mes,
-                COUNT(p.id_postulacion) as postulaciones,
-                COUNT(cont.id_contratado) as contrataciones,
-                ROUND(COUNT(cont.id_contratado) / COUNT(p.id_postulacion) * 100, 2) as tasa_conversion
-            FROM Postulaciones p
-            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
-            LEFT JOIN Contratados cont ON p.id_afiliado = cont.id_afiliado AND p.id_vacante = cont.id_vacante
-            WHERE a.tenant_id = %s 
-            AND p.fecha_aplicacion >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-            GROUP BY DATE_FORMAT(p.fecha_aplicacion, '%Y-%m')
-            ORDER BY mes
-        """, (tenant_id,))
-        
-        rendimiento_por_mes = cursor.fetchall()
-        
-        return jsonify({
-            "success": True,
-            "postulaciones_por_vacante": postulaciones_por_vacante,
-            "rendimiento_por_mes": rendimiento_por_mes
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en get_candidates_reports: {str(e)}")
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
-@app.route('/api/dashboard/reports/clients', methods=['GET'])
-@token_required
-def get_clients_reports():
-    """Obtiene reportes de clientes comparativos."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        
-        # 1. Comparativa por clientes (top 10)
-        cursor.execute("""
-            SELECT 
-                c.empresa,
-                COUNT(DISTINCT v.id_vacante) as total_vacantes,
-                COUNT(p.id_postulacion) as total_postulaciones,
-                COUNT(cont.id_contratado) as total_contrataciones,
-                ROUND(COUNT(cont.id_contratado) / COUNT(p.id_postulacion) * 100, 2) as tasa_conversion,
-                ROUND(SUM(cont.salario_final), 2) as volumen_negocios
-            FROM Clientes c
-            LEFT JOIN Vacantes v ON c.id_cliente = v.id_cliente
-            LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante
-            LEFT JOIN Contratados cont ON p.id_afiliado = cont.id_afiliado AND p.id_vacante = cont.id_vacante
-            WHERE c.tenant_id = %s
-            GROUP BY c.id_cliente
-            ORDER BY total_contrataciones DESC
-            LIMIT 10
-        """, (tenant_id,))
-        
-        comparativa_clientes = cursor.fetchall()
-        
-        # 2. Rendimiento en comparación a meses anteriores
-        cursor.execute("""
-            SELECT 
-                DATE_FORMAT(cont.fecha_contratacion, '%Y-%m') as mes,
-                COUNT(cont.id_contratado) as contrataciones,
-                ROUND(AVG(cont.salario_final), 2) as salario_promedio,
-                COUNT(DISTINCT c.id_cliente) as clientes_activos
-            FROM Contratados cont
-            JOIN Vacantes v ON cont.id_vacante = v.id_vacante
-            JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE c.tenant_id = %s 
-            AND cont.fecha_contratacion >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-            GROUP BY DATE_FORMAT(cont.fecha_contratacion, '%Y-%m')
-            ORDER BY mes
-        """, (tenant_id,))
-        
-        rendimiento_historico = cursor.fetchall()
-        
-        return jsonify({
-            "success": True,
-            "comparativa_clientes": comparativa_clientes,
-            "rendimiento_historico": rendimiento_historico
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en get_clients_reports: {str(e)}")
-        return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        cursor.close()
-        conn.close()
-
 @app.route('/api/dashboard/stats', methods=['GET'])
 @token_required
 def get_dashboard_stats():
-    """Obtiene estadísticas generales del dashboard (endpoint legacy - mantener por compatibilidad)."""
+    """Obtiene estadísticas generales del dashboard."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
