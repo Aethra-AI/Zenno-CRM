@@ -6163,7 +6163,17 @@ def handle_clients():
         
         if request.method == 'GET':
             app.logger.info("Obteniendo lista de clientes")
-            cursor.execute("SELECT * FROM Clientes WHERE tenant_id = %s ORDER BY empresa", (tenant_id,))
+            cursor.execute("""
+                SELECT 
+                    c.*,
+                    c.contacto_nombre as contacto,
+                    COUNT(DISTINCT v.id_vacante) as vacantes_count
+                FROM Clientes c
+                LEFT JOIN Vacantes v ON c.id_cliente = v.id_cliente AND v.tenant_id = %s
+                WHERE c.tenant_id = %s
+                GROUP BY c.id_cliente
+                ORDER BY c.empresa
+            """, (tenant_id, tenant_id))
             results = cursor.fetchall()
             app.logger.info(f"Retornando {len(results)} clientes")
             return jsonify(results)
