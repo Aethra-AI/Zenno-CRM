@@ -5966,17 +5966,9 @@ def handle_hired():
             
             app.logger.info(f"Retornando {len(results)} contratados")
             return jsonify(results)
-            
-    except Exception as e:
-        app.logger.error(f"Error en /api/hired: {str(e)}")
-        return jsonify({"error": f"Error interno: {str(e)}"}), 500
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals():
-            conn.close()
-
+        
         elif request.method == 'POST':
+            tenant_id = get_current_tenant_id()
             data = request.get_json()
             id_afiliado = data.get('id_afiliado')
             id_vacante = data.get('id_vacante')
@@ -5984,57 +5976,59 @@ def handle_hired():
             if not all([id_afiliado, id_vacante]):
                  return jsonify({"success": False, "error": "Faltan id_afiliado o id_vacante."}), 400
             
-            try:
-                # Verificar que el afiliado y vacante pertenecen al tenant
-                cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s", (id_afiliado,))
-                if not cursor.fetchone():
-                    return jsonify({"success": False, "error": "Afiliado no encontrado."}), 404
+            # Verificar que el afiliado y vacante pertenecen al tenant
+            cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s", (id_afiliado,))
+            if not cursor.fetchone():
+                return jsonify({"success": False, "error": "Afiliado no encontrado."}), 404
+            
+            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (id_vacante, tenant_id))
+            if not cursor.fetchone():
+                return jsonify({"success": False, "error": "Vacante no encontrada."}), 404
+            
+            sql_insert = "INSERT INTO Contratados (id_afiliado, id_vacante, fecha_contratacion, salario_final, tarifa_servicio, tenant_id) VALUES (%s, %s, CURDATE(), %s, %s, %s)"
+            cursor.execute(sql_insert, (id_afiliado, id_vacante, data.get('salario_final'), data.get('tarifa_servicio'), tenant_id))
+            new_hired_id = cursor.lastrowid
+            
+            cursor.execute("UPDATE Postulaciones SET estado = 'Contratado' WHERE id_afiliado = %s AND id_vacante = %s AND tenant_id = %s", (id_afiliado, id_vacante, tenant_id))
+            conn.commit()
+
+            cursor.execute("""
+                SELECT a.telefono, a.nombre_completo, v.cargo_solicitado, c.empresa
+                FROM Afiliados a, Vacantes v, Clientes c
+                WHERE a.id_afiliado = %s AND v.id_vacante = %s AND v.id_cliente = c.id_cliente
+            """, (id_afiliado, id_vacante))
+            info = cursor.fetchone()
+
+            if info and info.get('telefono'):
+                message_body = (
+                    f"¡FELICIDADES, {info['nombre_completo'].split(' ')[0]}! 🥳\n\n"
+                    f"Nos complace enormemente informarte que has sido **CONTRATADO/A** para el puesto de *{info['cargo_solicitado']}* en la empresa *{info['empresa']}*.\n\n"
+                    "Este es un gran logro y el resultado de tu excelente desempeño en el proceso de selección. En breve, el equipo de recursos humanos de la empresa se pondrá en contacto contigo para coordinar los siguientes pasos.\n\n"
+                    "De parte de todo el equipo de Henmir, ¡te deseamos el mayor de los éxitos en tu nuevo rol!"
+                )
                 
-                cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (id_vacante, tenant_id))
-                if not cursor.fetchone():
-                    return jsonify({"success": False, "error": "Vacante no encontrada."}), 404
+                # Notificaciones WhatsApp temporalmente deshabilitadas
+                app.logger.info(f"Notificación WhatsApp deshabilitada para contratación - Candidato: {info['nombre_completo']}")
                 
-                sql_insert = "INSERT INTO Contratados (id_afiliado, id_vacante, fecha_contratacion, salario_final, tarifa_servicio, tenant_id) VALUES (%s, %s, CURDATE(), %s, %s, %s)"
-                cursor.execute(sql_insert, (id_afiliado, id_vacante, data.get('salario_final'), data.get('tarifa_servicio'), tenant_id))
-                new_hired_id = cursor.lastrowid
-                
-                cursor.execute("UPDATE Postulaciones SET estado = 'Contratado' WHERE id_afiliado = %s AND id_vacante = %s AND tenant_id = %s", (id_afiliado, id_vacante, tenant_id))
-                conn.commit()
+                return jsonify({
+                    "success": True, 
+                    "message": "Candidato contratado exitosamente. (Notificaciones WhatsApp temporalmente deshabilitadas)", 
+                    "id_contratado": new_hired_id,
+                    "notification_status": "disabled"
+                }), 201
 
-                cursor.execute("""
-                    SELECT a.telefono, a.nombre_completo, v.cargo_solicitado, c.empresa
-                    FROM Afiliados a, Vacantes v, Clientes c
-                    WHERE a.id_afiliado = %s AND v.id_vacante = %s AND v.id_cliente = c.id_cliente
-                """, (id_afiliado, id_vacante))
-                info = cursor.fetchone()
-
-                if info and info.get('telefono'):
-                    message_body = (
-                        f"¡FELICIDADES, {info['nombre_completo'].split(' ')[0]}! 🥳\n\n"
-                        f"Nos complace enormemente informarte que has sido **CONTRATADO/A** para el puesto de *{info['cargo_solicitado']}* en la empresa *{info['empresa']}*.\n\n"
-                        "Este es un gran logro y el resultado de tu excelente desempeño en el proceso de selección. En breve, el equipo de recursos humanos de la empresa se pondrá en contacto contigo para coordinar los siguientes pasos.\n\n"
-                        "De parte de todo el equipo de Henmir, ¡te deseamos el mayor de los éxitos en tu nuevo rol!"
-                    )
-                    
-                    # Notificaciones WhatsApp temporalmente deshabilitadas
-                    app.logger.info(f"Notificación WhatsApp deshabilitada para contratación - Candidato: {info['nombre_completo']}")
-                    
-                    return jsonify({
-                        "success": True, 
-                        "message": "Candidato contratado exitosamente. (Notificaciones WhatsApp temporalmente deshabilitadas)", 
-                        "id_contratado": new_hired_id,
-                        "notification_status": "disabled"
-                    }), 201
-
-                return jsonify({"success": True, "message": "Candidato registrado como contratado."}), 201
-
-            except mysql.connector.Error as err:
-                conn.rollback()
-                if err.errno == 1062: return jsonify({"success": False, "error": "Este candidato ya ha sido registrado como contratado para esta vacante."}), 409
-                return jsonify({"success": False, "error": f"Error de base de datos: {str(err)}"}), 500
-            except Exception as e: 
-                conn.rollback()
-                return jsonify({"success": False, "error": str(e)}), 500    
+            return jsonify({"success": True, "message": "Candidato registrado como contratado."}), 201
+            
+    except Exception as e:
+        app.logger.error(f"Error en /api/hired: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({"error": f"Error interno: {str(e)}"}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()    
 
 @app.route('/api/hired/<int:id_contratado>/payment', methods=['POST'])
 @token_required
