@@ -5566,6 +5566,9 @@ def handle_applications():
                 params.append(tenant_id)
             
             # Filtros adicionales
+            if request.args.get('id_afiliado'):
+                conditions.append("p.id_afiliado = %s")
+                params.append(request.args.get('id_afiliado'))
             if request.args.get('id_vacante'):
                 conditions.append("p.id_vacante = %s")
                 params.append(request.args.get('id_vacante'))
@@ -5776,6 +5779,12 @@ def handle_interviews():
             if request.args.get('vacante_id'):
                 conditions.append("v.id_vacante = %s")
                 params.append(request.args.get('vacante_id'))
+            if request.args.get('id_postulacion'):
+                conditions.append("e.id_postulacion = %s")
+                params.append(request.args.get('id_postulacion'))
+            if request.args.get('id_afiliado'):
+                conditions.append("p.id_afiliado = %s")
+                params.append(request.args.get('id_afiliado'))
             if conditions:
                 sql += " WHERE " + " AND ".join(conditions)
             sql += " ORDER BY e.fecha_hora DESC"
