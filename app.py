@@ -8431,27 +8431,34 @@ def get_client_hired_candidates(client_id):
         
         cursor.execute("""
             SELECT 
+                co.id_contratado,
                 a.id_afiliado,
                 a.nombre_completo,
                 a.email,
+                a.telefono,
                 v.cargo_solicitado as cargo_contratado,
-                p.fecha_aplicacion as fecha_contratacion,
-                v.salario as salario,
-                p.id_vacante as vacante_id
-            FROM Postulaciones p
-            LEFT JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
-            LEFT JOIN Vacantes v ON p.id_vacante = v.id_vacante
+                co.fecha_contratacion,
+                co.salario_final as salario,
+                co.tarifa_servicio,
+                co.monto_pagado,
+                v.id_vacante as vacante_id
+            FROM Contratados co
+            JOIN Afiliados a ON co.id_afiliado = a.id_afiliado
+            JOIN Vacantes v ON co.id_vacante = v.id_vacante
             WHERE v.id_cliente = %s 
-            AND p.estado = 'Aprobado'
-            ORDER BY p.fecha_aplicacion DESC
-        """, (client_id,))
+            AND co.tenant_id = %s
+            ORDER BY co.fecha_contratacion DESC
+        """, (client_id, tenant_id))
         
         hired_candidates = cursor.fetchall()
         
-        # Convertir datetime objects a strings para JSON serialization
+        # Convertir datetime objects a strings y Decimals a floats para JSON serialization
         for candidate in hired_candidates:
             if candidate.get('fecha_contratacion') and hasattr(candidate['fecha_contratacion'], 'isoformat'):
                 candidate['fecha_contratacion'] = candidate['fecha_contratacion'].isoformat()
+            for key, value in candidate.items():
+                if isinstance(value, Decimal):
+                    candidate[key] = float(value)
         
         return jsonify({'success': True, 'data': hired_candidates})
         
