@@ -5458,6 +5458,55 @@ def handle_vacancies():
     except Exception as e: conn.rollback(); return jsonify({"error": str(e)}), 500
     finally: cursor.close(); conn.close()
 
+@app.route('/api/vacancies/<int:id_vacante>', methods=['DELETE'])
+@token_required
+def delete_vacancy(id_vacante):
+    """Elimina una vacante específica"""
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Error de BD"}), 500
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        
+        # Verificar que la vacante pertenece al tenant
+        cursor.execute("SELECT id_vacante, cargo_solicitado, estado FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (id_vacante, tenant_id))
+        vacante = cursor.fetchone()
+        if not vacante:
+            return jsonify({"success": False, "error": "Vacante no encontrada"}), 404
+        
+        # Verificar si tiene postulaciones
+        cursor.execute("SELECT COUNT(*) as count FROM Postulaciones WHERE id_vacante = %s", (id_vacante,))
+        postulaciones = cursor.fetchone()['count']
+        
+        if postulaciones > 0:
+            return jsonify({
+                "success": False,
+                "error": f"No se puede eliminar la vacante porque tiene {postulaciones} postulación(es) asociada(s). Elimina las postulaciones primero o cierra la vacante."
+            }), 400
+        
+        # Eliminar la vacante
+        cursor.execute("DELETE FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (id_vacante, tenant_id))
+        conn.commit()
+        
+        # Registrar actividad
+        log_activity(
+            activity_type='vacante_eliminada',
+            description={
+                'id_vacante': id_vacante,
+                'cargo': vacante['cargo_solicitado']
+            },
+            tenant_id=tenant_id
+        )
+        
+        return jsonify({"success": True, "message": "Vacante eliminada correctamente"})
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"Error eliminando vacante: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
 @app.route('/api/vacancies/<int:id_vacante>/status', methods=['PUT'])
 @token_required
 def update_vacancy_status(id_vacante):
@@ -5832,6 +5881,54 @@ def handle_interviews():
         cursor.close()
         conn.close()
 
+
+@app.route('/api/interviews/<int:id_entrevista>', methods=['DELETE'])
+@token_required
+def delete_interview(id_entrevista):
+    """Elimina una entrevista específica"""
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Error de BD"}), 500
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        
+        # Verificar que la entrevista existe y pertenece al tenant
+        cursor.execute("""
+            SELECT e.id_entrevista, p.id_afiliado, v.cargo_solicitado, a.nombre_completo
+            FROM Entrevistas e
+            JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
+            WHERE e.id_entrevista = %s AND e.id_cliente = %s
+        """, (id_entrevista, tenant_id))
+        
+        entrevista = cursor.fetchone()
+        if not entrevista:
+            return jsonify({"success": False, "error": "Entrevista no encontrada"}), 404
+        
+        # Eliminar la entrevista
+        cursor.execute("DELETE FROM Entrevistas WHERE id_entrevista = %s", (id_entrevista,))
+        conn.commit()
+        
+        # Registrar actividad
+        log_activity(
+            activity_type='entrevista_eliminada',
+            description={
+                'id_entrevista': id_entrevista,
+                'candidato': entrevista['nombre_completo'],
+                'cargo': entrevista['cargo_solicitado']
+            },
+            tenant_id=tenant_id
+        )
+        
+        return jsonify({"success": True, "message": "Entrevista eliminada correctamente"})
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"Error eliminando entrevista: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.route('/api/interviews/stats', methods=['GET'])
 @token_required
@@ -6220,6 +6317,55 @@ def handle_clients():
             cursor.close()
         if 'conn' in locals():
             conn.close()
+
+@app.route('/api/clients/<int:client_id>', methods=['DELETE'])
+@token_required
+def delete_client(client_id):
+    """Elimina un cliente específico"""
+    conn = get_db_connection()
+    if not conn: return jsonify({"error": "Error de BD"}), 500
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        
+        # Verificar que el cliente pertenece al tenant
+        cursor.execute("SELECT id_cliente, empresa FROM Clientes WHERE id_cliente = %s AND tenant_id = %s", (client_id, tenant_id))
+        cliente = cursor.fetchone()
+        if not cliente:
+            return jsonify({"success": False, "error": "Cliente no encontrado"}), 404
+        
+        # Verificar si tiene vacantes activas
+        cursor.execute("SELECT COUNT(*) as count FROM Vacantes WHERE id_cliente = %s AND estado = 'Abierta'", (client_id,))
+        vacantes_activas = cursor.fetchone()['count']
+        
+        if vacantes_activas > 0:
+            return jsonify({
+                "success": False, 
+                "error": f"No se puede eliminar el cliente porque tiene {vacantes_activas} vacante(s) activa(s). Cierra o elimina las vacantes primero."
+            }), 400
+        
+        # Eliminar el cliente
+        cursor.execute("DELETE FROM Clientes WHERE id_cliente = %s AND tenant_id = %s", (client_id, tenant_id))
+        conn.commit()
+        
+        # Registrar actividad
+        log_activity(
+            activity_type='cliente_eliminado',
+            description={
+                'id_cliente': client_id,
+                'empresa': cliente['empresa']
+            },
+            tenant_id=tenant_id
+        )
+        
+        return jsonify({"success": True, "message": "Cliente eliminado correctamente"})
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"Error eliminando cliente: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.route('/api/clients/<int:client_id>/metrics', methods=['GET'])
 @token_required
