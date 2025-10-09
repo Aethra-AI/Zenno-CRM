@@ -7094,16 +7094,20 @@ def create_user(user_data):
         # Hashear la contraseña
         hashed_password = bcrypt.hashpw(user_data['password'].encode('utf-8'), bcrypt.gensalt())
         
+        # Obtener tenant_id del usuario actual
+        tenant_id = get_current_tenant_id() if hasattr(g, 'current_user') else user_data.get('tenant_id', 1)
+        
         # Insertar el nuevo usuario
         cursor.execute("""
-            INSERT INTO Users (nombre, email, password, telefono, rol_id, activo, fecha_creacion)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            INSERT INTO Users (nombre, email, password, telefono, rol_id, tenant_id, activo, fecha_creacion)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
         """, (
             user_data.get('nombre'),
             user_data['email'],
             hashed_password.decode('utf-8'),
             user_data.get('telefono'),
             user_data.get('rol_id', 2),  # Por defecto rol de usuario estándar
+            tenant_id,
             user_data.get('activo', True)
         ))
         
@@ -7370,7 +7374,7 @@ def admin_required(f):
                 return jsonify({'error': 'Usuario no encontrado'}), 404
                 
             # Verificar si el usuario es administrador
-            if current_user.get('rol_nombre') != 'admin':
+            if current_user.get('rol_nombre') != 'Administrador':
                 return jsonify({'error': 'Se requieren permisos de administrador'}), 403
                 
             return f(current_user_id, *args, **kwargs)
