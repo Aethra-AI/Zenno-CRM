@@ -5817,10 +5817,10 @@ def handle_applications():
                     
                     if success:
                         app.logger.info(f"✅ Notificación WhatsApp enviada - Candidato: {info['nombre_completo']}")
-                return jsonify({
-                    "success": True, 
+                        return jsonify({
+                            "success": True, 
                             "message": "Postulación registrada y notificación enviada", 
-                    "id_postulacion": new_postulation_id,
+                            "id_postulacion": new_postulation_id,
                             "notification_status": "sent"
                         }), 201
                     else:
@@ -6108,10 +6108,10 @@ def handle_interviews():
                         
                         if success:
                             app.logger.info(f"✅ Notificación WhatsApp de entrevista enviada - Candidato: {info['nombre_completo']}")
-                    return jsonify({
-                        "success": True, 
+                            return jsonify({
+                                "success": True, 
                                 "message": "Entrevista agendada y notificación enviada", 
-                        "id_entrevista": new_interview_id,
+                                "id_entrevista": new_interview_id,
                                 "notification_status": "sent"
                             }), 201
                         else:
@@ -6414,10 +6414,10 @@ def handle_hired():
                     
                     if success:
                         app.logger.info(f"✅ Notificación WhatsApp de contratación enviada - Candidato: {info['nombre_completo']}")
-                return jsonify({
-                    "success": True, 
+                        return jsonify({
+                            "success": True, 
                             "message": "Candidato contratado y notificación enviada", 
-                    "id_contratado": new_hired_id,
+                            "id_contratado": new_hired_id,
                             "notification_status": "sent"
                         }), 201
                     else:
