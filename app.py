@@ -5484,8 +5484,18 @@ def handle_candidate_profile(id_afiliado):
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         if request.method == 'GET':
+            # 🔐 CORRECCIÓN: Verificar acceso de lectura
+            if not can_access_resource(user_id, tenant_id, 'candidate', id_afiliado, 'read'):
+                app.logger.warning(f"Usuario {user_id} intentó ver candidato {id_afiliado} sin permisos")
+                return jsonify({
+                    'error': 'No tienes acceso a este candidato',
+                    'code': 'FORBIDDEN'
+                }), 403
+            
             perfil = {"infoBasica": {}, "postulaciones": [], "entrevistas": [], "tags": []}
             cursor.execute("SELECT * FROM Afiliados WHERE id_afiliado = %s AND tenant_id = %s", (id_afiliado, tenant_id))
             perfil['infoBasica'] = cursor.fetchone()
@@ -5521,8 +5531,21 @@ def handle_candidate_profile(id_afiliado):
             
         elif request.method == 'PUT':
             data = request.get_json()
-            app.logger.info(f"DEBUG: Actualizando perfil candidato {id_afiliado}, tenant_id: {tenant_id}")
-            app.logger.info(f"DEBUG: Datos recibidos: {data}")
+            
+            # 🔐 CORRECCIÓN CRÍTICA: Verificar acceso de escritura
+            if not can_access_resource(user_id, tenant_id, 'candidate', id_afiliado, 'write'):
+                app.logger.warning(
+                    f"❌ INTENTO NO AUTORIZADO: Usuario {user_id} intentó editar candidato {id_afiliado} sin permisos"
+                )
+                return jsonify({
+                    'success': False,
+                    'error': 'No tienes permisos para editar este candidato',
+                    'code': 'FORBIDDEN',
+                    'required_permission': 'write'
+                }), 403
+            
+            app.logger.info(f"✅ Actualizando perfil candidato {id_afiliado} por usuario {user_id}, tenant_id: {tenant_id}")
+            app.logger.info(f"📝 Datos recibidos: {data}")
             
             update_fields = []
             params = []
@@ -5533,23 +5556,66 @@ def handle_candidate_profile(id_afiliado):
                     params.append(data[field])
 
             if not update_fields:
-                app.logger.error("DEBUG: No se proporcionaron campos para actualizar")
+                app.logger.error("⚠️ No se proporcionaron campos para actualizar")
                 return jsonify({"error": "No se proporcionaron campos para actualizar."}), 400
 
             params.extend([id_afiliado, tenant_id])
             sql = f"UPDATE Afiliados SET {', '.join(update_fields)} WHERE id_afiliado = %s AND tenant_id = %s"
-            app.logger.info(f"DEBUG: SQL: {sql}")
-            app.logger.info(f"DEBUG: Params: {params}")
+            app.logger.info(f"📊 SQL: {sql}")
             
             try:
+                # Obtener datos anteriores para auditoría
+                cursor.execute(
+                    "SELECT nombre_completo FROM Afiliados WHERE id_afiliado = %s AND tenant_id = %s",
+                    (id_afiliado, tenant_id)
+                )
+                old_data = cursor.fetchone()
+                
                 cursor.execute(sql, tuple(params))
                 conn.commit()
-                app.logger.info("DEBUG: Perfil actualizado exitosamente")
-                return jsonify({"success": True, "message": "Perfil actualizado."})
+                
+                # 🔐 CORRECCIÓN: Registrar actividad para auditoría
+                campos_modificados = list(data.keys())
+                log_activity(
+                    activity_type='candidato_actualizado',
+                    description={
+                        'id_afiliado': id_afiliado,
+                        'nombre_candidato': old_data.get('nombre_completo') if old_data else 'Desconocido',
+                        'campos_modificados': campos_modificados,
+                        'modificado_por_usuario_id': user_id,
+                        'cantidad_campos': len(campos_modificados)
+                    },
+                    tenant_id=tenant_id
+                )
+                
+                app.logger.info(
+                    f"✅ Perfil actualizado exitosamente - Candidato: {id_afiliado}, "
+                    f"Usuario: {user_id}, Campos: {campos_modificados}"
+                )
+                
+                # Crear notificación
+                create_notification(
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                    tipo='candidato',
+                    titulo='Perfil de candidato actualizado',
+                    mensaje=f"Has actualizado el perfil del candidato (ID: {id_afiliado})",
+                    prioridad='baja',
+                    metadata={
+                        'id_afiliado': id_afiliado,
+                        'campos': campos_modificados
+                    }
+                )
+                
+                return jsonify({
+                    "success": True, 
+                    "message": "Perfil actualizado exitosamente",
+                    "updated_fields": campos_modificados
+                })
+                
             except Exception as sql_error:
-                app.logger.error(f"DEBUG: Error en consulta SQL: {str(sql_error)}")
-                app.logger.error(f"DEBUG: SQL que falló: {sql}")
-                app.logger.error(f"DEBUG: Parámetros que fallaron: {params}")
+                app.logger.error(f"❌ Error actualizando candidato {id_afiliado}: {str(sql_error)}")
+                app.logger.error(f"SQL que falló: {sql}")
                 raise sql_error
 
     except Exception as e: return jsonify({"error": str(e)}), 500
@@ -7389,10 +7455,20 @@ def admin_required(f):
 @app.route('/api/users', methods=['GET'])
 @token_required
 def get_users():
-    """Obtiene la lista de usuarios."""
+    """
+    Obtiene la lista de usuarios según permisos jerárquicos.
+    - Admin: Ve TODOS los usuarios del tenant
+    - Supervisor: Ve solo sus colaboradores asignados
+    - Reclutador: Ve SOLO su propio perfil
+    """
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
+        
+        # Obtener usuario actual y tenant
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        current_user_id = user_data.get('user_id')
         
         # Obtener parámetros de consulta
         page = request.args.get('page', 1, type=int)
@@ -7400,12 +7476,14 @@ def get_users():
         search = request.args.get('search', '')
         role_id = request.args.get('role_id', type=int)
         
-        # Construir la consulta base
-        tenant_id = get_current_tenant_id()
+        # 🔐 NUEVO: Filtrar por permisos jerárquicos
+        # Determinar qué usuarios puede ver según su rol
+        accessible_user_ids = get_accessible_user_ids(current_user_id, tenant_id)
         
+        # Construir la consulta base
         query = """
             SELECT u.id, u.nombre, u.email, u.telefono, u.activo, u.fecha_creacion, 
-                   r.nombre as rol_nombre
+                   u.rol_id, r.nombre as rol_nombre
             FROM Users u
             LEFT JOIN Roles r ON u.rol_id = r.id
             WHERE u.activo = TRUE AND u.tenant_id = %s
@@ -7413,7 +7491,25 @@ def get_users():
         
         params = [tenant_id]
         
-        # Aplicar filtros
+        # 🔐 NUEVO: Aplicar filtro jerárquico
+        if accessible_user_ids is not None:  # None = Admin (ve todos)
+            if len(accessible_user_ids) == 0:
+                # No tiene acceso a ningún usuario (no debería pasar)
+                return jsonify({
+                    'data': [],
+                    'pagination': {'total': 0, 'page': page, 'per_page': per_page, 'total_pages': 0}
+                })
+            elif len(accessible_user_ids) == 1:
+                # Reclutador: solo su propio perfil
+                query += " AND u.id = %s"
+                params.append(accessible_user_ids[0])
+            else:
+                # Supervisor: su equipo
+                placeholders = ','.join(['%s'] * len(accessible_user_ids))
+                query += f" AND u.id IN ({placeholders})"
+                params.extend(accessible_user_ids)
+        
+        # Aplicar filtros adicionales
         if search:
             query += " AND (u.nombre LIKE %s OR u.email LIKE %s)"
             search_term = f"%{search}%"
@@ -7437,8 +7533,16 @@ def get_users():
         cursor.execute(query, params)
         users = cursor.fetchall()
         
+        # 🔐 NUEVO: Agregar información del rol del usuario actual para el frontend
+        user_role = get_user_role_name(current_user_id, tenant_id)
+        
         cursor.close()
         conn.close()
+        
+        app.logger.info(
+            f"Usuario {current_user_id} ({user_role}) consultó usuarios: "
+            f"{len(users)} resultados de {total} totales"
+        )
         
         return jsonify({
             'data': users,
@@ -7447,7 +7551,10 @@ def get_users():
                 'page': page,
                 'per_page': per_page,
                 'total_pages': (total + per_page - 1) // per_page
-            }
+            },
+            'current_user_role': user_role,  # 🔐 NUEVO: Para el frontend
+            'current_user_id': current_user_id,  # 🔐 NUEVO: Para comparar en frontend
+            'can_manage_users': can_manage_users(current_user_id, tenant_id)  # 🔐 NUEVO
         })
     except Exception as e:
         app.logger.error(f"Error al obtener usuarios: {str(e)}")
@@ -7456,9 +7563,35 @@ def get_users():
 @app.route('/api/users/<int:user_id>', methods=['GET'])
 @token_required
 def get_user(user_id):
-    """Obtiene los detalles de un usuario específico."""
+    """
+    Obtiene los detalles de un usuario específico.
+    🔐 Validación jerárquica:
+    - Admin: puede ver cualquier usuario
+    - Supervisor: solo usuarios de su equipo
+    - Reclutador: solo su propio perfil
+    """
+    tenant_id = get_current_tenant_id()
+    current_user_id = g.current_user.get('user_id')
+    
+    # 🔐 NUEVO: Validar acceso al usuario solicitado
+    accessible_user_ids = get_accessible_user_ids(current_user_id, tenant_id)
+    
+    if accessible_user_ids is not None:  # None = Admin (acceso total)
+        if user_id not in accessible_user_ids:
+            app.logger.warning(
+                f"❌ Usuario {current_user_id} intentó acceder a usuario {user_id} sin permisos"
+            )
+            return jsonify({
+                'error': 'No tienes permisos para ver este usuario',
+                'code': 'FORBIDDEN'
+            }), 403
+    
     user = get_user_by_id(user_id)
     if not user:
+        return jsonify({'error': 'Usuario no encontrado'}), 404
+    
+    # Validar que pertenece al mismo tenant
+    if user.get('tenant_id') != tenant_id:
         return jsonify({'error': 'Usuario no encontrado'}), 404
         
     # No devolver el hash de la contraseña
