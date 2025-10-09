@@ -3334,11 +3334,23 @@ def handle_candidate_tags(id_afiliado):
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         # Verificar que el candidato pertenece al tenant
         cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s AND tenant_id = %s", (id_afiliado, tenant_id))
         if not cursor.fetchone():
             return jsonify({"error": "Candidato no encontrado"}), 404
+        
+        # 🔐 MÓDULO B14: Verificar acceso al candidato según método
+        if request.method == 'GET':
+            if not can_access_resource(user_id, tenant_id, 'candidate', id_afiliado, 'read'):
+                app.logger.warning(f"Usuario {user_id} intentó ver tags de candidato {id_afiliado} sin permisos")
+                return jsonify({'error': 'No tienes acceso a este candidato'}), 403
+        else:  # POST o DELETE requieren permiso de escritura
+            if not can_access_resource(user_id, tenant_id, 'candidate', id_afiliado, 'write'):
+                app.logger.warning(f"Usuario {user_id} intentó modificar tags de candidato {id_afiliado} sin permisos")
+                return jsonify({'error': 'No tienes acceso para modificar este candidato'}), 403
         
         if request.method == 'GET':
             sql = """
@@ -3414,7 +3426,8 @@ def handle_single_template(id_template):
             return jsonify(template)
         elif request.method == 'PUT':
             data = request.get_json()
-            sql = "UPDATE Email_Templates SET nombre_plantilla=%s, asunto=%s, cuerpo_html=%s WHERE id_template=%s AND id_cliente=%s"
+            # 🔐 MÓDULO B15: Corregido - usar tenant_id en lugar de id_cliente
+            sql = "UPDATE Email_Templates SET nombre_plantilla=%s, asunto=%s, cuerpo_html=%s WHERE id_template=%s AND tenant_id=%s"
             cursor.execute(sql, (data['nombre_plantilla'], data['asunto'], data['cuerpo_html'], id_template, tenant_id))
             conn.commit()
             if cursor.rowcount == 0:
@@ -3697,30 +3710,55 @@ def get_kpi_reports():
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B12: Obtener condiciones de filtro
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        hired_condition, hired_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user')
         
         # 1. Métricas de tiempo
-        cursor.execute("""
+        sql = """
             SELECT AVG(DATEDIFF(fecha_cierre, fecha_apertura)) as avg_time_to_fill 
-            FROM Vacantes 
+            FROM Vacantes v
             WHERE estado = 'Cerrada' AND fecha_cierre IS NOT NULL AND fecha_apertura IS NOT NULL
-        """)
+            AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         time_to_fill = cursor.fetchone()['avg_time_to_fill']
         
-        cursor.execute("""
+        sql = """
             SELECT AVG(DATEDIFF(c.fecha_contratacion, p.fecha_aplicacion)) as avg_time_to_hire 
             FROM Contratados c 
             JOIN Postulaciones p ON c.id_afiliado = p.id_afiliado AND c.id_vacante = p.id_vacante
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
-        """)
+            WHERE v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         time_to_hire = cursor.fetchone()['avg_time_to_hire']
         
         # 2. Embudo de conversión
-        cursor.execute("""
+        sql = """
             SELECT p.estado, COUNT(*) as total 
             FROM Postulaciones p
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            GROUP BY p.estado
-        """)
+            WHERE v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        sql += " GROUP BY p.estado"
+        cursor.execute(sql, tuple(params))
         funnel_data = cursor.fetchall()
         funnel = {row['estado']: row['total'] for row in funnel_data}
         total_aplicaciones = sum(funnel.values())
@@ -3731,63 +3769,93 @@ def get_kpi_reports():
                 conversion_rates[estado] = round(rate, 2)
         
         # 3. Métricas de candidatos
-        cursor.execute("""
-            SELECT COUNT(*) as total_candidates FROM Afiliados
-        """)
+        sql = "SELECT COUNT(*) as total_candidates FROM Afiliados a WHERE a.tenant_id = %s"
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         total_candidates = cursor.fetchone()['total_candidates']
         
-        cursor.execute("""
-            SELECT COUNT(*) as new_this_month FROM Afiliados 
-            WHERE MONTH(fecha_registro) = MONTH(CURDATE()) 
-            AND YEAR(fecha_registro) = YEAR(CURDATE())
-        """)
+        sql = """
+            SELECT COUNT(*) as new_this_month FROM Afiliados a
+            WHERE MONTH(a.fecha_registro) = MONTH(CURDATE()) 
+            AND YEAR(a.fecha_registro) = YEAR(CURDATE())
+            AND a.tenant_id = %s
+        """
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         new_candidates_month = cursor.fetchone()['new_this_month']
         
         # 4. Métricas de vacantes
-        cursor.execute("""
-            SELECT COUNT(*) as active_vacancies FROM Vacantes 
-            WHERE estado = 'Activa'
-        """)
+        sql = "SELECT COUNT(*) as active_vacancies FROM Vacantes v WHERE v.estado = 'Activa' AND v.tenant_id = %s"
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         active_vacancies = cursor.fetchone()['active_vacancies']
         
-        cursor.execute("""
-            SELECT COUNT(*) as filled_vacancies FROM Vacantes 
-            WHERE estado = 'Cerrada'
-        """)
+        sql = "SELECT COUNT(*) as filled_vacancies FROM Vacantes v WHERE v.estado = 'Cerrada' AND v.tenant_id = %s"
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         filled_vacancies = cursor.fetchone()['filled_vacancies']
         
         # 5. Métricas de entrevistas
-        cursor.execute("""
+        sql = """
             SELECT COUNT(*) as total_interviews FROM Entrevistas e
             JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
-        """)
+            WHERE v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         total_interviews = cursor.fetchone()['total_interviews']
         
-        cursor.execute("""
+        sql = """
             SELECT COUNT(*) as interviews_today FROM Entrevistas e
             JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            WHERE DATE(e.fecha_hora) = CURDATE()
-        """)
+            WHERE DATE(e.fecha_hora) = CURDATE() AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         interviews_today = cursor.fetchone()['interviews_today']
         
         # 6. Tasa de éxito por canal (si tienes datos de canal)
-        cursor.execute("""
+        sql = """
             SELECT 
                 CASE 
-                    WHEN fuente_reclutamiento IS NOT NULL AND fuente_reclutamiento != '' 
-                    THEN fuente_reclutamiento 
+                    WHEN a.fuente_reclutamiento IS NOT NULL AND a.fuente_reclutamiento != '' 
+                    THEN a.fuente_reclutamiento 
                     ELSE 'No especificado' 
                 END as canal,
                 COUNT(*) as total,
                 COUNT(CASE WHEN EXISTS(
                     SELECT 1 FROM Contratados c 
-                    WHERE c.id_afiliado = a.id_afiliado
+                    WHERE c.id_afiliado = a.id_afiliado AND c.tenant_id = %s
                 ) THEN 1 END) as contratados
             FROM Afiliados a
-            GROUP BY canal
-        """)
+            WHERE a.tenant_id = %s
+        """
+        params = [tenant_id, tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        sql += " GROUP BY canal"
+        cursor.execute(sql, tuple(params))
         channel_data = cursor.fetchall()
         channel_performance = []
         for row in channel_data:
@@ -3800,13 +3868,18 @@ def get_kpi_reports():
             })
         
         # 7. Métricas de satisfacción (simuladas basadas en resultados de entrevistas)
-        cursor.execute("""
-            SELECT resultado, COUNT(*) as count FROM Entrevistas e
+        sql = """
+            SELECT e.resultado, COUNT(*) as count FROM Entrevistas e
             JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            WHERE resultado != 'Programada'
-            GROUP BY resultado
-        """)
+            WHERE e.resultado != 'Programada' AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        sql += " GROUP BY e.resultado"
+        cursor.execute(sql, tuple(params))
         interview_results = cursor.fetchall()
         satisfaction_metrics = {
             'excellent': 0,
@@ -4168,24 +4241,88 @@ def get_dashboard_data():
     if not conn: return jsonify({"error": "Error de conexión"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
-        # Métricas básicas
-        cursor.execute("SELECT COUNT(*) as total FROM Entrevistas WHERE fecha_hora >= CURDATE()")
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B11: Obtener condiciones de filtro
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        
+        # Métricas básicas - Entrevistas (filtrar a través de Vacantes)
+        sql = """
+            SELECT COUNT(*) as total 
+            FROM Entrevistas e
+            JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE e.fecha_hora >= CURDATE() AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         entrevistas_pendientes = cursor.fetchone()['total']
-        cursor.execute("SELECT COUNT(*) as total FROM Entrevistas WHERE fecha_hora < CURDATE() AND resultado = 'Programada'")
+        
+        sql = """
+            SELECT COUNT(*) as total 
+            FROM Entrevistas e
+            JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE e.fecha_hora < CURDATE() AND e.resultado = 'Programada' AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         entrevistas_sin_resultado = cursor.fetchone()['total']
         
         # Estadísticas de vacantes
-        cursor.execute("SELECT V.cargo_solicitado, C.empresa, COUNT(P.id_postulacion) as postulantes FROM Postulaciones P JOIN Vacantes V ON P.id_vacante = V.id_vacante JOIN Clientes C ON V.id_cliente = C.id_cliente GROUP BY V.id_vacante, V.cargo_solicitado, C.empresa ORDER BY postulantes DESC")
+        sql = """
+            SELECT V.cargo_solicitado, C.empresa, COUNT(P.id_postulacion) as postulantes 
+            FROM Vacantes V
+            JOIN Clientes C ON V.id_cliente = C.id_cliente
+            LEFT JOIN Postulaciones P ON V.id_vacante = P.id_vacante
+            WHERE V.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR V.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        sql += " GROUP BY V.id_vacante, V.cargo_solicitado, C.empresa ORDER BY postulantes DESC"
+        cursor.execute(sql, tuple(params))
         estadisticas_vacantes = cursor.fetchall()
         
         # Candidatos
-        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE DATE(fecha_registro) = CURDATE()")
+        sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE DATE(a.fecha_registro) = CURDATE() AND a.tenant_id = %s"
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         afiliados_hoy = cursor.fetchone()['total']
-        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE MONTH(fecha_registro) = MONTH(CURDATE()) AND YEAR(fecha_registro) = YEAR(CURDATE())")
+        
+        sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE MONTH(a.fecha_registro) = MONTH(CURDATE()) AND YEAR(a.fecha_registro) = YEAR(CURDATE()) AND a.tenant_id = %s"
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         afiliados_mes = cursor.fetchone()['total']
         
-        # Top ciudades
-        cursor.execute("SELECT ciudad, COUNT(*) as total FROM Afiliados WHERE ciudad IS NOT NULL AND ciudad != '' GROUP BY ciudad ORDER BY total DESC LIMIT 5")
+        # Top ciudades (filtrado por usuario)
+        sql = """
+            SELECT a.ciudad, COUNT(*) as total 
+            FROM Afiliados a
+            WHERE a.ciudad IS NOT NULL AND a.ciudad != '' AND a.tenant_id = %s
+        """
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        sql += " GROUP BY a.ciudad ORDER BY total DESC LIMIT 5"
+        cursor.execute(sql, tuple(params))
         top_ciudades = cursor.fetchall()
         
         return jsonify({
@@ -5092,13 +5229,25 @@ def get_notifications():
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B13: Obtener condiciones de filtro
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        
         notifications = []
         
         # 1. Nuevos candidatos registrados hoy
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM Afiliados 
-            WHERE DATE(fecha_registro) = CURDATE()
-        """)
+        sql = """
+            SELECT COUNT(*) as count FROM Afiliados a
+            WHERE DATE(a.fecha_registro) = CURDATE() AND a.tenant_id = %s
+        """
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         new_candidates = cursor.fetchone()['count']
         if new_candidates > 0:
             notifications.append({
@@ -5112,10 +5261,18 @@ def get_notifications():
             })
         
         # 2. Entrevistas programadas para hoy
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM Entrevistas 
-            WHERE DATE(fecha_hora) = CURDATE() AND resultado = 'Programada'
-        """)
+        sql = """
+            SELECT COUNT(*) as count 
+            FROM Entrevistas e
+            JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE DATE(e.fecha_hora) = CURDATE() AND e.resultado = 'Programada' AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         today_interviews = cursor.fetchone()['count']
         if today_interviews > 0:
             notifications.append({
@@ -5129,12 +5286,18 @@ def get_notifications():
             })
         
         # 3. Nuevas aplicaciones pendientes
-        cursor.execute("""
+        sql = """
             SELECT COUNT(*) as count FROM Postulaciones p
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
             WHERE p.estado = 'Pendiente' 
             AND DATE(p.fecha_aplicacion) = CURDATE()
-        """)
+            AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         new_applications = cursor.fetchone()['count']
         if new_applications > 0:
             notifications.append({
@@ -5148,11 +5311,20 @@ def get_notifications():
             })
         
         # 4. Entrevistas sin resultado (más de 1 día)
-        cursor.execute("""
-            SELECT COUNT(*) as count FROM Entrevistas 
-            WHERE fecha_hora < DATE_SUB(NOW(), INTERVAL 1 DAY) 
-            AND resultado = 'Programada'
-        """)
+        sql = """
+            SELECT COUNT(*) as count 
+            FROM Entrevistas e
+            JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE e.fecha_hora < DATE_SUB(NOW(), INTERVAL 1 DAY) 
+            AND e.resultado = 'Programada'
+            AND v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         overdue_interviews = cursor.fetchone()['count']
         if overdue_interviews > 0:
             notifications.append({
@@ -7646,6 +7818,378 @@ def get_roles():
         return jsonify({'error': 'Error al obtener la lista de roles'}), 500
 
 # ===============================================================
+# SECCIÓN 7.5: GESTIÓN DE EQUIPOS (TEAM_STRUCTURE)
+# ===============================================================
+
+@app.route('/api/teams/my-team', methods=['GET'])
+@token_required
+def get_my_team():
+    """Obtener miembros del equipo del supervisor actual."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden ver equipos
+        if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+            return jsonify({'error': 'No tienes permisos para ver equipos'}), 403
+        
+        # Si es supervisor, obtener su equipo
+        # Si es admin, obtener todos los equipos (parámetro opcional)
+        supervisor_id = user_id
+        if is_admin(user_id, tenant_id):
+            supervisor_id = request.args.get('supervisor_id', user_id, type=int)
+        
+        # Obtener datos del supervisor
+        cursor.execute("""
+            SELECT id, nombre, email 
+            FROM Users 
+            WHERE id = %s AND tenant_id = %s
+        """, (supervisor_id, tenant_id))
+        supervisor = cursor.fetchone()
+        
+        if not supervisor:
+            return jsonify({'error': 'Supervisor no encontrado'}), 404
+        
+        # Obtener miembros del equipo
+        cursor.execute("""
+            SELECT 
+                u.id, u.nombre, u.email, u.telefono, u.activo,
+                r.nombre as rol_nombre,
+                ts.assigned_at,
+                ts.id as team_structure_id
+            FROM Team_Structure ts
+            JOIN Users u ON ts.team_member_id = u.id
+            LEFT JOIN Roles r ON u.rol_id = r.id
+            WHERE ts.supervisor_id = %s 
+            AND ts.tenant_id = %s
+            AND ts.is_active = TRUE
+            ORDER BY ts.assigned_at DESC
+        """, (supervisor_id, tenant_id))
+        
+        team_members = cursor.fetchall()
+        
+        # Convertir datetime a string
+        for member in team_members:
+            if member.get('assigned_at') and hasattr(member['assigned_at'], 'isoformat'):
+                member['assigned_at'] = member['assigned_at'].isoformat()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'supervisor': supervisor,
+            'team_members': team_members,
+            'total_members': len(team_members)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en get_my_team: {str(e)}")
+        return jsonify({'error': 'Error al obtener el equipo'}), 500
+
+
+@app.route('/api/teams/members', methods=['POST'])
+@token_required
+def add_team_member():
+    """Agregar un miembro al equipo."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden agregar miembros
+        if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+            return jsonify({'error': 'No tienes permisos para gestionar equipos'}), 403
+        
+        data = request.get_json()
+        team_member_id = data.get('team_member_id')
+        supervisor_id = data.get('supervisor_id')
+        
+        if not team_member_id:
+            return jsonify({'error': 'Se requiere team_member_id'}), 400
+        
+        # Si es supervisor, solo puede agregar a SU equipo
+        if is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+            if supervisor_id and supervisor_id != user_id:
+                return jsonify({'error': 'No puedes agregar miembros a otro equipo'}), 403
+            supervisor_id = user_id
+        
+        # Si es admin y no especifica supervisor, usar su propio ID
+        if not supervisor_id:
+            supervisor_id = user_id
+        
+        # Verificar que el supervisor existe y es realmente supervisor
+        cursor.execute("""
+            SELECT u.id, r.nombre as rol_nombre
+            FROM Users u
+            JOIN Roles r ON u.rol_id = r.id
+            WHERE u.id = %s AND u.tenant_id = %s AND u.activo = TRUE
+        """, (supervisor_id, tenant_id))
+        supervisor = cursor.fetchone()
+        
+        if not supervisor:
+            return jsonify({'error': 'Supervisor no encontrado'}), 404
+        
+        if supervisor['rol_nombre'] not in ['Supervisor', 'Administrador']:
+            return jsonify({'error': 'El usuario especificado no es supervisor'}), 400
+        
+        # Verificar que el miembro existe y es Reclutador
+        cursor.execute("""
+            SELECT u.id, u.nombre, u.email, r.nombre as rol_nombre
+            FROM Users u
+            JOIN Roles r ON u.rol_id = r.id
+            WHERE u.id = %s AND u.tenant_id = %s AND u.activo = TRUE
+        """, (team_member_id, tenant_id))
+        member = cursor.fetchone()
+        
+        if not member:
+            return jsonify({'error': 'Miembro no encontrado'}), 404
+        
+        if member['rol_nombre'] != 'Reclutador':
+            return jsonify({'error': 'Solo reclutadores pueden ser miembros de equipo'}), 400
+        
+        # Verificar que no esté ya en el equipo
+        cursor.execute("""
+            SELECT id FROM Team_Structure 
+            WHERE supervisor_id = %s 
+            AND team_member_id = %s 
+            AND is_active = TRUE
+            AND tenant_id = %s
+        """, (supervisor_id, team_member_id, tenant_id))
+        
+        if cursor.fetchone():
+            return jsonify({'error': 'El miembro ya está en el equipo'}), 409
+        
+        # Insertar en Team_Structure
+        cursor.execute("""
+            INSERT INTO Team_Structure 
+            (tenant_id, supervisor_id, team_member_id, assigned_by, is_active)
+            VALUES (%s, %s, %s, %s, TRUE)
+        """, (tenant_id, supervisor_id, team_member_id, user_id))
+        
+        team_structure_id = cursor.lastrowid
+        conn.commit()
+        
+        app.logger.info(f"Usuario {user_id} agregó a {team_member_id} al equipo de supervisor {supervisor_id}")
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Miembro agregado al equipo exitosamente',
+            'team_structure_id': team_structure_id,
+            'member': {
+                'id': member['id'],
+                'nombre': member['nombre'],
+                'email': member['email']
+            }
+        }), 201
+        
+    except Exception as e:
+        app.logger.error(f"Error en add_team_member: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': 'Error al agregar miembro al equipo'}), 500
+
+
+@app.route('/api/teams/members/<int:team_member_id>', methods=['DELETE'])
+@token_required
+def remove_team_member(team_member_id):
+    """Remover un miembro del equipo."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden remover miembros
+        if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+            return jsonify({'error': 'No tienes permisos para gestionar equipos'}), 403
+        
+        # Parámetro opcional: supervisor_id (solo para admins)
+        supervisor_id = request.args.get('supervisor_id', type=int)
+        
+        # Si es supervisor, solo puede remover de SU equipo
+        if is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+            if supervisor_id and supervisor_id != user_id:
+                return jsonify({'error': 'No puedes remover miembros de otro equipo'}), 403
+            supervisor_id = user_id
+        
+        # Si no se especifica supervisor_id, buscar en qué equipo está el miembro
+        if not supervisor_id:
+            cursor.execute("""
+                SELECT supervisor_id FROM Team_Structure 
+                WHERE team_member_id = %s 
+                AND is_active = TRUE
+                AND tenant_id = %s
+                LIMIT 1
+            """, (team_member_id, tenant_id))
+            result = cursor.fetchone()
+            if result:
+                supervisor_id = result['supervisor_id']
+        
+        if not supervisor_id:
+            return jsonify({'error': 'No se encontró al miembro en ningún equipo activo'}), 404
+        
+        # Soft delete: marcar como inactivo
+        cursor.execute("""
+            UPDATE Team_Structure 
+            SET is_active = FALSE 
+            WHERE team_member_id = %s 
+            AND supervisor_id = %s 
+            AND tenant_id = %s
+            AND is_active = TRUE
+        """, (team_member_id, supervisor_id, tenant_id))
+        
+        if cursor.rowcount == 0:
+            return jsonify({'error': 'Miembro no encontrado en el equipo'}), 404
+        
+        conn.commit()
+        
+        app.logger.info(f"Usuario {user_id} removió a {team_member_id} del equipo de supervisor {supervisor_id}")
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Miembro removido del equipo exitosamente'
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en remove_team_member: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': 'Error al remover miembro del equipo'}), 500
+
+
+@app.route('/api/teams/available-members', methods=['GET'])
+@token_required
+def get_available_members():
+    """Obtener lista de usuarios disponibles para agregar al equipo."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden ver disponibles
+        if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+            return jsonify({'error': 'No tienes permisos para ver miembros disponibles'}), 403
+        
+        # Si es admin, puede especificar supervisor_id
+        supervisor_id = request.args.get('supervisor_id', user_id, type=int)
+        
+        # Si es supervisor, solo puede ver disponibles para SU equipo
+        if is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+            supervisor_id = user_id
+        
+        # Obtener reclutadores que NO están en el equipo
+        cursor.execute("""
+            SELECT 
+                u.id, u.nombre, u.email, u.telefono,
+                r.nombre as rol_nombre
+            FROM Users u
+            LEFT JOIN Roles r ON u.rol_id = r.id
+            LEFT JOIN Team_Structure ts ON u.id = ts.team_member_id 
+                AND ts.supervisor_id = %s 
+                AND ts.is_active = TRUE
+            WHERE u.tenant_id = %s
+            AND u.activo = TRUE
+            AND r.nombre = 'Reclutador'
+            AND ts.id IS NULL
+            ORDER BY u.nombre
+        """, (supervisor_id, tenant_id))
+        
+        available_members = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'available_members': available_members,
+            'total': len(available_members)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en get_available_members: {str(e)}")
+        return jsonify({'error': 'Error al obtener miembros disponibles'}), 500
+
+
+@app.route('/api/teams/all', methods=['GET'])
+@token_required
+def get_all_teams():
+    """Ver TODOS los equipos del tenant (solo Admins)."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B16: Solo Admins pueden ver todos los equipos
+        if not is_admin(user_id, tenant_id):
+            return jsonify({'error': 'No tienes permisos para ver todos los equipos'}), 403
+        
+        # Obtener todos los supervisores y sus equipos
+        cursor.execute("""
+            SELECT 
+                s.id as supervisor_id,
+                s.nombre as supervisor_nombre,
+                s.email as supervisor_email,
+                COUNT(ts.id) as total_members
+            FROM Users s
+            LEFT JOIN Team_Structure ts ON s.id = ts.supervisor_id 
+                AND ts.is_active = TRUE
+                AND ts.tenant_id = %s
+            LEFT JOIN Roles r ON s.rol_id = r.id
+            WHERE s.tenant_id = %s
+            AND s.activo = TRUE
+            AND r.nombre = 'Supervisor'
+            GROUP BY s.id, s.nombre, s.email
+            ORDER BY total_members DESC
+        """, (tenant_id, tenant_id))
+        
+        teams = cursor.fetchall()
+        
+        # Para cada supervisor, obtener nombres de miembros
+        for team in teams:
+            cursor.execute("""
+                SELECT u.nombre 
+                FROM Team_Structure ts
+                JOIN Users u ON ts.team_member_id = u.id
+                WHERE ts.supervisor_id = %s 
+                AND ts.tenant_id = %s
+                AND ts.is_active = TRUE
+                ORDER BY u.nombre
+            """, (team['supervisor_id'], tenant_id))
+            
+            members = cursor.fetchall()
+            team['members_names'] = ', '.join([m['nombre'] for m in members]) if members else 'Sin miembros'
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'teams': teams,
+            'total_teams': len(teams)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en get_all_teams: {str(e)}")
+        return jsonify({'error': 'Error al obtener todos los equipos'}), 500
+
+# ===============================================================
 # SECCIÓN 8: LÓGICA INTERNA DEL CHATBOT
 # ===============================================================
 
@@ -8530,11 +9074,16 @@ def calendar_interviews():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id() or 1  # Fallback a tenant 1 para pruebas
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         year = request.args.get('year', datetime.now().year)
         month = request.args.get('month', datetime.now().month)
         
-        cursor.execute("""
+        # 🔐 MÓDULO B17: Obtener condición de filtro por usuario
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        
+        sql = """
             SELECT 
                 i.id,
                 i.candidate_id,
@@ -8550,11 +9099,20 @@ def calendar_interviews():
             FROM interviews i
             LEFT JOIN Afiliados a ON i.candidate_id = a.id_afiliado
             LEFT JOIN Vacantes v ON i.vacancy_id = v.id_vacante
-            WHERE i.tenant_id = %s 
+            WHERE i.tenant_id = %s AND v.tenant_id = %s
             AND YEAR(i.interview_date) = %s 
             AND MONTH(i.interview_date) = %s
-            ORDER BY i.interview_date, i.interview_time
-        """, (tenant_id, year, month))
+        """
+        params = [tenant_id, tenant_id, year, month]
+        
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            # Insertar vacancy_params después de los dos tenant_id
+            params = [tenant_id, tenant_id] + vacancy_params + [year, month]
+        
+        sql += " ORDER BY i.interview_date, i.interview_time"
+        
+        cursor.execute(sql, tuple(params))
         
         interviews = cursor.fetchall()
         
@@ -8587,12 +9145,17 @@ def calendar_activities():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id() or 1  # Fallback a tenant 1 para pruebas
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         year = request.args.get('year', datetime.now().year)
         month = request.args.get('month', datetime.now().month)
         
-        # Actividades de postulaciones
-        cursor.execute("""
+        # 🔐 MÓDULO B17: Obtener condición de filtro por usuario
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        
+        # Construir query con filtros de tenant y usuario
+        sql_postulaciones = """
             SELECT 
                 CONCAT('postulation_', p.id_postulacion) as id,
                 'application' as type,
@@ -8605,11 +9168,16 @@ def calendar_activities():
             FROM Postulaciones p
             LEFT JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
             LEFT JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            WHERE YEAR(p.fecha_aplicacion) = %s 
+            WHERE v.tenant_id = %s
+            AND YEAR(p.fecha_aplicacion) = %s 
             AND MONTH(p.fecha_aplicacion) = %s
-            
-            UNION ALL
-            
+        """
+        params_post = [tenant_id, year, month]
+        if vacancy_condition:
+            sql_postulaciones += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params_post = [tenant_id] + vacancy_params + [year, month]
+        
+        sql_interviews = """
             SELECT 
                 CONCAT('interview_', i.id) as id,
                 'interview' as type,
@@ -8623,12 +9191,20 @@ def calendar_activities():
             LEFT JOIN Afiliados a ON i.candidate_id = a.id_afiliado
             LEFT JOIN Vacantes v ON i.vacancy_id = v.id_vacante
             LEFT JOIN Users u ON i.created_by = u.id
-            WHERE i.tenant_id = %s 
+            WHERE i.tenant_id = %s AND v.tenant_id = %s
             AND YEAR(i.created_at) = %s 
             AND MONTH(i.created_at) = %s
-            
-            ORDER BY timestamp DESC
-        """, (year, month, tenant_id, year, month))
+        """
+        params_int = [tenant_id, tenant_id, year, month]
+        if vacancy_condition:
+            sql_interviews += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params_int = [tenant_id, tenant_id] + vacancy_params + [year, month]
+        
+        # Combinar con UNION ALL
+        sql_combined = f"{sql_postulaciones} UNION ALL {sql_interviews} ORDER BY timestamp DESC"
+        
+        # Ejecutar con parámetros combinados
+        cursor.execute(sql_combined, tuple(params_post + params_int))
         
         activities = cursor.fetchall()
         
