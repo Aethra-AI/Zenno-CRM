@@ -7094,20 +7094,16 @@ def create_user(user_data):
         # Hashear la contraseña
         hashed_password = bcrypt.hashpw(user_data['password'].encode('utf-8'), bcrypt.gensalt())
         
-        # Obtener tenant_id del usuario actual
-        tenant_id = get_current_tenant_id() if hasattr(g, 'current_user') else user_data.get('tenant_id', 1)
-        
         # Insertar el nuevo usuario
         cursor.execute("""
-            INSERT INTO Users (nombre, email, password, telefono, rol_id, tenant_id, activo, fecha_creacion)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            INSERT INTO Users (nombre, email, password, telefono, rol_id, activo, fecha_creacion)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
         """, (
             user_data.get('nombre'),
             user_data['email'],
             hashed_password.decode('utf-8'),
             user_data.get('telefono'),
             user_data.get('rol_id', 2),  # Por defecto rol de usuario estándar
-            tenant_id,
             user_data.get('activo', True)
         ))
         
@@ -7374,7 +7370,7 @@ def admin_required(f):
                 return jsonify({'error': 'Usuario no encontrado'}), 404
                 
             # Verificar si el usuario es administrador
-            if current_user.get('rol_nombre') != 'Administrador':
+            if current_user.get('rol_nombre') != 'admin':
                 return jsonify({'error': 'Se requieren permisos de administrador'}), 403
                 
             return f(current_user_id, *args, **kwargs)
@@ -7821,6 +7817,70 @@ def get_roles():
         app.logger.error(f"Error al obtener roles: {str(e)}")
         return jsonify({'error': 'Error al obtener la lista de roles'}), 500
 
+@app.route('/api/roles/<int:role_id>/permissions', methods=['PUT'])
+@token_required
+def update_role_permissions(role_id):
+    """Actualiza los permisos de un rol (solo Admin)."""
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 Solo Admins pueden actualizar permisos
+        if not is_admin(user_id, tenant_id):
+            app.logger.warning(f"Usuario {user_id} intentó actualizar permisos sin ser admin")
+            return jsonify({'error': 'No tienes permisos para actualizar roles'}), 403
+        
+        data = request.get_json()
+        permisos = data.get('permisos')
+        
+        if not permisos:
+            return jsonify({'error': 'Se requiere el campo permisos'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Error de conexión a BD'}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Verificar que el rol existe
+        cursor.execute("SELECT id, nombre FROM Roles WHERE id = %s", (role_id,))
+        role = cursor.fetchone()
+        
+        if not role:
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'Rol no encontrado'}), 404
+        
+        # Convertir permisos a JSON string
+        permisos_json = json.dumps(permisos)
+        
+        # Actualizar permisos
+        cursor.execute("""
+            UPDATE Roles 
+            SET permisos = %s 
+            WHERE id = %s
+        """, (permisos_json, role_id))
+        
+        conn.commit()
+        
+        app.logger.info(f"Admin {user_id} actualizó permisos del rol {role['nombre']} (ID: {role_id})")
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f"Permisos del rol '{role['nombre']}' actualizados exitosamente",
+            'role_id': role_id
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en update_role_permissions: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': 'Error al actualizar permisos'}), 500
+
 # ===============================================================
 # SECCIÓN 7.5: GESTIÓN DE EQUIPOS (TEAM_STRUCTURE)
 # ===============================================================
@@ -8192,6 +8252,213 @@ def get_all_teams():
     except Exception as e:
         app.logger.error(f"Error en get_all_teams: {str(e)}")
         return jsonify({'error': 'Error al obtener todos los equipos'}), 500
+
+
+# ===============================================================
+# SECCIÓN 7.6: ASIGNACIÓN DE RECURSOS (RESOURCE_ASSIGNMENTS)
+# ===============================================================
+
+@app.route('/api/users/<int:user_id>/assignments', methods=['GET'])
+@token_required
+def get_user_assignments(user_id):
+    """Obtener recursos asignados a un usuario."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        current_user_id = g.current_user.get('user_id')
+        
+        # 🔐 Admin puede ver de cualquiera, Supervisor solo de su equipo
+        if not is_admin(current_user_id, tenant_id):
+            if is_supervisor(current_user_id, tenant_id):
+                # Verificar que el usuario es miembro de su equipo
+                team = get_team_members(current_user_id, tenant_id)
+                if user_id not in team:
+                    return jsonify({'error': 'No tienes acceso a este usuario'}), 403
+            else:
+                return jsonify({'error': 'No tienes permisos para ver asignaciones'}), 403
+        
+        # Obtener asignaciones activas
+        cursor.execute("""
+            SELECT 
+                ra.id,
+                ra.resource_type,
+                ra.resource_id,
+                ra.access_level,
+                ra.assigned_at,
+                u.nombre as assigned_by_name,
+                CASE 
+                    WHEN ra.resource_type = 'vacancy' THEN v.cargo_solicitado
+                    WHEN ra.resource_type = 'client' THEN c.empresa
+                    WHEN ra.resource_type = 'candidate' THEN a.nombre_completo
+                END as resource_name
+            FROM Resource_Assignments ra
+            LEFT JOIN Users u ON ra.assigned_by_user = u.id
+            LEFT JOIN Vacantes v ON ra.resource_type = 'vacancy' AND ra.resource_id = v.id_vacante
+            LEFT JOIN Clientes c ON ra.resource_type = 'client' AND ra.resource_id = c.id_cliente
+            LEFT JOIN Afiliados a ON ra.resource_type = 'candidate' AND ra.resource_id = a.id_afiliado
+            WHERE ra.assigned_to_user = %s 
+            AND ra.tenant_id = %s
+            AND ra.is_active = TRUE
+            ORDER BY ra.assigned_at DESC
+        """, (user_id, tenant_id))
+        
+        assignments = cursor.fetchall()
+        
+        # Convertir datetime a string
+        for assignment in assignments:
+            if assignment.get('assigned_at'):
+                assignment['assigned_at'] = assignment['assigned_at'].isoformat()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'assignments': assignments,
+            'total': len(assignments)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en get_user_assignments: {str(e)}")
+        return jsonify({'error': 'Error al obtener asignaciones'}), 500
+
+
+@app.route('/api/users/<int:user_id>/assignments', methods=['POST'])
+@token_required
+def assign_resource_to_user(user_id):
+    """Asignar un recurso específico a un usuario."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        current_user_id = g.current_user.get('user_id')
+        
+        # 🔐 Admin puede asignar a cualquiera, Supervisor solo a su equipo
+        if not is_admin(current_user_id, tenant_id):
+            if is_supervisor(current_user_id, tenant_id):
+                team = get_team_members(current_user_id, tenant_id)
+                if user_id not in team:
+                    return jsonify({'error': 'No puedes asignar recursos a usuarios fuera de tu equipo'}), 403
+            else:
+                return jsonify({'error': 'No tienes permisos para asignar recursos'}), 403
+        
+        data = request.get_json()
+        resource_type = data.get('resource_type')  # 'vacancy', 'client', 'candidate'
+        resource_id = data.get('resource_id')
+        access_level = data.get('access_level', 'write')  # 'read', 'write', 'full'
+        
+        if not all([resource_type, resource_id]):
+            return jsonify({'error': 'Se requiere resource_type y resource_id'}), 400
+        
+        # Verificar que el usuario existe
+        cursor.execute("SELECT id FROM Users WHERE id = %s AND tenant_id = %s", (user_id, tenant_id))
+        if not cursor.fetchone():
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+        
+        # Verificar que el recurso existe y pertenece al tenant
+        if resource_type == 'vacancy':
+            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (resource_id, tenant_id))
+        elif resource_type == 'client':
+            cursor.execute("SELECT id_cliente FROM Clientes WHERE id_cliente = %s AND tenant_id = %s", (resource_id, tenant_id))
+        elif resource_type == 'candidate':
+            cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s AND tenant_id = %s", (resource_id, tenant_id))
+        else:
+            return jsonify({'error': 'Tipo de recurso inválido'}), 400
+        
+        if not cursor.fetchone():
+            return jsonify({'error': 'Recurso no encontrado'}), 404
+        
+        # Verificar si ya existe la asignación
+        cursor.execute("""
+            SELECT id FROM Resource_Assignments 
+            WHERE assigned_to_user = %s 
+            AND resource_type = %s 
+            AND resource_id = %s
+            AND is_active = TRUE
+            AND tenant_id = %s
+        """, (user_id, resource_type, resource_id, tenant_id))
+        
+        if cursor.fetchone():
+            return jsonify({'error': 'El recurso ya está asignado a este usuario'}), 409
+        
+        # Insertar asignación
+        cursor.execute("""
+            INSERT INTO Resource_Assignments 
+            (tenant_id, resource_type, resource_id, assigned_to_user, assigned_by_user, access_level, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, TRUE)
+        """, (tenant_id, resource_type, resource_id, user_id, current_user_id, access_level))
+        
+        assignment_id = cursor.lastrowid
+        conn.commit()
+        
+        app.logger.info(f"Usuario {current_user_id} asignó {resource_type} {resource_id} a usuario {user_id}")
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Recurso asignado exitosamente',
+            'assignment_id': assignment_id
+        }), 201
+        
+    except Exception as e:
+        app.logger.error(f"Error en assign_resource_to_user: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': 'Error al asignar recurso'}), 500
+
+
+@app.route('/api/users/<int:user_id>/assignments/<int:assignment_id>', methods=['DELETE'])
+@token_required
+def remove_user_assignment(user_id, assignment_id):
+    """Remover una asignación de recurso."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        current_user_id = g.current_user.get('user_id')
+        
+        # 🔐 Admin puede remover cualquiera, Supervisor solo de su equipo
+        if not is_admin(current_user_id, tenant_id):
+            if is_supervisor(current_user_id, tenant_id):
+                team = get_team_members(current_user_id, tenant_id)
+                if user_id not in team:
+                    return jsonify({'error': 'No puedes remover asignaciones de usuarios fuera de tu equipo'}), 403
+            else:
+                return jsonify({'error': 'No tienes permisos para remover asignaciones'}), 403
+        
+        # Soft delete
+        cursor.execute("""
+            UPDATE Resource_Assignments 
+            SET is_active = FALSE 
+            WHERE id = %s 
+            AND assigned_to_user = %s
+            AND tenant_id = %s
+            AND is_active = TRUE
+        """, (assignment_id, user_id, tenant_id))
+        
+        if cursor.rowcount == 0:
+            return jsonify({'error': 'Asignación no encontrada'}), 404
+        
+        conn.commit()
+        
+        app.logger.info(f"Usuario {current_user_id} removió asignación {assignment_id} de usuario {user_id}")
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Asignación removida exitosamente'
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en remove_user_assignment: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': 'Error al remover asignación'}), 500
 
 # ===============================================================
 # SECCIÓN 8: LÓGICA INTERNA DEL CHATBOT
