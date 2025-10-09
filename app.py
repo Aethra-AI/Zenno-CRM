@@ -60,6 +60,21 @@ from drive_uploader import upload_file_to_drive
 import re
 import hashlib
 from celery_tasks import send_whatsapp_notification_task, calculate_candidate_score
+from whatsapp_notification_service import (
+    send_application_notification,
+    send_interview_notification,
+    send_hired_notification,
+    send_status_change_notification,
+    can_use_whatsapp_conversations
+)
+# ✨ MÓDULO B5 - Sistema de Permisos y Jerarquía
+from permission_service import (
+    can_create_resource,
+    can_access_resource,
+    build_user_filter_condition,
+    is_admin,
+    get_user_role_name
+)
 from werkzeug.utils import secure_filename
 from flask import Flask, jsonify, request, Response, send_file, send_from_directory, g, url_for, redirect
 import jwt
@@ -3501,39 +3516,40 @@ def handle_whatsapp_templates():
 @app.route('/api/vacancies/<int:id_vacante>/pipeline', methods=['GET'])
 @token_required
 def get_vacancy_pipeline(id_vacante):
+    """Obtiene el pipeline de postulaciones de una vacante (con validación de acceso)."""
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
-        user_role = getattr(g, 'current_user', {}).get('rol', '')
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
-        # Para administradores, permitir ver cualquier vacante
-        # Para otros usuarios, verificar que la vacante pertenece al tenant
-        if user_role == 'Administrador':
-            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s", (id_vacante,))
-        else:
-            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (id_vacante, tenant_id))
+        # 🔐 MÓDULO B6: Verificar acceso de lectura a la vacante
+        if not can_access_resource(user_id, tenant_id, 'vacancy', id_vacante, 'read'):
+            app.logger.warning(f"Usuario {user_id} intentó acceder a pipeline de vacante {id_vacante} sin permisos")
+            return jsonify({
+                'error': 'No tienes acceso a esta vacante',
+                'code': 'FORBIDDEN'
+            }), 403
+        
+        # Verificar que la vacante existe y pertenece al tenant
+        cursor.execute("""
+            SELECT id_vacante 
+            FROM Vacantes 
+            WHERE id_vacante = %s AND tenant_id = %s
+        """, (id_vacante, tenant_id))
         
         if not cursor.fetchone():
             return jsonify({"error": "Vacante no encontrada"}), 404
         
-        # Para administradores, mostrar todas las postulaciones de la vacante
-        # Para otros usuarios, filtrar por tenant
-        if user_role == 'Administrador':
-            sql = """
-                SELECT p.id_postulacion, p.estado, a.id_afiliado, a.nombre_completo, a.cv_url 
-                FROM Postulaciones p 
-                JOIN Afiliados a ON p.id_afiliado = a.id_afiliado 
-                WHERE p.id_vacante = %s
-            """
-            cursor.execute(sql, (id_vacante,))
-        else:
-            sql = """
+        # 🔐 MÓDULO B6: Obtener postulaciones con filtro por tenant
+        sql = """
             SELECT p.id_postulacion, p.estado, a.id_afiliado, a.nombre_completo, a.cv_url 
             FROM Postulaciones p 
             JOIN Afiliados a ON p.id_afiliado = a.id_afiliado 
-            WHERE p.id_vacante = %s AND p.id_cliente = %s
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE p.id_vacante = %s AND v.tenant_id = %s
         """
         cursor.execute(sql, (id_vacante, tenant_id))
         postulaciones = cursor.fetchall()
@@ -3552,6 +3568,7 @@ def get_vacancy_pipeline(id_vacante):
 @app.route('/api/applications/<int:id_postulacion>/status', methods=['PUT'])
 @token_required
 def update_application_status(id_postulacion):
+    """Actualiza el estado de una postulación (con validación de acceso a través de la vacante)."""
     data = request.get_json()
     # Aceptar tanto 'estado' como 'status' para compatibilidad
     nuevo_estado = data.get('estado') or data.get('status')
@@ -3561,6 +3578,8 @@ def update_application_status(id_postulacion):
     cursor = conn.cursor()
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         # Verificar que la postulación pertenece al tenant a través de Vacantes
         cursor.execute("""
@@ -3572,6 +3591,15 @@ def update_application_status(id_postulacion):
         postulacion_data = cursor.fetchone()
         if not postulacion_data:
             return jsonify({"error": "Postulación no encontrada"}), 404
+        
+        # 🔐 MÓDULO B7: Verificar acceso de escritura a través de la vacante
+        vacancy_id = postulacion_data[2]  # id_vacante
+        if not can_access_resource(user_id, tenant_id, 'vacancy', vacancy_id, 'write'):
+            app.logger.warning(f"Usuario {user_id} intentó actualizar estado de postulación {id_postulacion} sin acceso a vacante {vacancy_id}")
+            return jsonify({
+                'error': 'No tienes acceso a esta postulación',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Obtener información del candidato y vacante antes de actualizar
         cursor.execute("""
@@ -3837,7 +3865,7 @@ def get_kpi_reports():
 
 def _internal_search_candidates(term=None, tags=None, experience=None, city=None, recency_days=None, 
                            registered_today=False, status=None, availability=None, min_score=None,
-                           limit=None, offset=None):
+                           limit=None, offset=None, user_id=None, tenant_id=None):
     """
     Lógica de búsqueda interna que puede ser llamada desde la API o el Asistente.
     
@@ -3853,6 +3881,8 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         min_score (int, optional): Puntuación mínima.
         limit (int, optional): Límite de resultados.
         offset (int, optional): Desplazamiento para paginación.
+        user_id (int, optional): ID del usuario (para filtrar según permisos). 🔐 MÓDULO B5
+        tenant_id (int, optional): ID del tenant (para multi-tenancy). 🔐 MÓDULO B5
         
     Returns:
         list: Lista de candidatos con formato estandarizado para la interfaz.
@@ -3902,6 +3932,18 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         # Lista de condiciones de filtrado
         conditions = []
         params = []
+        
+        # 🔐 MÓDULO B5: Filtrar por tenant_id
+        if tenant_id:
+            conditions.append("a.tenant_id = %s")
+            params.append(tenant_id)
+        
+        # 🔐 MÓDULO B5: Filtrar por usuario según rol
+        if user_id and tenant_id:
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+            if condition:
+                conditions.append(f"({condition} OR a.created_by_user IS NULL)")
+                params.extend(filter_params)
 
         # Filtro por término de búsqueda
         if term:
@@ -4411,11 +4453,13 @@ def handle_candidates():
         return create_candidate()
 
 def get_candidates():
-    """Obtiene la lista de candidatos."""
+    """Obtiene la lista de candidatos (filtrada según permisos del usuario)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         # Obtener parámetros de consulta
         page = int(request.args.get('page', 1))
@@ -4458,6 +4502,12 @@ def get_candidates():
             WHERE a.tenant_id = %s
         """
         params = [tenant_id]
+        
+        # 🔐 MÓDULO B5: Filtrar por usuario según rol
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        if condition:
+            query += f" AND ({condition} OR a.created_by_user IS NULL)"  # Incluir registros antiguos sin creador
+            params.extend(filter_params)
         
         # Aplicar filtros
         if search:
@@ -4510,12 +4560,22 @@ def get_candidates():
             conn.close()
 
 def create_candidate():
-    """Crea un nuevo candidato."""
+    """Crea un nuevo candidato (con validación de permisos)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         data = request.get_json()
+        
+        # 🔐 MÓDULO B5: Verificar permiso de creación
+        if not can_create_resource(user_id, tenant_id, 'candidate'):
+            app.logger.warning(f"Usuario {user_id} intentó crear candidato sin permisos")
+            return jsonify({
+                'error': 'No tienes permisos para crear candidatos',
+                'required_permission': 'create'
+            }), 403
         
         # Validar datos requeridos
         required_fields = ['nombre_completo', 'email']
@@ -4529,13 +4589,13 @@ def create_candidate():
         if cursor.fetchone():
             return jsonify({'error': 'Ya existe un candidato con este email'}), 409
         
-        # Insertar nuevo candidato con estructura limpia
+        # 🔐 MÓDULO B5: Insertar con created_by_user
         sql = """
             INSERT INTO Afiliados (
                 nombre_completo, email, telefono, ciudad, cargo_solicitado,
                 experiencia, grado_academico, disponibilidad_rotativos, cv_url,
-                linkedin, portfolio, skills, observaciones, tenant_id, fecha_registro
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
+                linkedin, portfolio, skills, observaciones, tenant_id, created_by_user, fecha_registro
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
         """
         
         cursor.execute(sql, (
@@ -4552,7 +4612,8 @@ def create_candidate():
             data.get('portfolio', ''),
             data.get('skills', ''),
             data.get('observaciones', ''),
-            tenant_id
+            tenant_id,
+            user_id  # 🔐 Registrar quién creó el candidato
         ))
         
         conn.commit()
@@ -4608,11 +4669,21 @@ def create_candidate():
 @app.route('/api/candidates/<int:candidate_id>/profile', methods=['GET'])
 @token_required
 def get_candidate_profile(candidate_id):
-    """Obtiene el perfil completo de un candidato con sus aplicaciones."""
+    """Obtiene el perfil completo de un candidato con sus aplicaciones (con validación de acceso)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B5: Verificar acceso al candidato
+        if not can_access_resource(user_id, tenant_id, 'candidate', candidate_id, 'read'):
+            app.logger.warning(f"Usuario {user_id} intentó acceder a candidato {candidate_id} sin permisos")
+            return jsonify({
+                'error': 'No tienes acceso a este candidato',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Obtener información básica del candidato con estructura limpia
         cursor.execute("""
@@ -4709,7 +4780,7 @@ def get_candidate_profile(candidate_id):
 @token_required
 def search_candidates():
     """
-    Busca candidatos con filtros opcionales.
+    Busca candidatos con filtros opcionales (filtrado según permisos del usuario). 🔐 MÓDULO B5
     
     Parámetros de consulta:
     - q: Término de búsqueda general (opcional)
@@ -4722,6 +4793,11 @@ def search_candidates():
     - limit: Cantidad de resultados por página (por defecto: 10, máximo: 100)
     """
     try:
+        # 🔐 MÓDULO B5: Obtener contexto del usuario
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
         # Obtener parámetros de la URL con valores por defecto
         term = request.args.get('q', '').strip()
         tags = request.args.get('tags', '')
@@ -4738,7 +4814,7 @@ def search_candidates():
         except ValueError:
             return jsonify({"error": "Los parámetros de paginación deben ser números válidos"}), 400
         
-        # Llamar a la función interna con los argumentos de la URL
+        # 🔐 MÓDULO B5: Llamar a la función interna con user_id y tenant_id
         results = _internal_search_candidates(
             term=term, 
             tags=tags, 
@@ -4747,7 +4823,9 @@ def search_candidates():
             availability=availability,
             min_score=min_score,
             limit=limit,
-            offset=offset
+            offset=offset,
+            user_id=user_id,
+            tenant_id=tenant_id
         )
         
         # Contar el total de resultados (sin paginación) para la paginación
@@ -4757,7 +4835,9 @@ def search_candidates():
             registered_today=registered_today,
             status=status,
             availability=availability,
-            min_score=min_score
+            min_score=min_score,
+            user_id=user_id,
+            tenant_id=tenant_id
         ))
         
         # Formatear la respuesta según lo esperado por la interfaz
@@ -5311,6 +5391,8 @@ def handle_vacancies():
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         if request.method == 'GET':
             estado = request.args.get('estado')
@@ -5318,32 +5400,28 @@ def handle_vacancies():
             limit = int(request.args.get('limit', 10))
             offset = (page - 1) * limit
             
-            # Para administradores, mostrar todas las vacantes
-            # Para otros usuarios, filtrar por tenant
-            user_role = getattr(g, 'current_user', {}).get('rol', '')
-            if user_role == 'Administrador':
-                base_query = """
-                    SELECT V.*, C.empresa, COUNT(P.id_postulacion) as aplicaciones 
-                    FROM Vacantes V 
-                    JOIN Clientes C ON V.id_cliente = C.id_cliente
-                    LEFT JOIN Postulaciones P ON V.id_vacante = P.id_vacante
-                    GROUP BY V.id_vacante, C.empresa
-                """
-                params = []
-            else:
-                base_query = """
-                    SELECT V.*, C.empresa, COUNT(P.id_postulacion) as aplicaciones 
-                    FROM Vacantes V 
-                    JOIN Clientes C ON V.id_cliente = C.id_cliente
-                    LEFT JOIN Postulaciones P ON V.id_vacante = P.id_vacante
-                    WHERE V.id_cliente = %s
-                    GROUP BY V.id_vacante, C.empresa
-                """
-                params = [tenant_id]
+            # 🔐 MÓDULO B6: Filtrar por usuario según rol
+            base_query = """
+                SELECT V.*, C.empresa, COUNT(P.id_postulacion) as aplicaciones 
+                FROM Vacantes V 
+                JOIN Clientes C ON V.id_cliente = C.id_cliente
+                LEFT JOIN Postulaciones P ON V.id_vacante = P.id_vacante
+                WHERE V.tenant_id = %s
+            """
+            params = [tenant_id]
             
+            # 🔐 MÓDULO B6: Aplicar filtro por usuario
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'V.created_by_user')
+            if condition:
+                base_query += f" AND ({condition} OR V.created_by_user IS NULL)"
+                params.extend(filter_params)
+            
+            # Filtro de estado (debe ir antes del GROUP BY)
             if estado:
                 base_query += " AND V.estado = %s"
                 params.append(estado)
+            
+            base_query += " GROUP BY V.id_vacante, C.empresa"
             
             # Contar total de resultados
             count_query = f"SELECT COUNT(*) as total FROM ({base_query}) as count_table"
@@ -5372,6 +5450,14 @@ def handle_vacancies():
         elif request.method == 'POST':
             data = request.get_json()
             
+            # 🔐 MÓDULO B6: Verificar permiso de creación
+            if not can_create_resource(user_id, tenant_id, 'vacancy'):
+                app.logger.warning(f"Usuario {user_id} intentó crear vacante sin permisos")
+                return jsonify({
+                    'error': 'No tienes permisos para crear vacantes',
+                    'required_permission': 'create'
+                }), 403
+            
             # Validar datos requeridos
             if not data.get('id_cliente'):
                 return jsonify({"error": "El cliente es requerido"}), 400
@@ -5391,13 +5477,13 @@ def handle_vacancies():
             if not cursor.fetchone():
                 return jsonify({"error": "Cliente no válido o no pertenece a su organización"}), 400
             
-            # Crear la vacante con el cliente seleccionado y el tenant actual
+            # 🔐 MÓDULO B6: Crear vacante con created_by_user
             sql = """
                 INSERT INTO Vacantes (
                     id_cliente, cargo_solicitado, descripcion, ciudad, requisitos, 
-                    salario_min, salario_max, salario, fecha_apertura, estado, tenant_id
+                    salario_min, salario_max, salario, fecha_apertura, estado, tenant_id, created_by_user
                 ) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURDATE(), 'Abierta', %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURDATE(), 'Abierta', %s, %s)
             """
             cursor.execute(sql, (
                 id_cliente, 
@@ -5408,7 +5494,8 @@ def handle_vacancies():
                 data.get('salario_min'),
                 data.get('salario_max'),
                 data.get('salario'), 
-                tenant_id
+                tenant_id,
+                user_id  # 🔐 Registrar quién creó la vacante
             ))
             conn.commit()
             
@@ -5461,12 +5548,23 @@ def handle_vacancies():
 @app.route('/api/vacancies/<int:id_vacante>', methods=['DELETE'])
 @token_required
 def delete_vacancy(id_vacante):
-    """Elimina una vacante específica"""
+    """Elimina una vacante específica (con validación de acceso)."""
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B6: Verificar acceso de eliminación (requiere permiso 'full')
+        if not can_access_resource(user_id, tenant_id, 'vacancy', id_vacante, 'full'):
+            app.logger.warning(f"Usuario {user_id} intentó eliminar vacante {id_vacante} sin permisos")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes permisos para eliminar esta vacante',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Verificar que la vacante pertenece al tenant
         cursor.execute("SELECT id_vacante, cargo_solicitado, estado FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (id_vacante, tenant_id))
@@ -5510,17 +5608,42 @@ def delete_vacancy(id_vacante):
 @app.route('/api/vacancies/<int:id_vacante>/status', methods=['PUT'])
 @token_required
 def update_vacancy_status(id_vacante):
+    """Actualiza el estado de una vacante (con validación de acceso)."""
     data = request.get_json()
     nuevo_estado = data.get('estado')
     if not nuevo_estado: return jsonify({"error": "El nuevo estado es requerido"}), 400
+    
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor()
     try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B6: Verificar acceso de escritura
+        if not can_access_resource(user_id, tenant_id, 'vacancy', id_vacante, 'write'):
+            app.logger.warning(f"Usuario {user_id} intentó actualizar estado de vacante {id_vacante} sin permisos")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes permisos para modificar esta vacante',
+                'code': 'FORBIDDEN'
+            }), 403
+        
+        # 🔐 MÓDULO B6: Actualizar con tenant_id para seguridad
         if nuevo_estado.lower() == 'cerrada':
-            cursor.execute("UPDATE Vacantes SET estado = %s, fecha_cierre = CURDATE() WHERE id_vacante = %s", (nuevo_estado, id_vacante))
+            cursor.execute("""
+                UPDATE Vacantes 
+                SET estado = %s, fecha_cierre = CURDATE() 
+                WHERE id_vacante = %s AND tenant_id = %s
+            """, (nuevo_estado, id_vacante, tenant_id))
         else:
-            cursor.execute("UPDATE Vacantes SET estado = %s WHERE id_vacante = %s", (nuevo_estado, id_vacante))
+            cursor.execute("""
+                UPDATE Vacantes 
+                SET estado = %s 
+                WHERE id_vacante = %s AND tenant_id = %s
+            """, (nuevo_estado, id_vacante, tenant_id))
+        
         conn.commit()
         return jsonify({"success": True, "message": f"Vacante actualizada a {nuevo_estado}."})
     except Exception as e:
@@ -5541,9 +5664,8 @@ def handle_applications():
     try:
         if request.method == 'GET':
             tenant_id = get_current_tenant_id()
-            # Para administradores, mostrar todas las postulaciones
-            # Para otros usuarios, filtrar por tenant a través de Vacantes
-            user_role = getattr(g, 'current_user', {}).get('rol', '')
+            user_data = g.current_user
+            user_id = user_data.get('user_id')
             
             # Consulta base
             base_sql = """
@@ -5560,10 +5682,15 @@ def handle_applications():
             conditions = []
             params = []
             
-            # Filtrar por tenant si no es administrador
-            if user_role != 'Administrador':
-                conditions.append("v.tenant_id = %s")
-                params.append(tenant_id)
+            # 🔐 MÓDULO B7: Siempre filtrar por tenant
+            conditions.append("v.tenant_id = %s")
+            params.append(tenant_id)
+            
+            # 🔐 MÓDULO B7: Filtrar por usuario según rol (a través de la vacante)
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+            if condition:
+                conditions.append(f"({condition} OR v.created_by_user IS NULL)")
+                params.extend(filter_params)
             
             # Filtros adicionales
             if request.args.get('id_afiliado'):
@@ -5595,6 +5722,18 @@ def handle_applications():
         
         elif request.method == 'POST':
             data = request.get_json()
+            tenant_id = get_current_tenant_id()
+            user_data = g.current_user
+            user_id = user_data.get('user_id')
+            
+            # 🔐 MÓDULO B7: Verificar permiso de creación
+            if not can_create_resource(user_id, tenant_id, 'application'):
+                app.logger.warning(f"Usuario {user_id} intentó crear postulación sin permisos")
+                return jsonify({
+                    'success': False,
+                    'message': 'No tienes permisos para crear postulaciones',
+                    'required_permission': 'create'
+                }), 403
             
             # Debug: Log received data
             print(f"DEBUG: Received application data: {data}")
@@ -5615,9 +5754,9 @@ def handle_applications():
                 print(f"DEBUG: Postulación ya existe: {existing}")
                 return jsonify({"success": False, "message": "Este candidato ya ha postulado a esta vacante."}), 409
             
-            # Insertar la nueva postulación
-            sql = "INSERT INTO Postulaciones (id_afiliado, id_vacante, fecha_aplicacion, estado, comentarios) VALUES (%s, %s, NOW(), 'Recibida', %s)"
-            cursor.execute(sql, (data['id_afiliado'], data['id_vacante'], data.get('comentarios', '')))
+            # 🔐 MÓDULO B7: Insertar con created_by_user
+            sql = "INSERT INTO Postulaciones (id_afiliado, id_vacante, fecha_aplicacion, estado, comentarios, created_by_user) VALUES (%s, %s, NOW(), 'Recibida', %s, %s)"
+            cursor.execute(sql, (data['id_afiliado'], data['id_vacante'], data.get('comentarios', ''), user_id))
             new_postulation_id = cursor.lastrowid
             conn.commit()
 
@@ -5662,25 +5801,44 @@ def handle_applications():
                 # Convertir Decimal a float si existe
                 salario_val = info.get('salario')
                 salario_str = f"L. {float(salario_val):,.2f}" if salario_val else "No especificado"
-                message_body = (
-                    f"¡Hola {info['nombre_completo'].split(' ')[0]}! Te saluda Henmir. 👋\n\n"
-                    f"Hemos considerado tu perfil para una nueva oportunidad laboral y te hemos postulado a la siguiente vacante:\n\n"
-                    f"📌 *Puesto:* {info['cargo_solicitado']}\n"
-                    f"📍 *Ubicación:* {info['ciudad']}\n"
-                    f"💰 *Salario:* {salario_str}\n\n"
-                    f"*Requisitos principales:*\n{info['requisitos']}\n\n"
-                    "Por favor, confirma si estás interesado/a en continuar con este proceso. ¡Mucho éxito!"
-                )
+                requirements_str = info.get('requisitos', 'No especificados')
                 
-                # Notificaciones WhatsApp temporalmente deshabilitadas
-                # TODO: Configurar Redis/Celery para habilitar notificaciones
-                app.logger.info(f"Notificación WhatsApp deshabilitada - Candidato: {info['nombre_completo']}, Teléfono: {info['telefono']}")
-                
+                # Enviar notificación de WhatsApp usando el servicio
+                try:
+                    success, notification_message = send_application_notification(
+                        tenant_id=info.get('tenant_id', tenant_id),
+                        phone=info['telefono'],
+                        candidate_name=info['nombre_completo'],
+                        vacancy_title=info['cargo_solicitado'],
+                        city=info['ciudad'],
+                        salary=salario_str,
+                        requirements=requirements_str
+                    )
+                    
+                    if success:
+                        app.logger.info(f"✅ Notificación WhatsApp enviada - Candidato: {info['nombre_completo']}")
                 return jsonify({
                     "success": True, 
-                    "message": "Postulación registrada exitosamente. (Notificaciones WhatsApp temporalmente deshabilitadas)", 
+                            "message": "Postulación registrada y notificación enviada", 
                     "id_postulacion": new_postulation_id,
-                    "notification_status": "disabled"
+                            "notification_status": "sent"
+                        }), 201
+                    else:
+                        app.logger.warning(f"⚠️ No se pudo enviar notificación WhatsApp: {notification_message}")
+                        return jsonify({
+                            "success": True, 
+                            "message": "Postulación registrada (notificación no enviada)", 
+                            "id_postulacion": new_postulation_id,
+                            "notification_status": "failed",
+                            "notification_error": notification_message
+                        }), 201
+                except Exception as e:
+                    app.logger.error(f"❌ Error enviando notificación WhatsApp: {str(e)}")
+                    return jsonify({
+                        "success": True, 
+                        "message": "Postulación registrada (error en notificación)", 
+                        "id_postulacion": new_postulation_id,
+                        "notification_status": "error"
                 }), 201
             
             return jsonify({"success": True, "message": "Postulación registrada (candidato sin teléfono para notificar).", "id_postulacion": new_postulation_id}), 201
@@ -5694,16 +5852,36 @@ def handle_applications():
 @app.route('/api/applications/<int:id_postulacion>', methods=['DELETE'])
 @token_required
 def delete_application(id_postulacion):
+    """Elimina una postulación (con validación de acceso a través de la vacante)."""
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor()
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
-        # Verificar que la postulación pertenece al tenant
-        cursor.execute("SELECT id_postulacion FROM Postulaciones WHERE id_postulacion = %s AND tenant_id = %s", (id_postulacion, tenant_id))
-        if not cursor.fetchone():
+        # 🔐 MÓDULO B7: Verificar que la postulación existe y obtener su vacante
+        cursor.execute("""
+            SELECT p.id_postulacion, p.id_vacante, v.tenant_id
+            FROM Postulaciones p
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE p.id_postulacion = %s AND v.tenant_id = %s
+        """, (id_postulacion, tenant_id))
+        
+        postulacion = cursor.fetchone()
+        if not postulacion:
             return jsonify({"success": False, "error": "Postulación no encontrada."}), 404
+        
+        # 🔐 MÓDULO B7: Verificar acceso de eliminación (requiere permiso 'full' en la vacante)
+        vacancy_id = postulacion[1]  # id_vacante
+        if not can_access_resource(user_id, tenant_id, 'vacancy', vacancy_id, 'full'):
+            app.logger.warning(f"Usuario {user_id} intentó eliminar postulación {id_postulacion} sin acceso completo a vacante {vacancy_id}")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes permisos para eliminar esta postulación',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Antes de borrar la postulación, borramos las entrevistas asociadas si existen
         cursor.execute("DELETE FROM Entrevistas WHERE id_postulacion = %s", (id_postulacion,))
@@ -5726,6 +5904,7 @@ def delete_application(id_postulacion):
 @app.route('/api/applications/<int:id_postulacion>/comments', methods=['PUT'])
 @token_required
 def update_application_comments(id_postulacion):
+    """Actualiza los comentarios de una postulación (con validación de acceso a través de la vacante)."""
     data = request.get_json()
     nuevos_comentarios = data.get('comentarios', '') # Aceptamos comentarios vacíos
 
@@ -5736,12 +5915,35 @@ def update_application_comments(id_postulacion):
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor()
     try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B7: Verificar que la postulación existe y obtener su vacante
+        cursor.execute("""
+            SELECT p.id_postulacion, p.id_vacante, v.tenant_id
+            FROM Postulaciones p
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE p.id_postulacion = %s AND v.tenant_id = %s
+        """, (id_postulacion, tenant_id))
+        
+        postulacion = cursor.fetchone()
+        if not postulacion:
+            return jsonify({"success": False, "error": "Postulación no encontrada."}), 404
+        
+        # 🔐 MÓDULO B7: Verificar acceso de escritura a través de la vacante
+        vacancy_id = postulacion[1]  # id_vacante
+        if not can_access_resource(user_id, tenant_id, 'vacancy', vacancy_id, 'write'):
+            app.logger.warning(f"Usuario {user_id} intentó actualizar comentarios de postulación {id_postulacion} sin acceso a vacante {vacancy_id}")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes permisos para editar esta postulación',
+                'code': 'FORBIDDEN'
+            }), 403
+        
+        # Actualizar comentarios
         sql = "UPDATE Postulaciones SET comentarios = %s WHERE id_postulacion = %s"
         cursor.execute(sql, (nuevos_comentarios, id_postulacion))
-
-        if cursor.rowcount == 0:
-            conn.rollback()
-            return jsonify({"success": False, "error": f"No se encontró una postulación con el ID {id_postulacion}."}), 404
 
         conn.commit()
         return jsonify({"success": True, "message": "Comentarios de la postulación actualizados."})
@@ -5763,6 +5965,8 @@ def handle_interviews():
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         if request.method == 'GET':
             sql = """
@@ -5776,6 +5980,18 @@ def handle_interviews():
             """
             conditions = []
             params = []
+            
+            # 🔐 MÓDULO B8: Siempre filtrar por tenant
+            conditions.append("v.tenant_id = %s")
+            params.append(tenant_id)
+            
+            # 🔐 MÓDULO B8: Filtrar por usuario según rol (a través de la vacante)
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+            if condition:
+                conditions.append(f"({condition} OR v.created_by_user IS NULL)")
+                params.extend(filter_params)
+            
+            # Filtros adicionales
             if request.args.get('vacante_id'):
                 conditions.append("v.id_vacante = %s")
                 params.append(request.args.get('vacante_id'))
@@ -5785,8 +6001,8 @@ def handle_interviews():
             if request.args.get('id_afiliado'):
                 conditions.append("p.id_afiliado = %s")
                 params.append(request.args.get('id_afiliado'))
-            if conditions:
-                sql += " WHERE " + " AND ".join(conditions)
+            
+            sql += " WHERE " + " AND ".join(conditions)
             sql += " ORDER BY e.fecha_hora DESC"
             cursor.execute(sql, tuple(params))
             results = cursor.fetchall()
@@ -5806,13 +6022,29 @@ def handle_interviews():
                 return jsonify({"success": False, "error": "Faltan datos requeridos."}), 400
 
             try:
-                # Verificar que la postulación pertenece al tenant
-                cursor.execute("SELECT id_postulacion FROM Postulaciones WHERE id_postulacion = %s AND tenant_id = %s", (id_postulacion, tenant_id))
+                # 🔐 MÓDULO B8: Verificar permiso de creación
+                if not can_create_resource(user_id, tenant_id, 'interview'):
+                    app.logger.warning(f"Usuario {user_id} intentó agendar entrevista sin permisos")
+                    return jsonify({
+                        'success': False,
+                        'error': 'No tienes permisos para agendar entrevistas',
+                        'required_permission': 'create'
+                    }), 403
+                
+                # 🔐 MÓDULO B8: Verificar que la postulación existe a través de Vacantes
+                cursor.execute("""
+                    SELECT p.id_postulacion, v.id_vacante, v.tenant_id
+                    FROM Postulaciones p
+                    JOIN Vacantes v ON p.id_vacante = v.id_vacante
+                    WHERE p.id_postulacion = %s AND v.tenant_id = %s
+                """, (id_postulacion, tenant_id))
+                
                 if not cursor.fetchone():
                     return jsonify({"success": False, "error": "Postulación no encontrada."}), 404
                 
-                sql_insert = "INSERT INTO Entrevistas (id_postulacion, fecha_hora, entrevistador, resultado, observaciones, id_cliente) VALUES (%s, %s, %s, 'Programada', %s, %s)"
-                cursor.execute(sql_insert, (id_postulacion, fecha_hora_str, entrevistador, observaciones, tenant_id))
+                # 🔐 MÓDULO B8: Insertar con created_by_user
+                sql_insert = "INSERT INTO Entrevistas (id_postulacion, fecha_hora, entrevistador, resultado, observaciones, id_cliente, created_by_user) VALUES (%s, %s, %s, 'Programada', %s, %s, %s)"
+                cursor.execute(sql_insert, (id_postulacion, fecha_hora_str, entrevistador, observaciones, tenant_id, user_id))
                 new_interview_id = cursor.lastrowid
                 
                 cursor.execute("UPDATE Postulaciones SET estado = 'En Entrevista' WHERE id_postulacion = %s", (id_postulacion,))
@@ -5860,21 +6092,43 @@ def handle_interviews():
                 if info and info.get('telefono'):
                     fecha_obj = datetime.fromisoformat(fecha_hora_str)
                     fecha_formateada = fecha_obj.strftime('%A, %d de %B de %Y a las %I:%M %p')
-                    message_body = (
-                        f"¡Buenas noticias, {info['nombre_completo'].split(' ')[0]}! 🎉\n\n"
-                        f"Hemos agendado tu entrevista para la vacante de *{info['cargo_solicitado']}* en la empresa *{info['empresa']}*.\n\n"
-                        f"🗓️ *Fecha y Hora:* {fecha_formateada}\n👤 *Entrevistador(a):* {entrevistador}\n\n*Detalles adicionales:*\n{observaciones}\n\n"
-                        "Por favor, sé puntual. ¡Te deseamos mucho éxito en tu entrevista!"
-                    )
                     
-                    # Notificaciones WhatsApp temporalmente deshabilitadas
-                    app.logger.info(f"Notificación WhatsApp deshabilitada para entrevista - Candidato: {info['nombre_completo']}")
-                    
+                    # Enviar notificación de WhatsApp usando el servicio
+                    try:
+                        success, notification_message = send_interview_notification(
+                            tenant_id=tenant_id,
+                            phone=info['telefono'],
+                            candidate_name=info['nombre_completo'],
+                            vacancy_title=info['cargo_solicitado'],
+                            company=info['empresa'],
+                            interview_date=fecha_formateada,
+                            interviewer=entrevistador,
+                            notes=observaciones
+                        )
+                        
+                        if success:
+                            app.logger.info(f"✅ Notificación WhatsApp de entrevista enviada - Candidato: {info['nombre_completo']}")
                     return jsonify({
                         "success": True, 
-                        "message": "Entrevista agendada exitosamente. (Notificaciones WhatsApp temporalmente deshabilitadas)", 
+                                "message": "Entrevista agendada y notificación enviada", 
                         "id_entrevista": new_interview_id,
-                        "notification_status": "disabled"
+                                "notification_status": "sent"
+                            }), 201
+                        else:
+                            app.logger.warning(f"⚠️ No se pudo enviar notificación de entrevista: {notification_message}")
+                            return jsonify({
+                                "success": True, 
+                                "message": "Entrevista agendada (notificación no enviada)", 
+                                "id_entrevista": new_interview_id,
+                                "notification_status": "failed"
+                            }), 201
+                    except Exception as e:
+                        app.logger.error(f"❌ Error enviando notificación de entrevista: {str(e)}")
+                        return jsonify({
+                            "success": True, 
+                            "message": "Entrevista agendada (error en notificación)", 
+                            "id_entrevista": new_interview_id,
+                            "notification_status": "error"
                     }), 201
                 
                 return jsonify({"success": True, "message": "Entrevista agendada."}), 201
@@ -5894,26 +6148,38 @@ def handle_interviews():
 @app.route('/api/interviews/<int:id_entrevista>', methods=['DELETE'])
 @token_required
 def delete_interview(id_entrevista):
-    """Elimina una entrevista específica"""
+    """Elimina una entrevista específica (con validación de acceso a través de la vacante)."""
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
-        # Verificar que la entrevista existe y pertenece al tenant
+        # 🔐 MÓDULO B8: Verificar que la entrevista existe y obtener su vacante
         cursor.execute("""
-            SELECT e.id_entrevista, p.id_afiliado, v.cargo_solicitado, a.nombre_completo
+            SELECT e.id_entrevista, p.id_afiliado, p.id_vacante, v.cargo_solicitado, v.tenant_id, a.nombre_completo
             FROM Entrevistas e
             JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
             JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
-            WHERE e.id_entrevista = %s AND e.id_cliente = %s
+            WHERE e.id_entrevista = %s AND v.tenant_id = %s
         """, (id_entrevista, tenant_id))
         
         entrevista = cursor.fetchone()
         if not entrevista:
             return jsonify({"success": False, "error": "Entrevista no encontrada"}), 404
+        
+        # 🔐 MÓDULO B8: Verificar acceso de eliminación (requiere permiso 'full' en la vacante)
+        vacancy_id = entrevista['id_vacante']
+        if not can_access_resource(user_id, tenant_id, 'vacancy', vacancy_id, 'full'):
+            app.logger.warning(f"Usuario {user_id} intentó eliminar entrevista {id_entrevista} sin acceso completo a vacante {vacancy_id}")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes permisos para eliminar esta entrevista',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Eliminar la entrevista
         cursor.execute("DELETE FROM Entrevistas WHERE id_entrevista = %s", (id_entrevista,))
@@ -6043,9 +6309,14 @@ def handle_hired():
             return jsonify({"error": "Error de BD"}), 500
         
         cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         if request.method == 'GET':
             app.logger.info("Obteniendo lista de contratados")
+            
+            # 🔐 MÓDULO B10: Query con filtro por tenant y usuario
             sql = """
                 SELECT 
                     co.id_contratado, co.fecha_contratacion, co.salario_final,
@@ -6057,9 +6328,19 @@ def handle_hired():
                 JOIN Afiliados a ON co.id_afiliado = a.id_afiliado
                 JOIN Vacantes v ON co.id_vacante = v.id_vacante
                 JOIN Clientes c ON v.id_cliente = c.id_cliente
-                ORDER BY saldo_pendiente DESC, co.fecha_contratacion DESC;
+                WHERE co.tenant_id = %s
             """
-            cursor.execute(sql)
+            params = [tenant_id]
+            
+            # 🔐 MÓDULO B10: Filtrar por usuario según rol
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'co.created_by_user')
+            if condition:
+                sql += f" AND ({condition} OR co.created_by_user IS NULL)"
+                params.extend(filter_params)
+            
+            sql += " ORDER BY saldo_pendiente DESC, co.fecha_contratacion DESC"
+            
+            cursor.execute(sql, tuple(params))
             results = cursor.fetchall()
             
             # Procesar resultados
@@ -6074,13 +6355,21 @@ def handle_hired():
             return jsonify(results)
         
         elif request.method == 'POST':
-            tenant_id = get_current_tenant_id()
             data = request.get_json()
             id_afiliado = data.get('id_afiliado')
             id_vacante = data.get('id_vacante')
 
             if not all([id_afiliado, id_vacante]):
                  return jsonify({"success": False, "error": "Faltan id_afiliado o id_vacante."}), 400
+            
+            # 🔐 MÓDULO B10: Verificar permiso de creación
+            if not can_create_resource(user_id, tenant_id, 'hired'):
+                app.logger.warning(f"Usuario {user_id} intentó registrar contratación sin permisos")
+                return jsonify({
+                    'success': False,
+                    'error': 'No tienes permisos para registrar contrataciones',
+                    'required_permission': 'create'
+                }), 403
             
             # Verificar que el afiliado y vacante pertenecen al tenant
             cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s", (id_afiliado,))
@@ -6091,11 +6380,18 @@ def handle_hired():
             if not cursor.fetchone():
                 return jsonify({"success": False, "error": "Vacante no encontrada."}), 404
             
-            sql_insert = "INSERT INTO Contratados (id_afiliado, id_vacante, fecha_contratacion, salario_final, tarifa_servicio, tenant_id) VALUES (%s, %s, CURDATE(), %s, %s, %s)"
-            cursor.execute(sql_insert, (id_afiliado, id_vacante, data.get('salario_final'), data.get('tarifa_servicio'), tenant_id))
+            # 🔐 MÓDULO B10: Insertar con created_by_user
+            sql_insert = "INSERT INTO Contratados (id_afiliado, id_vacante, fecha_contratacion, salario_final, tarifa_servicio, tenant_id, created_by_user) VALUES (%s, %s, CURDATE(), %s, %s, %s, %s)"
+            cursor.execute(sql_insert, (id_afiliado, id_vacante, data.get('salario_final'), data.get('tarifa_servicio'), tenant_id, user_id))
             new_hired_id = cursor.lastrowid
             
-            cursor.execute("UPDATE Postulaciones SET estado = 'Contratado' WHERE id_afiliado = %s AND id_vacante = %s AND tenant_id = %s", (id_afiliado, id_vacante, tenant_id))
+            # 🔐 MÓDULO B10: Corregir UPDATE de Postulaciones (sin tenant_id directo)
+            cursor.execute("""
+                UPDATE Postulaciones p
+                JOIN Vacantes v ON p.id_vacante = v.id_vacante
+                SET p.estado = 'Contratado'
+                WHERE p.id_afiliado = %s AND p.id_vacante = %s AND v.tenant_id = %s
+            """, (id_afiliado, id_vacante, tenant_id))
             conn.commit()
 
             cursor.execute("""
@@ -6106,21 +6402,39 @@ def handle_hired():
             info = cursor.fetchone()
 
             if info and info.get('telefono'):
-                message_body = (
-                    f"¡FELICIDADES, {info['nombre_completo'].split(' ')[0]}! 🥳\n\n"
-                    f"Nos complace enormemente informarte que has sido **CONTRATADO/A** para el puesto de *{info['cargo_solicitado']}* en la empresa *{info['empresa']}*.\n\n"
-                    "Este es un gran logro y el resultado de tu excelente desempeño en el proceso de selección. En breve, el equipo de recursos humanos de la empresa se pondrá en contacto contigo para coordinar los siguientes pasos.\n\n"
-                    "De parte de todo el equipo de Henmir, ¡te deseamos el mayor de los éxitos en tu nuevo rol!"
-                )
-                
-                # Notificaciones WhatsApp temporalmente deshabilitadas
-                app.logger.info(f"Notificación WhatsApp deshabilitada para contratación - Candidato: {info['nombre_completo']}")
-                
+                # Enviar notificación de WhatsApp usando el servicio
+                try:
+                    success, notification_message = send_hired_notification(
+                        tenant_id=tenant_id,
+                        phone=info['telefono'],
+                        candidate_name=info['nombre_completo'],
+                        vacancy_title=info['cargo_solicitado'],
+                        company=info['empresa']
+                    )
+                    
+                    if success:
+                        app.logger.info(f"✅ Notificación WhatsApp de contratación enviada - Candidato: {info['nombre_completo']}")
                 return jsonify({
                     "success": True, 
-                    "message": "Candidato contratado exitosamente. (Notificaciones WhatsApp temporalmente deshabilitadas)", 
+                            "message": "Candidato contratado y notificación enviada", 
                     "id_contratado": new_hired_id,
-                    "notification_status": "disabled"
+                            "notification_status": "sent"
+                        }), 201
+                    else:
+                        app.logger.warning(f"⚠️ No se pudo enviar notificación de contratación: {notification_message}")
+                        return jsonify({
+                            "success": True, 
+                            "message": "Candidato contratado (notificación no enviada)", 
+                            "id_contratado": new_hired_id,
+                            "notification_status": "failed"
+                        }), 201
+                except Exception as e:
+                    app.logger.error(f"❌ Error enviando notificación de contratación: {str(e)}")
+                    return jsonify({
+                        "success": True, 
+                        "message": "Candidato contratado (error en notificación)", 
+                        "id_contratado": new_hired_id,
+                        "notification_status": "error"
                 }), 201
 
             return jsonify({"success": True, "message": "Candidato registrado como contratado."}), 201
@@ -6139,6 +6453,7 @@ def handle_hired():
 @app.route('/api/hired/<int:id_contratado>/payment', methods=['POST'])
 @token_required
 def register_payment(id_contratado):
+    """Registra un pago a un contratado (con validación de acceso)."""
     data = request.get_json()
     monto_pago = data.get('monto')
 
@@ -6157,6 +6472,17 @@ def register_payment(id_contratado):
     cursor = conn.cursor()
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B10: Verificar acceso de escritura al contratado
+        if not can_access_resource(user_id, tenant_id, 'hired', id_contratado, 'write'):
+            app.logger.warning(f"Usuario {user_id} intentó registrar pago en contratado {id_contratado} sin permisos")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes acceso a este registro de contratación',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Obtener información del contratado antes de actualizar
         cursor.execute("""
@@ -6219,11 +6545,23 @@ def register_payment(id_contratado):
 @app.route('/api/hired/<int:id_contratado>', methods=['DELETE'])
 @token_required
 def annul_hiring(id_contratado):
+    """Anula una contratación (con validación de acceso)."""
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B10: Verificar acceso de eliminación (requiere permiso 'full')
+        if not can_access_resource(user_id, tenant_id, 'hired', id_contratado, 'full'):
+            app.logger.warning(f"Usuario {user_id} intentó anular contratación {id_contratado} sin permisos")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes permisos para anular esta contratación',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Primero, obtenemos los IDs necesarios antes de borrar
         cursor.execute("SELECT id_afiliado, id_vacante FROM Contratados WHERE id_contratado = %s AND tenant_id = %s", (id_contratado, tenant_id))
@@ -6234,8 +6572,13 @@ def annul_hiring(id_contratado):
         # Segundo, borramos el registro de la tabla Contratados
         cursor.execute("DELETE FROM Contratados WHERE id_contratado = %s AND tenant_id = %s", (id_contratado, tenant_id))
         
-        # Tercero, revertimos el estado de la postulación a 'Oferta' o el estado anterior que consideres
-        cursor.execute("UPDATE Postulaciones SET estado = 'Oferta' WHERE id_afiliado = %s AND id_vacante = %s AND tenant_id = %s", (record['id_afiliado'], record['id_vacante'], tenant_id))
+        # 🔐 MÓDULO B10: Corregir UPDATE de Postulaciones (sin tenant_id directo)
+        cursor.execute("""
+            UPDATE Postulaciones p
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            SET p.estado = 'Oferta'
+            WHERE p.id_afiliado = %s AND p.id_vacante = %s AND v.tenant_id = %s
+        """, (record['id_afiliado'], record['id_vacante'], tenant_id))
         
         conn.commit()
         return jsonify({"success": True, "message": "Contratación anulada correctamente."})
@@ -6260,10 +6603,14 @@ def handle_clients():
         
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         if request.method == 'GET':
             app.logger.info("Obteniendo lista de clientes")
-            cursor.execute("""
+            
+            # 🔐 MÓDULO B9: Construir query con filtro por usuario
+            query = """
                 SELECT 
                     c.*,
                     c.contacto_nombre as contacto,
@@ -6271,16 +6618,36 @@ def handle_clients():
                 FROM Clientes c
                 LEFT JOIN Vacantes v ON c.id_cliente = v.id_cliente AND v.tenant_id = %s
                 WHERE c.tenant_id = %s
-                GROUP BY c.id_cliente
-                ORDER BY c.empresa
-            """, (tenant_id, tenant_id))
+            """
+            params = [tenant_id, tenant_id]
+            
+            # 🔐 MÓDULO B9: Filtrar por usuario según rol
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user')
+            if condition:
+                query += f" AND ({condition} OR c.created_by_user IS NULL)"
+                params.extend(filter_params)
+            
+            query += " GROUP BY c.id_cliente ORDER BY c.empresa"
+            
+            cursor.execute(query, tuple(params))
             results = cursor.fetchall()
             app.logger.info(f"Retornando {len(results)} clientes")
             return jsonify(results)
         elif request.method == 'POST':
             data = request.get_json()
-            sql = "INSERT INTO Clientes (empresa, contacto_nombre, telefono, email, sector, observaciones, tenant_id) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-            cursor.execute(sql, (data['empresa'], data['contacto_nombre'], data['telefono'], data['email'], data['sector'], data['observaciones'], tenant_id))
+            
+            # 🔐 MÓDULO B9: Verificar permiso de creación
+            if not can_create_resource(user_id, tenant_id, 'client'):
+                app.logger.warning(f"Usuario {user_id} intentó crear cliente sin permisos")
+                return jsonify({
+                    'success': False,
+                    'error': 'No tienes permisos para crear clientes',
+                    'required_permission': 'create'
+                }), 403
+            
+            # 🔐 MÓDULO B9: Insertar con created_by_user
+            sql = "INSERT INTO Clientes (empresa, contacto_nombre, telefono, email, sector, observaciones, tenant_id, created_by_user) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+            cursor.execute(sql, (data['empresa'], data['contacto_nombre'], data['telefono'], data['email'], data['sector'], data['observaciones'], tenant_id, user_id))
             conn.commit()
             
             # Obtener el ID del cliente creado
@@ -6330,12 +6697,23 @@ def handle_clients():
 @app.route('/api/clients/<int:client_id>', methods=['DELETE'])
 @token_required
 def delete_client(client_id):
-    """Elimina un cliente específico"""
+    """Elimina un cliente específico (con validación de acceso)."""
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de BD"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B9: Verificar acceso de eliminación (requiere permiso 'full')
+        if not can_access_resource(user_id, tenant_id, 'client', client_id, 'full'):
+            app.logger.warning(f"Usuario {user_id} intentó eliminar cliente {client_id} sin permisos")
+            return jsonify({
+                'success': False,
+                'error': 'No tienes permisos para eliminar este cliente',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Verificar que el cliente pertenece al tenant
         cursor.execute("SELECT id_cliente, empresa FROM Clientes WHERE id_cliente = %s AND tenant_id = %s", (client_id, tenant_id))
@@ -6379,6 +6757,7 @@ def delete_client(client_id):
 @app.route('/api/clients/<int:client_id>/metrics', methods=['GET'])
 @token_required
 def get_client_metrics(client_id):
+    """Obtiene métricas de un cliente (con validación de acceso)."""
     conn = get_db_connection()
     if not conn: 
         app.logger.error("Error de conexión a BD en /api/clients/metrics")
@@ -6387,7 +6766,19 @@ def get_client_metrics(client_id):
     cursor = conn.cursor(dictionary=True)
     
     try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
         app.logger.info(f"Obteniendo métricas para cliente {client_id}")
+        
+        # 🔐 MÓDULO B9: Verificar acceso de lectura
+        if not can_access_resource(user_id, tenant_id, 'client', client_id, 'read'):
+            app.logger.warning(f"Usuario {user_id} intentó acceder a métricas de cliente {client_id} sin permisos")
+            return jsonify({
+                'error': 'No tienes acceso a este cliente',
+                'code': 'FORBIDDEN'
+            }), 403
         
         # Verificar que el cliente existe
         cursor.execute("SELECT id_cliente FROM Clientes WHERE id_cliente = %s AND tenant_id = %s", (client_id, tenant_id))
@@ -8330,11 +8721,21 @@ def calendar_reminder_detail(reminder_id):
 @app.route('/api/clients/<int:client_id>/vacancies', methods=['GET'])
 @token_required
 def get_client_vacancies(client_id):
-    """Obtener vacantes de un cliente específico"""
+    """Obtener vacantes de un cliente específico (con validación de acceso)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B9: Verificar acceso de lectura al cliente
+        if not can_access_resource(user_id, tenant_id, 'client', client_id, 'read'):
+            app.logger.warning(f"Usuario {user_id} intentó acceder a vacantes de cliente {client_id} sin permisos")
+            return jsonify({
+                'error': 'No tienes acceso a este cliente',
+                'code': 'FORBIDDEN'
+            }), 403
         
         cursor.execute("""
             SELECT 
@@ -8348,9 +8749,9 @@ def get_client_vacancies(client_id):
                 v.estado,
                 v.created_at
             FROM Vacantes v
-            WHERE v.id_cliente = %s
+            WHERE v.id_cliente = %s AND v.tenant_id = %s
             ORDER BY v.fecha_apertura DESC
-        """, (client_id,))
+        """, (client_id, tenant_id))
         
         vacancies = cursor.fetchall()
         
@@ -8377,11 +8778,21 @@ def get_client_vacancies(client_id):
 @app.route('/api/clients/<int:client_id>/applications', methods=['GET'])
 @token_required
 def get_client_applications(client_id):
-    """Obtener postulaciones de un cliente específico"""
+    """Obtener postulaciones de un cliente específico (con validación de acceso)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B9: Verificar acceso de lectura al cliente
+        if not can_access_resource(user_id, tenant_id, 'client', client_id, 'read'):
+            app.logger.warning(f"Usuario {user_id} intentó acceder a postulaciones de cliente {client_id} sin permisos")
+            return jsonify({
+                'error': 'No tienes acceso a este cliente',
+                'code': 'FORBIDDEN'
+            }), 403
         
         cursor.execute("""
             SELECT
@@ -8398,7 +8809,7 @@ def get_client_applications(client_id):
             FROM Postulaciones p
             LEFT JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
             LEFT JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            WHERE v.id_cliente = %s
+            WHERE v.id_cliente = %s AND v.tenant_id = %s
             ORDER BY p.fecha_aplicacion DESC
         """, (client_id,))
         
@@ -8423,11 +8834,21 @@ def get_client_applications(client_id):
 @app.route('/api/clients/<int:client_id>/hired-candidates', methods=['GET'])
 @token_required
 def get_client_hired_candidates(client_id):
-    """Obtener candidatos contratados de un cliente específico"""
+    """Obtener candidatos contratados de un cliente específico (con validación de acceso)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 MÓDULO B9: Verificar acceso de lectura al cliente
+        if not can_access_resource(user_id, tenant_id, 'client', client_id, 'read'):
+            app.logger.warning(f"Usuario {user_id} intentó acceder a contratados de cliente {client_id} sin permisos")
+            return jsonify({
+                'error': 'No tienes acceso a este cliente',
+                'code': 'FORBIDDEN'
+            }), 403
         
         cursor.execute("""
             SELECT 
