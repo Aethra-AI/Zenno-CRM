@@ -77,6 +77,7 @@ from permission_service import (
     get_accessible_user_ids,
     can_manage_users,
     is_supervisor,
+    get_user_permissions,
     get_effective_permissions,
     has_permission,
     get_permission_scope,
