@@ -76,7 +76,11 @@ from permission_service import (
     get_user_role_name,
     get_accessible_user_ids,
     can_manage_users,
-    is_supervisor
+    is_supervisor,
+    get_effective_permissions,
+    has_permission,
+    get_permission_scope,
+    can_perform_action
 )
 from werkzeug.utils import secure_filename
 from flask import Flask, jsonify, request, Response, send_file, send_from_directory, g, url_for, redirect
@@ -4518,13 +4522,13 @@ def get_dashboard_metrics():
         # 7. Ingresos generados - 🔐 CORRECCIÓN: Solo Admin puede ver datos financieros
         ingresos_totales = 0
         if is_admin(user_id, tenant_id):
-        cursor.execute("""
-            SELECT SUM(COALESCE(tarifa_servicio, 0)) as ingresos_totales
-            FROM Contratados
-            WHERE fecha_contratacion >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
-            AND tenant_id = %s
-        """, (tenant_id,))
-        ingresos_totales = cursor.fetchone()['ingresos_totales'] or 0
+            cursor.execute("""
+                SELECT SUM(COALESCE(tarifa_servicio, 0)) as ingresos_totales
+                FROM Contratados
+                WHERE fecha_contratacion >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+                AND tenant_id = %s
+            """, (tenant_id,))
+            ingresos_totales = cursor.fetchone()['ingresos_totales'] or 0
         
         # 8. Top 5 clientes por actividad (filtrado por usuario)
         sql = """
@@ -8697,7 +8701,6 @@ def get_user_custom_permissions(user_id):
         custom_perms = json.loads(user['custom_permissions']) if user['custom_permissions'] else {}
         
         # Obtener permisos efectivos (merge)
-        from permission_service import get_effective_permissions
         effective_perms = get_effective_permissions(user_id, tenant_id)
         
         cursor.close()
@@ -10194,7 +10197,6 @@ def get_permissions():
         rol = user.get('rol', '')
         
         # 🔐 CORRECCIÓN: Obtener permisos desde permission_service
-        from permission_service import get_user_permissions
         permisos_completos = get_user_permissions(user_id, tenant_id)
         
         # Definir permisos basados en el rol y permisos reales

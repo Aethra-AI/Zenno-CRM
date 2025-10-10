@@ -155,10 +155,11 @@ def check_permission(user_id, tenant_id, permission_key):
 
 def get_user_permissions(user_id, tenant_id):
     """
-    Obtiene todos los permisos del usuario.
+    Obtiene todos los permisos del usuario (solo del rol, sin custom).
+    Para permisos completos usar get_effective_permissions().
     
     Returns:
-        dict: Diccionario de permisos
+        dict: Diccionario de permisos del rol
     """
     role_info = get_user_role_info(user_id, tenant_id)
     return role_info.get('permissions', {}) if role_info else {}
