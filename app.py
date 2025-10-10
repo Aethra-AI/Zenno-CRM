@@ -3311,6 +3311,18 @@ def handle_tags():
             return jsonify(cursor.fetchall())
         
         elif request.method == 'POST':
+            user_data = g.current_user
+            user_id = user_data.get('user_id')
+            
+            # 🔐 CORRECCIÓN: Solo Admin y Supervisor pueden crear tags
+            if not is_admin(user_id, tenant_id) and not is_supervisor(user_id, tenant_id):
+                app.logger.warning(f"❌ Usuario {user_id} (Reclutador) intentó crear tag sin permisos")
+                return jsonify({
+                    "success": False,
+                    "error": "No tienes permisos para crear tags",
+                    "code": "FORBIDDEN"
+                }), 403
+            
             data = request.get_json()
             nombre_tag = data.get('nombre_tag')
             if not nombre_tag:
@@ -3318,6 +3330,8 @@ def handle_tags():
             
             cursor.execute("INSERT INTO Tags (nombre_tag, tenant_id) VALUES (%s, %s)", (nombre_tag, tenant_id))
             conn.commit()
+            
+            app.logger.info(f"✅ Usuario {user_id} creó tag: {nombre_tag}")
             return jsonify({"success": True, "message": "Tag creado exitosamente.", "id_tag": cursor.lastrowid}), 201
     except mysql.connector.Error as err:
         if err.errno == 1062:  # Duplicate entry
@@ -3403,11 +3417,26 @@ def handle_email_templates():
         if request.method == 'GET':
             cursor.execute("SELECT id_template, nombre_plantilla, asunto, fecha_creacion FROM Email_Templates WHERE tenant_id = %s ORDER BY nombre_plantilla", (tenant_id,))
             return jsonify(cursor.fetchall())
+            
         elif request.method == 'POST':
+            user_data = g.current_user
+            user_id = user_data.get('user_id')
+            
+            # 🔐 CORRECCIÓN: Solo Admin y Supervisor pueden crear plantillas
+            if not is_admin(user_id, tenant_id) and not is_supervisor(user_id, tenant_id):
+                app.logger.warning(f"❌ Usuario {user_id} (Reclutador) intentó crear plantilla sin permisos")
+                return jsonify({
+                    "success": False,
+                    "error": "No tienes permisos para crear plantillas de email",
+                    "code": "FORBIDDEN"
+                }), 403
+            
             data = request.get_json()
             sql = "INSERT INTO Email_Templates (nombre_plantilla, asunto, cuerpo_html, tenant_id) VALUES (%s, %s, %s, %s)"
             cursor.execute(sql, (data['nombre_plantilla'], data['asunto'], data['cuerpo_html'], tenant_id))
             conn.commit()
+            
+            app.logger.info(f"✅ Usuario {user_id} creó plantilla: {data['nombre_plantilla']}")
             return jsonify({"success": True, "message": "Plantilla creada."}), 201
     finally:
         cursor.close()
@@ -3421,26 +3450,51 @@ def handle_single_template(id_template):
     cursor = conn.cursor(dictionary=True)
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         if request.method == 'GET':
             cursor.execute("SELECT * FROM Email_Templates WHERE id_template = %s AND tenant_id = %s", (id_template, tenant_id))
             template = cursor.fetchone()
             if not template: return jsonify({"error": "Plantilla no encontrada"}), 404
             return jsonify(template)
+            
         elif request.method == 'PUT':
+            # 🔐 CORRECCIÓN: Solo Admin y Supervisor pueden editar plantillas
+            if not is_admin(user_id, tenant_id) and not is_supervisor(user_id, tenant_id):
+                app.logger.warning(f"❌ Usuario {user_id} intentó editar plantilla sin permisos")
+                return jsonify({
+                    "success": False,
+                    "error": "No tienes permisos para editar plantillas",
+                    "code": "FORBIDDEN"
+                }), 403
+            
             data = request.get_json()
-            # 🔐 MÓDULO B15: Corregido - usar tenant_id en lugar de id_cliente
             sql = "UPDATE Email_Templates SET nombre_plantilla=%s, asunto=%s, cuerpo_html=%s WHERE id_template=%s AND tenant_id=%s"
             cursor.execute(sql, (data['nombre_plantilla'], data['asunto'], data['cuerpo_html'], id_template, tenant_id))
             conn.commit()
             if cursor.rowcount == 0:
                 return jsonify({"error": "Plantilla no encontrada"}), 404
+            
+            app.logger.info(f"✅ Usuario {user_id} editó plantilla ID: {id_template}")
             return jsonify({"success": True, "message": "Plantilla actualizada."})
+            
         elif request.method == 'DELETE':
+            # 🔐 CORRECCIÓN: Solo Admin puede eliminar plantillas
+            if not is_admin(user_id, tenant_id):
+                app.logger.warning(f"❌ Usuario {user_id} intentó eliminar plantilla sin ser Admin")
+                return jsonify({
+                    "success": False,
+                    "error": "No tienes permisos para eliminar plantillas",
+                    "code": "FORBIDDEN"
+                }), 403
+            
             cursor.execute("DELETE FROM Email_Templates WHERE id_template = %s AND tenant_id = %s", (id_template, tenant_id))
             conn.commit()
             if cursor.rowcount == 0:
                 return jsonify({"error": "Plantilla no encontrada"}), 404
+            
+            app.logger.info(f"✅ Usuario {user_id} eliminó plantilla ID: {id_template}")
             return jsonify({"success": True, "message": "Plantilla eliminada."})
     finally:
         cursor.close()
@@ -4359,70 +4413,111 @@ def test_tenant():
 @token_required
 def get_dashboard_metrics():
     """
-    Endpoint mejorado para métricas del dashboard con datos más completos
+    Endpoint mejorado para métricas del dashboard con datos más completos.
+    🔐 CORREGIDO: Filtra por usuario según rol.
     """
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de conexión"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
-        # Obtener tenant_id del usuario autenticado
+        # Obtener tenant_id y usuario actual
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
         if not tenant_id:
             return jsonify({"error": "No se pudo obtener tenant_id del usuario autenticado"}), 401
         
-        # 1. Candidatos activos totales
-        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE tenant_id = %s", (tenant_id,))
+        # 🔐 CORRECCIÓN: Obtener filtros por usuario
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        
+        # 1. Candidatos activos totales (filtrado por usuario)
+        sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE a.tenant_id = %s"
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         total_candidatos = cursor.fetchone()['total']
         
-        # 2. Candidatos activos hoy
-        cursor.execute("SELECT COUNT(*) as total FROM Afiliados WHERE DATE(fecha_registro) = CURDATE() AND tenant_id = %s", (tenant_id,))
+        # 2. Candidatos activos hoy (filtrado por usuario)
+        sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE DATE(a.fecha_registro) = CURDATE() AND a.tenant_id = %s"
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         candidatos_hoy = cursor.fetchone()['total']
         
-        # 3. Vacantes por estado
-        cursor.execute("""
-            SELECT estado, COUNT(*) as total 
-            FROM Vacantes 
-            WHERE tenant_id = %s
-            GROUP BY estado
-        """, (tenant_id,))
+        # 3. Vacantes por estado (filtrado por usuario)
+        sql = """
+            SELECT v.estado, COUNT(*) as total 
+            FROM Vacantes v
+            WHERE v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        sql += " GROUP BY v.estado"
+        cursor.execute(sql, tuple(params))
         vacantes_por_estado = cursor.fetchall()
         
-        # 4. Tasa de conversión (postulaciones → contrataciones)
-        cursor.execute("""
+        # 4. Tasa de conversión (postulaciones → contrataciones) - filtrado por usuario
+        sql = """
             SELECT 
                 COUNT(DISTINCT p.id_postulacion) as total_postulaciones,
                 COUNT(DISTINCT c.id_contratado) as total_contrataciones
             FROM Postulaciones p
-            LEFT JOIN Contratados c ON p.id_afiliado = c.id_afiliado AND p.id_vacante = c.id_vacante
-            WHERE p.tenant_id = %s AND (c.tenant_id = %s OR c.tenant_id IS NULL)
-        """, (tenant_id, tenant_id))
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            LEFT JOIN Contratados c ON p.id_afiliado = c.id_afiliado AND p.id_vacante = c.id_vacante AND c.tenant_id = %s
+            WHERE p.tenant_id = %s AND v.tenant_id = %s
+        """
+        params = [tenant_id, tenant_id, tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         conversion_data = cursor.fetchone()
         tasa_conversion = (conversion_data['total_contrataciones'] / conversion_data['total_postulaciones'] * 100) if conversion_data['total_postulaciones'] > 0 else 0
         
-        # 5. Tiempo promedio de contratación
-        cursor.execute("""
+        # 5. Tiempo promedio de contratación (filtrado por usuario)
+        sql = """
             SELECT AVG(DATEDIFF(c.fecha_contratacion, p.fecha_aplicacion)) as tiempo_promedio
             FROM Contratados c
             JOIN Postulaciones p ON c.id_afiliado = p.id_afiliado AND c.id_vacante = p.id_vacante
+            JOIN Vacantes v ON c.id_vacante = v.id_vacante
             WHERE c.fecha_contratacion IS NOT NULL AND p.fecha_aplicacion IS NOT NULL
-            AND c.tenant_id = %s AND p.tenant_id = %s
-        """, (tenant_id, tenant_id))
+            AND c.tenant_id = %s AND p.tenant_id = %s AND v.tenant_id = %s
+        """
+        params = [tenant_id, tenant_id, tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         tiempo_promedio = cursor.fetchone()['tiempo_promedio'] or 0
         
-        # 6. Candidatos por mes (últimos 6 meses)
-        cursor.execute("""
+        # 6. Candidatos por mes (últimos 6 meses) - filtrado por usuario
+        sql = """
             SELECT 
-                DATE_FORMAT(fecha_registro, '%Y-%m') as mes,
+                DATE_FORMAT(a.fecha_registro, '%Y-%m') as mes,
                 COUNT(*) as total
-            FROM Afiliados 
-            WHERE fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-            AND tenant_id = %s
-            GROUP BY DATE_FORMAT(fecha_registro, '%Y-%m')
-            ORDER BY mes
-        """, (tenant_id,))
+            FROM Afiliados a
+            WHERE a.fecha_registro >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+            AND a.tenant_id = %s
+        """
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        sql += " GROUP BY DATE_FORMAT(a.fecha_registro, '%Y-%m') ORDER BY mes"
+        cursor.execute(sql, tuple(params))
         candidatos_por_mes = cursor.fetchall()
         
-        # 7. Ingresos generados (si aplica)
+        # 7. Ingresos generados - 🔐 CORRECCIÓN: Solo Admin puede ver datos financieros
+        ingresos_totales = 0
+        if is_admin(user_id, tenant_id):
         cursor.execute("""
             SELECT SUM(COALESCE(tarifa_servicio, 0)) as ingresos_totales
             FROM Contratados
@@ -4431,8 +4526,8 @@ def get_dashboard_metrics():
         """, (tenant_id,))
         ingresos_totales = cursor.fetchone()['ingresos_totales'] or 0
         
-        # 8. Top 5 clientes por actividad
-        cursor.execute("""
+        # 8. Top 5 clientes por actividad (filtrado por usuario)
+        sql = """
             SELECT 
                 c.empresa,
                 COUNT(DISTINCT v.id_vacante) as total_vacantes,
@@ -4443,10 +4538,13 @@ def get_dashboard_metrics():
             LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante AND p.tenant_id = %s
             LEFT JOIN Contratados co ON v.id_vacante = co.id_vacante AND co.tenant_id = %s
             WHERE c.tenant_id = %s
-            GROUP BY c.id_cliente, c.empresa
-            ORDER BY total_postulaciones DESC
-            LIMIT 5
-        """, (tenant_id, tenant_id, tenant_id, tenant_id))
+        """
+        params_clientes = [tenant_id, tenant_id, tenant_id, tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params_clientes.extend(vacancy_params)
+        sql += " GROUP BY c.id_cliente, c.empresa ORDER BY total_postulaciones DESC LIMIT 5"
+        cursor.execute(sql, tuple(params_clientes))
         top_clientes = cursor.fetchall()
         
         # 9. Efectividad por usuario (si tenemos tabla de usuarios)
@@ -7945,10 +8043,27 @@ def change_my_password():
 @app.route('/api/roles', methods=['GET'])
 @token_required
 def get_roles():
-    """Obtiene la lista de roles disponibles."""
+    """
+    Obtiene la lista de roles disponibles.
+    🔐 CORREGIDO: Solo Admin y Supervisor pueden ver roles.
+    """
     try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 CORRECCIÓN: Solo Admin y Supervisor pueden ver roles
+        if not is_admin(user_id, tenant_id) and not is_supervisor(user_id, tenant_id):
+            app.logger.warning(f"❌ Usuario {user_id} (Reclutador) intentó ver roles sin permisos")
+            return jsonify({
+                'error': 'No tienes permisos para ver los roles del sistema',
+                'code': 'FORBIDDEN'
+            }), 403
+        
         roles = get_all_roles()
+        app.logger.info(f"✅ Usuario {user_id} consultó roles")
         return jsonify(roles)
+        
     except Exception as e:
         app.logger.error(f"Error al obtener roles: {str(e)}")
         return jsonify({'error': 'Error al obtener la lista de roles'}), 500
@@ -8544,6 +8659,123 @@ def assign_resource_to_user(user_id):
         if 'conn' in locals():
             conn.rollback()
         return jsonify({'error': 'Error al asignar recurso'}), 500
+
+
+@app.route('/api/users/<int:user_id>/custom-permissions', methods=['GET'])
+@token_required
+def get_user_custom_permissions(user_id):
+    """
+    Obtener permisos personalizados de un usuario.
+    🔐 SOLO ADMIN puede ver y configurar permisos personalizados.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        current_user_id = g.current_user.get('user_id')
+        
+        # 🔐 Solo Admin puede ver permisos personalizados
+        if not is_admin(current_user_id, tenant_id):
+            return jsonify({'error': 'Solo administradores pueden ver permisos personalizados'}), 403
+        
+        # Obtener usuario con permisos del rol y custom
+        cursor.execute("""
+            SELECT 
+                u.id, u.nombre, u.email, u.custom_permissions,
+                r.nombre as rol_nombre, r.permisos as rol_permissions
+            FROM Users u
+            LEFT JOIN Roles r ON u.rol_id = r.id
+            WHERE u.id = %s AND u.tenant_id = %s
+        """, (user_id, tenant_id))
+        
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+        
+        # Parsear JSON
+        role_perms = json.loads(user['rol_permissions']) if user['rol_permissions'] else {}
+        custom_perms = json.loads(user['custom_permissions']) if user['custom_permissions'] else {}
+        
+        # Obtener permisos efectivos (merge)
+        from permission_service import get_effective_permissions
+        effective_perms = get_effective_permissions(user_id, tenant_id)
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'user': {
+                'id': user['id'],
+                'nombre': user['nombre'],
+                'email': user['email'],
+                'rol': user['rol_nombre']
+            },
+            'role_permissions': role_perms,
+            'custom_permissions': custom_perms,
+            'effective_permissions': effective_perms
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en get_user_custom_permissions: {str(e)}")
+        return jsonify({'error': 'Error al obtener permisos'}), 500
+
+
+@app.route('/api/users/<int:user_id>/custom-permissions', methods=['PUT'])
+@token_required
+def update_user_custom_permissions(user_id):
+    """
+    Actualizar permisos personalizados de un usuario.
+    🔐 SOLO ADMIN puede configurar permisos personalizados.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        current_user_id = g.current_user.get('user_id')
+        
+        # 🔐 Solo Admin puede modificar permisos
+        if not is_admin(current_user_id, tenant_id):
+            app.logger.warning(f"❌ Usuario {current_user_id} intentó modificar permisos sin ser Admin")
+            return jsonify({'error': 'Solo administradores pueden modificar permisos'}), 403
+        
+        data = request.get_json()
+        custom_permissions = data.get('custom_permissions', {})
+        
+        # Verificar que el usuario existe
+        cursor.execute("SELECT id, nombre FROM Users WHERE id = %s AND tenant_id = %s", (user_id, tenant_id))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({'error': 'Usuario no encontrado'}), 404
+        
+        # Convertir a JSON string
+        permissions_json = json.dumps(custom_permissions) if custom_permissions else None
+        
+        # Actualizar permisos personalizados
+        cursor.execute("""
+            UPDATE Users 
+            SET custom_permissions = %s
+            WHERE id = %s AND tenant_id = %s
+        """, (permissions_json, user_id, tenant_id))
+        
+        conn.commit()
+        
+        app.logger.info(f"✅ Admin {current_user_id} actualizó permisos personalizados de usuario {user_id} ({user['nombre']})")
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f"Permisos actualizados para {user['nombre']}",
+            'user_id': user_id
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en update_user_custom_permissions: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': 'Error al actualizar permisos'}), 500
 
 
 @app.route('/api/users/<int:user_id>/assignments/<int:assignment_id>', methods=['DELETE'])
@@ -9288,33 +9520,42 @@ def create_initial_user():
 @app.route('/api/dashboard/stats', methods=['GET'])
 @token_required
 def get_dashboard_stats():
-    """Obtiene estadísticas generales del dashboard."""
+    """
+    Obtiene estadísticas generales del dashboard.
+    🔐 CORREGIDO: Filtra por usuario según rol.
+    """
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Obtener tenant_id del usuario actual
+        # Obtener tenant_id y usuario actual
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
-        # Estadísticas de candidatos
-        cursor.execute("""
+        # 🔐 CORRECCIÓN: Obtener filtros por usuario
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        
+        # Estadísticas de candidatos (filtrado por usuario)
+        sql = """
             SELECT 
                 COUNT(*) as total_candidatos,
-                COUNT(CASE WHEN estado = 'active' THEN 1 END) as candidatos_activos,
-                COUNT(CASE WHEN DATE(fecha_registro) = CURDATE() THEN 1 END) as candidatos_hoy
+                COUNT(CASE WHEN a.estado = 'active' THEN 1 END) as candidatos_activos,
+                COUNT(CASE WHEN DATE(a.fecha_registro) = CURDATE() THEN 1 END) as candidatos_hoy
             FROM Afiliados a
-            WHERE %s IS NULL OR a.id_afiliado IN (
-                SELECT DISTINCT p.id_afiliado 
-                FROM Postulaciones p 
-                JOIN Vacantes v ON p.id_vacante = v.id_vacante 
-                WHERE v.id_cliente = %s
-            )
-        """, (tenant_id, tenant_id) if tenant_id else (None, None))
+            WHERE a.tenant_id = %s
+        """
+        params = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params.extend(candidate_params)
+        cursor.execute(sql, tuple(params))
         
         candidatos_stats = cursor.fetchone()
         
-        # Estadísticas de aplicaciones
-        cursor.execute("""
+        # Estadísticas de aplicaciones (filtrado por usuario a través de vacantes)
+        sql = """
             SELECT 
                 COUNT(*) as total_aplicaciones,
                 COUNT(CASE WHEN p.estado = 'Contratado' THEN 1 END) as contratados,
@@ -9322,21 +9563,29 @@ def get_dashboard_stats():
                 COUNT(CASE WHEN DATE(p.fecha_aplicacion) = CURDATE() THEN 1 END) as aplicaciones_hoy
             FROM Postulaciones p
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            WHERE %s IS NULL OR v.id_cliente = %s
-        """, (tenant_id, tenant_id) if tenant_id else (None, None))
-        
+            WHERE p.tenant_id = %s AND v.tenant_id = %s
+        """
+        params = [tenant_id, tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         aplicaciones_stats = cursor.fetchone()
         
-        # Estadísticas de vacantes
-        cursor.execute("""
+        # Estadísticas de vacantes (filtrado por usuario)
+        sql = """
             SELECT
                 COUNT(*) as total_vacantes,
-                COUNT(CASE WHEN estado = 'Abierta' THEN 1 END) as vacantes_abiertas,
-                COUNT(CASE WHEN DATE(fecha_apertura) = CURDATE() THEN 1 END) as vacantes_hoy
+                COUNT(CASE WHEN v.estado = 'Abierta' THEN 1 END) as vacantes_abiertas,
+                COUNT(CASE WHEN DATE(v.fecha_apertura) = CURDATE() THEN 1 END) as vacantes_hoy
             FROM Vacantes v
-            WHERE %s IS NULL OR v.id_cliente = %s
-        """, (tenant_id, tenant_id) if tenant_id else (None, None))
-        
+            WHERE v.tenant_id = %s
+        """
+        params = [tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params.extend(vacancy_params)
+        cursor.execute(sql, tuple(params))
         vacantes_stats = cursor.fetchone()
         
         # Calcular tasa de conversión
@@ -9929,25 +10178,40 @@ def get_client_hired_candidates(client_id):
 @app.route('/api/permissions', methods=['GET'])
 @token_required
 def get_permissions():
-    """Obtener permisos del usuario actual"""
+    """
+    Obtener permisos del usuario actual.
+    🔐 CORREGIDO: Usa sistema de permisos centralizado.
+    """
     try:
+        tenant_id = get_current_tenant_id()
         user = g.current_user
+        user_id = user.get('user_id')
+        
         if not user:
             return jsonify({"error": "Usuario no encontrado"}), 404
         
         # Obtener rol del usuario
         rol = user.get('rol', '')
         
-        # Definir permisos basados en el rol
+        # 🔐 CORRECCIÓN: Obtener permisos desde permission_service
+        from permission_service import get_user_permissions
+        permisos_completos = get_user_permissions(user_id, tenant_id)
+        
+        # Definir permisos basados en el rol y permisos reales
         permissions = {
             "all": rol == 'Administrador',
-            "candidates": True,  # Todos pueden ver candidatos
-            "applications": True,  # Todos pueden ver aplicaciones
-            "clients": rol in ['Administrador', 'Reclutador'],
-            "users": rol == 'Administrador',
-            "reports": rol in ['Administrador', 'Reclutador'],
-            "settings": rol == 'Administrador'
+            "candidates": True,  # Todos pueden ver (filtrado por usuario en backend)
+            "applications": True,  # Todos pueden ver (filtrado por usuario en backend)
+            "clients": permisos_completos.get('manage_clients', rol in ['Administrador', 'Supervisor']),
+            "users": permisos_completos.get('manage_users', rol == 'Administrador'),
+            "reports": permisos_completos.get('view_reports', True),
+            "settings": rol == 'Administrador',
+            "roles": rol == 'Administrador',
+            "permissions_management": rol == 'Administrador',
+            "assign_resources": permisos_completos.get('assign_resources', rol in ['Administrador', 'Supervisor'])
         }
+        
+        app.logger.info(f"✅ Usuario {user_id} ({rol}) consultó sus permisos")
         
         return jsonify({
             "success": True,
