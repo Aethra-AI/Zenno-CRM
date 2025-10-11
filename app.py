@@ -4223,6 +4223,9 @@ def search_candidates_tool(term=None, tags=None, experience=None, city=None, rec
 @app.route('/api/reports', methods=['GET'])
 @token_required
 def get_reports():
+    """
+    🔐 CORREGIDO: Filtra reportes por usuario según permisos.
+    """
     report_name = request.args.get('name', 'summary')
 
     conn = get_db_connection()
@@ -4230,29 +4233,61 @@ def get_reports():
     cursor = conn.cursor(dictionary=True)
     
     try:
+        # 🔐 Obtener tenant_id y user_id
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 Construir filtros por usuario
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        
         # Si no se especifica reporte o es 'summary', devolver resumen general
         if report_name == 'summary' or report_name == 'all':
-            # Reporte de resumen general
-            cursor.execute("""
-                SELECT 
-                    'Candidatos' as tipo,
-                    COUNT(*) as total,
-                    'Registrados en el sistema' as descripcion
-                FROM Afiliados
-                UNION ALL
-                SELECT 
-                    'Vacantes Activas' as tipo,
-                    COUNT(*) as total,
-                    'Vacantes abiertas actualmente' as descripcion
-                FROM Vacantes WHERE estado = 'Activa'
-                UNION ALL
-                SELECT 
-                    'Entrevistas Hoy' as tipo,
-                    COUNT(*) as total,
-                    'Entrevistas programadas para hoy' as descripcion
-                FROM Entrevistas WHERE DATE(fecha_hora) = CURDATE()
-            """)
-            results = cursor.fetchall()
+            # 🔐 Reporte de resumen general FILTRADO
+            
+            # Candidatos filtrados
+            sql_candidatos = "SELECT COUNT(*) as total FROM Afiliados a WHERE a.tenant_id = %s"
+            params_candidatos = [tenant_id]
+            if candidate_condition:
+                sql_candidatos += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+                params_candidatos.extend(candidate_params)
+            
+            cursor.execute(sql_candidatos, tuple(params_candidatos))
+            total_candidatos = cursor.fetchone()['total']
+            
+            # Vacantes activas filtradas
+            sql_vacantes = "SELECT COUNT(*) as total FROM Vacantes v WHERE v.estado = 'Activa' AND v.tenant_id = %s"
+            params_vacantes = [tenant_id]
+            if vacancy_condition:
+                sql_vacantes += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                params_vacantes.extend(vacancy_params)
+            
+            cursor.execute(sql_vacantes, tuple(params_vacantes))
+            total_vacantes = cursor.fetchone()['total']
+            
+            # Entrevistas hoy filtradas
+            sql_entrevistas = """
+                SELECT COUNT(*) as total 
+                FROM Entrevistas e
+                JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion
+                JOIN Vacantes v ON p.id_vacante = v.id_vacante
+                WHERE DATE(e.fecha_hora) = CURDATE() 
+                AND e.tenant_id = %s AND v.tenant_id = %s
+            """
+            params_entrevistas = [tenant_id, tenant_id]
+            if vacancy_condition:
+                sql_entrevistas += f" AND ({vacancy_condition.replace('v.created_by_user', 'v.created_by_user')} OR v.created_by_user IS NULL)"
+                params_entrevistas.extend(vacancy_params)
+            
+            cursor.execute(sql_entrevistas, tuple(params_entrevistas))
+            total_entrevistas = cursor.fetchone()['total']
+            
+            results = [
+                {'tipo': 'Candidatos', 'total': total_candidatos, 'descripcion': 'Registrados en el sistema'},
+                {'tipo': 'Vacantes Activas', 'total': total_vacantes, 'descripcion': 'Vacantes abiertas actualmente'},
+                {'tipo': 'Entrevistas Hoy', 'total': total_entrevistas, 'descripcion': 'Entrevistas programadas para hoy'}
+            ]
             
             return jsonify({
                 "success": True,
@@ -4260,15 +4295,49 @@ def get_reports():
                 "report_name": "summary"
             })
         
-        # Reportes específicos (simplificados)
+        # 🔐 Reportes específicos FILTRADOS
         if report_name == 'vacantes_activas':
-            cursor.execute("SELECT id_vacante, cargo_solicitado, fecha_apertura FROM Vacantes WHERE estado = 'Activa' LIMIT 10")
+            sql = "SELECT v.id_vacante, v.cargo_solicitado, v.fecha_apertura FROM Vacantes v WHERE v.estado = 'Activa' AND v.tenant_id = %s"
+            params = [tenant_id]
+            if vacancy_condition:
+                sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                params.extend(vacancy_params)
+            sql += " LIMIT 10"
+            cursor.execute(sql, tuple(params))
             results = cursor.fetchall()
+            
         elif report_name == 'postulaciones_recientes':
-            cursor.execute("SELECT a.nombre_completo, v.cargo_solicitado, p.fecha_aplicacion FROM Postulaciones p JOIN Afiliados a ON p.id_afiliado = a.id_afiliado JOIN Vacantes v ON p.id_vacante = v.id_vacante ORDER BY p.fecha_aplicacion DESC LIMIT 10")
+            sql = """
+                SELECT a.nombre_completo, v.cargo_solicitado, p.fecha_aplicacion 
+                FROM Postulaciones p 
+                JOIN Afiliados a ON p.id_afiliado = a.id_afiliado 
+                JOIN Vacantes v ON p.id_vacante = v.id_vacante 
+                WHERE p.tenant_id = %s AND v.tenant_id = %s
+            """
+            params = [tenant_id, tenant_id]
+            if vacancy_condition:
+                sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                params.extend(vacancy_params)
+            sql += " ORDER BY p.fecha_aplicacion DESC LIMIT 10"
+            cursor.execute(sql, tuple(params))
             results = cursor.fetchall()
+            
         elif report_name == 'entrevistas_agendadas':
-            cursor.execute("SELECT e.fecha_hora, a.nombre_completo, v.cargo_solicitado FROM Entrevistas e JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion JOIN Afiliados a ON p.id_afiliado = a.id_afiliado JOIN Vacantes v ON p.id_vacante = v.id_vacante WHERE DATE(e.fecha_hora) >= CURDATE() LIMIT 10")
+            sql = """
+                SELECT e.fecha_hora, a.nombre_completo, v.cargo_solicitado 
+                FROM Entrevistas e 
+                JOIN Postulaciones p ON e.id_postulacion = p.id_postulacion 
+                JOIN Afiliados a ON p.id_afiliado = a.id_afiliado 
+                JOIN Vacantes v ON p.id_vacante = v.id_vacante 
+                WHERE DATE(e.fecha_hora) >= CURDATE() 
+                AND e.tenant_id = %s AND v.tenant_id = %s
+            """
+            params = [tenant_id, tenant_id]
+            if vacancy_condition:
+                sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                params.extend(vacancy_params)
+            sql += " LIMIT 10"
+            cursor.execute(sql, tuple(params))
             results = cursor.fetchall()
         else:
             # Para cualquier otro reporte, devolver mensaje de no encontrado
@@ -5521,8 +5590,9 @@ def get_activities():
         """
         params = [tenant_id]
         
+        # 🔐 CORREGIDO: Usar is_admin() en lugar de comparación directa
         # Si el usuario no es admin, solo mostrar sus propias actividades
-        if user_role != 'Administrador':
+        if not is_admin(user_id, tenant_id):
             base_query += " AND ual.user_id = %s"
             params.append(user_id)
         
@@ -5531,8 +5601,8 @@ def get_activities():
             base_query += " AND ual.activity_type = %s"
             params.append(activity_type)
         
-        # Filtro por usuario específico (solo para admins)
-        if user_filter and user_role == 'Administrador':
+        # 🔐 CORREGIDO: Filtro por usuario específico (solo para admins)
+        if user_filter and is_admin(user_id, tenant_id):
             base_query += " AND ual.user_id = %s"
             params.append(user_filter)
         
@@ -6553,19 +6623,26 @@ def delete_interview(id_entrevista):
 @token_required
 def get_interview_stats():
     """
-    Devuelve estadísticas de entrevistas por período para el calendario.
+    🔐 CORREGIDO: Devuelve estadísticas de entrevistas filtradas por usuario.
     Incluye entrevistas programadas, completadas, canceladas, etc.
     """
     conn = get_db_connection()
     if not conn: return jsonify({"error": "Error de conexión"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
+        # 🔐 Obtener tenant_id y user_id
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
         fecha_desde = request.args.get('fecha_desde')
         fecha_hasta = request.args.get('fecha_hasta')
         estado = request.args.get('estado')
         
-        # Construir consulta base
+        # 🔐 Construir filtros por usuario
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        
+        # Construir consulta base FILTRADA
         sql = """
             SELECT 
                 e.id_entrevista,
@@ -6585,12 +6662,18 @@ def get_interview_stats():
             JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
             JOIN Clientes c ON v.id_cliente = c.id_cliente
+            WHERE e.tenant_id = %s AND v.tenant_id = %s
         """
         
-        params = []
+        params = [tenant_id, tenant_id]
         conditions = []
         
-        # Aplicar filtros
+        # 🔐 Aplicar filtro por usuario
+        if vacancy_condition:
+            conditions.append(f"({vacancy_condition} OR v.created_by_user IS NULL)")
+            params.extend(vacancy_params)
+        
+        # Aplicar filtros de fecha y estado
         if fecha_desde:
             conditions.append("DATE(e.fecha_hora) >= %s")
             params.append(fecha_desde)
@@ -6604,11 +6687,11 @@ def get_interview_stats():
             params.append(estado)
             
         if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
+            sql += " AND " + " AND ".join(conditions)
             
         sql += " ORDER BY e.fecha_hora DESC"
         
-        cursor.execute(sql, params)
+        cursor.execute(sql, tuple(params))
         results = cursor.fetchall()
         
         # Formatear fechas y agregar información adicional
@@ -8973,30 +9056,53 @@ def bot_validate_registration():
 @app.route('/api/dashboard/activity_chart', methods=['GET'])
 @token_required
 def get_dashboard_activity():
+    """
+    🔐 CORREGIDO: Filtra actividad por usuario según permisos.
+    """
     conn = get_db_connection()
     if not conn: return jsonify({"error": "DB connection failed"}), 500
     cursor = conn.cursor(dictionary=True)
     try:
-        # Consulta para nuevos afiliados por día en los últimos 30 días
+        # 🔐 Obtener tenant_id y user_id
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 Construir filtros por usuario
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        
+        # Consulta FILTRADA para nuevos afiliados por día en los últimos 30 días
         sql_afiliados = """
-            SELECT DATE(fecha_registro) as dia, COUNT(id_afiliado) as total 
-            FROM Afiliados 
-            WHERE fecha_registro >= CURDATE() - INTERVAL 30 DAY 
-            GROUP BY DATE(fecha_registro) 
-            ORDER BY dia;
+            SELECT DATE(a.fecha_registro) as dia, COUNT(a.id_afiliado) as total 
+            FROM Afiliados a
+            WHERE a.fecha_registro >= CURDATE() - INTERVAL 30 DAY 
+            AND a.tenant_id = %s
         """
-        cursor.execute(sql_afiliados)
+        params_afiliados = [tenant_id]
+        if candidate_condition:
+            sql_afiliados += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            params_afiliados.extend(candidate_params)
+        sql_afiliados += " GROUP BY DATE(a.fecha_registro) ORDER BY dia"
+        
+        cursor.execute(sql_afiliados, tuple(params_afiliados))
         afiliados_data = cursor.fetchall()
 
-        # Consulta para nuevas postulaciones por día en los últimos 30 días
+        # Consulta FILTRADA para nuevas postulaciones por día en los últimos 30 días
         sql_postulaciones = """
-            SELECT DATE(fecha_aplicacion) as dia, COUNT(id_postulacion) as total 
-            FROM Postulaciones 
-            WHERE fecha_aplicacion >= CURDATE() - INTERVAL 30 DAY 
-            GROUP BY DATE(fecha_aplicacion) 
-            ORDER BY dia;
+            SELECT DATE(p.fecha_aplicacion) as dia, COUNT(p.id_postulacion) as total 
+            FROM Postulaciones p
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            WHERE p.fecha_aplicacion >= CURDATE() - INTERVAL 30 DAY 
+            AND p.tenant_id = %s AND v.tenant_id = %s
         """
-        cursor.execute(sql_postulaciones)
+        params_postulaciones = [tenant_id, tenant_id]
+        if vacancy_condition:
+            sql_postulaciones += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            params_postulaciones.extend(vacancy_params)
+        sql_postulaciones += " GROUP BY DATE(p.fecha_aplicacion) ORDER BY dia"
+        
+        cursor.execute(sql_postulaciones, tuple(params_postulaciones))
         postulaciones_data = cursor.fetchall()
         
         # Formatear fechas a string para JSON
@@ -9423,11 +9529,17 @@ def serve_uploaded_file(folder, filename):
 @require_api_key
 def get_chat_context_by_identity(identity_number):
     """
-    Endpoint interno para que bridge.js obtenga el contexto completo de un
+    🔐 CORREGIDO: Endpoint interno para que bridge.js obtenga el contexto completo de un
     afiliado para mostrarlo en el panel de chat.
     Devuelve información básica y sus últimas 3 postulaciones.
     """
     clean_identity = str(identity_number).replace('-', '').strip()
+    
+    # 🔐 CORRECCIÓN: Obtener tenant_id del header
+    tenant_id = request.headers.get('X-Tenant-ID')
+    if not tenant_id:
+        app.logger.warning(f"Intento de acceso sin tenant_id a chat_context: {identity_number}")
+        return jsonify({"error": "Tenant ID requerido"}), 400
     
     conn = get_db_connection()
     if not conn:
@@ -9440,8 +9552,12 @@ def get_chat_context_by_identity(identity_number):
             "ultimas_postulaciones": []
         }
 
-        # 1. Obtener información básica del afiliado
-        cursor.execute("SELECT id_afiliado, nombre_completo, identidad, telefono, ciudad FROM Afiliados WHERE identidad = %s", (clean_identity,))
+        # 🔐 CORRECCIÓN: Filtrar por tenant_id para prevenir acceso a datos de otros tenants
+        cursor.execute("""
+            SELECT id_afiliado, nombre_completo, identidad, telefono, ciudad 
+            FROM Afiliados 
+            WHERE identidad = %s AND tenant_id = %s
+        """, (clean_identity, tenant_id))
         info_basica = cursor.fetchone()
 
         if not info_basica:
@@ -9450,17 +9566,17 @@ def get_chat_context_by_identity(identity_number):
         context_data["info_basica"] = info_basica
         id_afiliado = info_basica['id_afiliado']
 
-        # 2. Obtener las últimas 3 postulaciones del afiliado
+        # 🔐 CORRECCIÓN: Asegurar que las postulaciones también sean del tenant
         postulaciones_query = """
             SELECT p.id_postulacion, p.fecha_aplicacion, p.estado, v.cargo_solicitado, c.empresa
             FROM Postulaciones p
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
             JOIN Clientes c ON v.id_cliente = c.id_cliente
-            WHERE p.id_afiliado = %s
+            WHERE p.id_afiliado = %s AND v.tenant_id = %s
             ORDER BY p.fecha_aplicacion DESC
             LIMIT 3
         """
-        cursor.execute(postulaciones_query, (id_afiliado,))
+        cursor.execute(postulaciones_query, (id_afiliado, tenant_id))
         postulaciones = cursor.fetchall()
 
         # Formatear fechas para que sean compatibles con JSON
@@ -9657,26 +9773,40 @@ create_initial_user()
 @app.route('/api/calendar/reminders', methods=['GET', 'POST'])
 @token_required
 def calendar_reminders():
-    """Gestionar recordatorios del calendario"""
+    """
+    🔐 CORREGIDO: Gestionar recordatorios del calendario con filtrado por usuario.
+    """
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id() or 1  # Fallback a tenant 1 para pruebas
+        tenant_id = get_current_tenant_id() or 1
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         if request.method == 'GET':
             # Obtener recordatorios
             year = request.args.get('year', datetime.now().year)
             month = request.args.get('month', datetime.now().month)
             
-            cursor.execute("""
-                SELECT r.*, u.username as created_by_name
+            # 🔐 Construir query filtrado
+            sql = """
+                SELECT r.*, u.nombre as created_by_name
                 FROM calendar_reminders r
                 LEFT JOIN Users u ON r.created_by = u.id
                 WHERE r.tenant_id = %s 
                 AND YEAR(r.date) = %s 
                 AND MONTH(r.date) = %s
-                ORDER BY r.date, r.time
-            """, (tenant_id, year, month))
+            """
+            params = [tenant_id, year, month]
+            
+            # 🔐 Filtrar por usuario (Admin ve todos, otros solo los suyos o asignados a ellos)
+            if not is_admin(user_id, tenant_id):
+                sql += " AND (r.created_by = %s OR JSON_CONTAINS(r.assigned_to, %s, '$'))"
+                params.extend([user_id, str(user_id)])
+            
+            sql += " ORDER BY r.date, r.time"
+            
+            cursor.execute(sql, tuple(params))
             
             reminders = cursor.fetchall()
             
@@ -10341,18 +10471,28 @@ def upload_cvs():
 @app.route('/api/candidates/process-status/<job_id>', methods=['GET'])
 @token_required
 def get_processing_status(job_id):
-    """Obtener estado del procesamiento"""
+    """
+    🔐 CORREGIDO: Obtener estado del procesamiento con validación de usuario.
+    """
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         from cv_batch_manager import create_batch_manager
         batch_manager = create_batch_manager()
         
         job_data = batch_manager.get_job_status(job_id)
         
-        # Verificar que el trabajo pertenece al tenant
+        # 🔐 Verificar que el trabajo pertenece al tenant
         if job_data.get('tenant_id') != tenant_id:
             return jsonify({'error': 'Trabajo no encontrado'}), 404
+        
+        # 🔐 Verificar que el trabajo pertenece al usuario (a menos que sea Admin)
+        if not is_admin(user_id, tenant_id):
+            if job_data.get('user_id') != user_id:
+                app.logger.warning(f"Usuario {user_id} intentó acceder a job {job_id} de otro usuario")
+                return jsonify({'error': 'Trabajo no encontrado'}), 404
         
         return jsonify({
             'success': True,
@@ -10417,18 +10557,28 @@ def check_duplicates():
 @app.route('/api/candidates/batch-results/<job_id>', methods=['GET'])
 @token_required
 def get_batch_results(job_id):
-    """Obtener resultados detallados del procesamiento"""
+    """
+    🔐 CORREGIDO: Obtener resultados detallados del procesamiento con validación de usuario.
+    """
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
         from cv_batch_manager import create_batch_manager
         batch_manager = create_batch_manager()
         
         job_data = batch_manager.get_job_status(job_id)
         
-        # Verificar que el trabajo pertenece al tenant
+        # 🔐 Verificar que el trabajo pertenece al tenant
         if job_data.get('tenant_id') != tenant_id:
             return jsonify({'error': 'Trabajo no encontrado'}), 404
+        
+        # 🔐 Verificar que el trabajo pertenece al usuario (a menos que sea Admin)
+        if not is_admin(user_id, tenant_id):
+            if job_data.get('user_id') != user_id:
+                app.logger.warning(f"Usuario {user_id} intentó acceder a job {job_id} de otro usuario")
+                return jsonify({'error': 'Trabajo no encontrado'}), 404
         
         return jsonify({
             'success': True,
@@ -10664,9 +10814,22 @@ def handle_whatsapp_config():
 @app.route('/api/whatsapp/config/test', methods=['POST'])
 @token_required
 def test_whatsapp_config():
-    """Probar configuración de WhatsApp"""
+    """
+    🔐 CORREGIDO: Probar configuración de WhatsApp (Solo Admin)
+    """
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # 🔐 CORRECCIÓN: Solo Admin puede probar configuraciones
+        if not is_admin(user_id, tenant_id):
+            app.logger.warning(f"Usuario {user_id} intentó probar config WhatsApp sin ser Admin")
+            return jsonify({
+                'success': False,
+                'message': 'No tienes permisos para probar configuraciones'
+            }), 403
+        
         data = request.get_json()
         api_type = data.get('api_type')
         
@@ -10677,6 +10840,8 @@ def test_whatsapp_config():
             }), 400
         
         success, message = config_manager.test_tenant_config(tenant_id, api_type)
+        
+        app.logger.info(f"✅ Admin {user_id} probó config WhatsApp: {api_type}")
         
         return jsonify({
             'success': success,
@@ -11517,25 +11682,34 @@ def process_existing_cv(cv_identifier):
 @token_required
 def download_cv(cv_identifier):
     """
-    Descargar CV usando PAR de OCI
+    🔐 CORREGIDO: Descargar CV con validación de acceso al candidato.
     """
     try:
         tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
         
-        # Obtener información del CV desde la base de datos
+        # Obtener información del CV y el candidato asociado
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
         cursor.execute("""
-            SELECT file_url, original_filename, mime_type 
-            FROM CV_Processing_Logs 
-            WHERE tenant_id = %s AND cv_identifier = %s
+            SELECT cpl.file_url, cpl.original_filename, cpl.mime_type, cpl.candidate_id
+            FROM CV_Processing_Logs cpl
+            WHERE cpl.tenant_id = %s AND cpl.cv_identifier = %s
         """, (tenant_id, cv_identifier))
         
         cv_record = cursor.fetchone()
         
         if not cv_record:
             return jsonify({'error': 'CV no encontrado'}), 404
+        
+        # 🔐 Verificar acceso al candidato (si tiene candidate_id asociado)
+        candidate_id = cv_record.get('candidate_id')
+        if candidate_id:
+            if not can_access_resource(user_id, tenant_id, 'candidate', candidate_id, 'read'):
+                app.logger.warning(f"Usuario {user_id} intentó descargar CV de candidato {candidate_id} sin acceso")
+                return jsonify({'error': 'No tienes acceso a este CV'}), 403
         
         # La PAR ya contiene la URL completa para acceso directo
         file_url = cv_record['file_url']

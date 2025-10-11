@@ -1,0 +1,220 @@
+================================================================================
+REPORTE COMPLETO DE REVISIÓN DE ENDPOINTS
+================================================================================
+
+Total de endpoints: 106
+Seguros: 81
+Con problemas: 25
+
+ENDPOINTS CON PROBLEMAS:
+--------------------------------------------------------------------------------
+
+🟡 MEDIA Línea 653: /api/users/me
+  Función: get_current_user()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 3200: /api/download-template
+  Función: download_template()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 3305: /api/tags
+  Función: handle_tags()
+  Métodos: GET, POST
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 3413: /api/templates
+  Función: handle_email_templates()
+  Métodos: GET, POST
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 3564: /api/whatsapp-templates-legacy
+  Función: handle_whatsapp_templates()
+  Métodos: GET, POST
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 4472: /api/test-tenant
+  Función: test_tenant()
+  Métodos: GET
+  Nivel: ⚠️ PÚBLICO SIN KEY
+
+🟡 MEDIA Línea 5091: /api/candidates/search
+  Función: search_candidates()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 5551: /api/activities
+  Función: get_activities()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 8131: /api/roles
+  Función: get_roles()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 8227: /api/teams/my-team
+  Función: get_my_team()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 8476: /api/teams/available-members
+  Función: get_available_members()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 8531: /api/teams/all
+  Función: get_all_teams()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 9773: /api/calendar/reminders
+  Función: calendar_reminders()
+  Métodos: GET, POST
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 10312: /api/permissions
+  Función: get_permissions()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟡 MEDIA Línea 10471: /api/candidates/process-status/<job_id>
+  Función: get_processing_status()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟡 MEDIA Línea 10557: /api/candidates/batch-results/<job_id>
+  Función: get_batch_results()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 10737: /api/whatsapp/config
+  Función: handle_whatsapp_config()
+  Métodos: GET, POST, PUT, DELETE
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 10814: /api/whatsapp/config/test
+  Función: test_whatsapp_config()
+  Métodos: POST
+  Nivel: ⚠️ PÚBLICO SIN KEY
+
+🔴 CRÍTICA Línea 10858: /api/whatsapp/stats
+  Función: get_whatsapp_stats()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 10878: /api/whatsapp/conversations
+  Función: get_whatsapp_conversations()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 11037: /api/whatsapp/templates
+  Función: handle_whatsapp_templates_multi_tenant()
+  Métodos: GET, POST, PUT, DELETE
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 11282: /api/whatsapp/web/session-status
+  Función: get_whatsapp_web_session_status()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 11299: /api/whatsapp/web/chats
+  Función: get_whatsapp_web_chats()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 11333: /api/whatsapp/mode
+  Función: get_whatsapp_mode()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+🟢 BAJA Línea 11359: /api/whatsapp/message-status/<message_id>
+  Función: get_whatsapp_message_status_endpoint()
+  Métodos: GET
+  Nivel: ⚠️ LISTADO SIN FILTROS
+
+
+ENDPOINTS SEGUROS:
+--------------------------------------------------------------------------------
+✅ /api/auth/login (línea 159)
+✅ /api/auth/logout (línea 631)
+✅ /api/assistant/command (línea 929)
+✅ /api/webhook/new-candidate-jsonp (línea 3127)
+✅ /api/upload-excel (línea 3235)
+✅ /api/candidate/<int:id_afiliado>/tags (línea 3351)
+✅ /api/templates/<int:id_template> (línea 3450)
+✅ /api/communications/send-email (línea 3508)
+✅ /api/vacancies/<int:id_vacante>/pipeline (línea 3591)
+✅ /api/applications/<int:id_postulacion>/status (línea 3643)
+✅ /api/reports/kpi (línea 3763)
+✅ /api/reports (línea 4223)
+✅ /api/dashboard (línea 4368)
+✅ /api/dashboard/metrics (línea 4486)
+✅ /api/candidates (línea 4758)
+✅ /api/candidates/<int:candidate_id>/profile (línea 4981)
+✅ /api/candidate/<int:candidate_id>/score (línea 5175)
+✅ /api/candidate/<int:candidate_id>/interactions (línea 5282)
+✅ /api/notifications (línea 5395)
+✅ /api/candidate/profile/<int:id_afiliado> (línea 5655)
+✅ /api/vacancies (línea 5800)
+✅ /api/vacancies/<int:id_vacante> (línea 5962)
+✅ /api/vacancies/<int:id_vacante>/status (línea 6022)
+✅ /api/applications (línea 6072)
+✅ /api/applications/<int:id_postulacion> (línea 6266)
+✅ /api/applications/<int:id_postulacion>/comments (línea 6318)
+✅ /api/interviews (línea 6374)
+✅ /api/interviews/<int:id_entrevista> (línea 6562)
+✅ /api/interviews/stats (línea 6622)
+✅ /api/hired (línea 6729)
+✅ /api/hired/<int:id_contratado>/payment (línea 6880)
+✅ /api/hired/<int:id_contratado> (línea 6972)
+✅ /api/clients (línea 7022)
+✅ /api/clients/<int:client_id> (línea 7124)
+✅ /api/clients/<int:client_id>/metrics (línea 7184)
+✅ /api/users (línea 7644)
+✅ /api/users/<int:user_id> (línea 7752)
+✅ /api/users (línea 7817)
+✅ /api/users/<int:user_id> (línea 7945)
+✅ /api/users/<int:user_id> (línea 8067)
+✅ /api/users/me/password (línea 8086)
+✅ /api/roles/<int:role_id>/permissions (línea 8159)
+✅ /api/teams/members (línea 8297)
+✅ /api/teams/members/<int:team_member_id> (línea 8404)
+✅ /api/users/<int:user_id>/assignments (línea 8600)
+✅ /api/users/<int:user_id>/assignments (línea 8666)
+✅ /api/users/<int:user_id>/custom-permissions (línea 8752)
+✅ /api/users/<int:user_id>/custom-permissions (línea 8811)
+✅ /api/users/<int:user_id>/assignments/<int:assignment_id> (línea 8868)
+✅ /api/bot_tools/validate_registration (línea 9004)
+✅ /api/dashboard/activity_chart (línea 9056)
+✅ /api/bot_tools/settings (línea 9124)
+✅ /api/bot_tools/all_active_vacancies (línea 9139)
+✅ /api/bot_tools/vacancy_details (línea 9172)
+✅ /api/bot_tools/candidate_status (línea 9215)
+✅ /api/bot_tools/vacancies_with_details (línea 9361)
+✅ /api/applications/update_notification_status (línea 9390)
+✅ /api/applications/resync_pending_notifications (línea 9416)
+✅ /api/internal/chat_context/<string:identity_number> (línea 9528)
+✅ /api/dashboard/stats (línea 9640)
+✅ /api/calendar/interviews (línea 9859)
+✅ /api/calendar/activities (línea 9930)
+✅ /api/calendar/reminders/<int:reminder_id> (línea 10017)
+✅ /api/clients/<int:client_id>/vacancies (línea 10087)
+✅ /api/clients/<int:client_id>/applications (línea 10144)
+✅ /api/clients/<int:client_id>/hired-candidates (línea 10200)
+✅ /api/candidates/upload (línea 10365)
+✅ /api/candidates/check-duplicates (línea 10508)
+✅ /api/candidates/cancel-job/<job_id> (línea 10602)
+✅ /api/candidates/<int:candidate_id>/missing-fields (línea 10623)
+✅ /api/whatsapp/conversations/<int:conversation_id>/messages (línea 10915)
+✅ /api/whatsapp/send-message (línea 11157)
+✅ /api/whatsapp/web/init-session (línea 11262)
+✅ /api/whatsapp/web/close-session (línea 11316)
+✅ /api/whatsapp/webhook (línea 11391)
+✅ /api/whatsapp/webhook/<int:tenant_id> (línea 11399)
+✅ /api/cv/upload-to-oci (línea 11423)
+✅ /api/cv/process-existing/<cv_identifier> (línea 11589)
+✅ /api/cv/download/<cv_identifier> (línea 11681)
+✅ /api/cv/bulk-upload (línea 11727)
+✅ /api/cv/delete/<cv_identifier> (línea 12103)
