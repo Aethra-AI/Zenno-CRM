@@ -4818,7 +4818,8 @@ def get_candidates():
         # 🔐 MÓDULO B5: Filtrar por usuario según rol
         condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
         if condition:
-            query += f" AND ({condition})"            params.extend(filter_params)
+            query += f" AND ({condition})"
+            params.extend(filter_params)
         
         # Aplicar filtros
         if search:
