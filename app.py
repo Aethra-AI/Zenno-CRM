@@ -3789,7 +3789,7 @@ def get_kpi_reports():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         time_to_fill = cursor.fetchone()['avg_time_to_fill']
@@ -3803,7 +3803,7 @@ def get_kpi_reports():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         time_to_hire = cursor.fetchone()['avg_time_to_hire']
@@ -3817,7 +3817,7 @@ def get_kpi_reports():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         sql += " GROUP BY p.estado"
         cursor.execute(sql, tuple(params))
@@ -3834,7 +3834,7 @@ def get_kpi_reports():
         sql = "SELECT COUNT(*) as total_candidates FROM Afiliados a WHERE a.tenant_id = %s"
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         total_candidates = cursor.fetchone()['total_candidates']
@@ -3847,7 +3847,7 @@ def get_kpi_reports():
         """
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         new_candidates_month = cursor.fetchone()['new_this_month']
@@ -3856,7 +3856,7 @@ def get_kpi_reports():
         sql = "SELECT COUNT(*) as active_vacancies FROM Vacantes v WHERE v.estado = 'Activa' AND v.tenant_id = %s"
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         active_vacancies = cursor.fetchone()['active_vacancies']
@@ -3864,7 +3864,7 @@ def get_kpi_reports():
         sql = "SELECT COUNT(*) as filled_vacancies FROM Vacantes v WHERE v.estado = 'Cerrada' AND v.tenant_id = %s"
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         filled_vacancies = cursor.fetchone()['filled_vacancies']
@@ -3878,7 +3878,7 @@ def get_kpi_reports():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         total_interviews = cursor.fetchone()['total_interviews']
@@ -3891,7 +3891,7 @@ def get_kpi_reports():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         interviews_today = cursor.fetchone()['interviews_today']
@@ -3914,7 +3914,7 @@ def get_kpi_reports():
         """
         params = [tenant_id, tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         sql += " GROUP BY canal"
         cursor.execute(sql, tuple(params))
@@ -3938,7 +3938,7 @@ def get_kpi_reports():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         sql += " GROUP BY e.resultado"
         cursor.execute(sql, tuple(params))
@@ -4077,7 +4077,7 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         if user_id and tenant_id:
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
             if condition:
-                conditions.append(f"({condition} OR a.created_by_user IS NULL)")
+                conditions.append(f"({condition})")
                 params.extend(filter_params)
 
         # Filtro por término de búsqueda
@@ -4250,7 +4250,7 @@ def get_reports():
             sql_candidatos = "SELECT COUNT(*) as total FROM Afiliados a WHERE a.tenant_id = %s"
             params_candidatos = [tenant_id]
             if candidate_condition:
-                sql_candidatos += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+                sql_candidatos += f" AND ({candidate_condition})"
                 params_candidatos.extend(candidate_params)
             
             cursor.execute(sql_candidatos, tuple(params_candidatos))
@@ -4260,7 +4260,7 @@ def get_reports():
             sql_vacantes = "SELECT COUNT(*) as total FROM Vacantes v WHERE v.estado = 'Activa' AND v.tenant_id = %s"
             params_vacantes = [tenant_id]
             if vacancy_condition:
-                sql_vacantes += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                sql_vacantes += f" AND ({vacancy_condition})"
                 params_vacantes.extend(vacancy_params)
             
             cursor.execute(sql_vacantes, tuple(params_vacantes))
@@ -4277,7 +4277,7 @@ def get_reports():
             """
             params_entrevistas = [tenant_id, tenant_id]
             if vacancy_condition:
-                sql_entrevistas += f" AND ({vacancy_condition.replace('v.created_by_user', 'v.created_by_user')} OR v.created_by_user IS NULL)"
+                sql_entrevistas += f" AND ({vacancy_condition.replace('v.created_by_user', 'v.created_by_user')})"
                 params_entrevistas.extend(vacancy_params)
             
             cursor.execute(sql_entrevistas, tuple(params_entrevistas))
@@ -4300,7 +4300,7 @@ def get_reports():
             sql = "SELECT v.id_vacante, v.cargo_solicitado, v.fecha_apertura FROM Vacantes v WHERE v.estado = 'Activa' AND v.tenant_id = %s"
             params = [tenant_id]
             if vacancy_condition:
-                sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                sql += f" AND ({vacancy_condition})"
                 params.extend(vacancy_params)
             sql += " LIMIT 10"
             cursor.execute(sql, tuple(params))
@@ -4316,7 +4316,7 @@ def get_reports():
             """
             params = [tenant_id, tenant_id]
             if vacancy_condition:
-                sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                sql += f" AND ({vacancy_condition})"
                 params.extend(vacancy_params)
             sql += " ORDER BY p.fecha_aplicacion DESC LIMIT 10"
             cursor.execute(sql, tuple(params))
@@ -4334,7 +4334,7 @@ def get_reports():
             """
             params = [tenant_id, tenant_id]
             if vacancy_condition:
-                sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+                sql += f" AND ({vacancy_condition})"
                 params.extend(vacancy_params)
             sql += " LIMIT 10"
             cursor.execute(sql, tuple(params))
@@ -4390,7 +4390,7 @@ def get_dashboard_data():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         entrevistas_pendientes = cursor.fetchone()['total']
@@ -4404,7 +4404,7 @@ def get_dashboard_data():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         entrevistas_sin_resultado = cursor.fetchone()['total']
@@ -4419,7 +4419,7 @@ def get_dashboard_data():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR V.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         sql += " GROUP BY V.id_vacante, V.cargo_solicitado, C.empresa ORDER BY postulantes DESC"
         cursor.execute(sql, tuple(params))
@@ -4429,7 +4429,7 @@ def get_dashboard_data():
         sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE DATE(a.fecha_registro) = CURDATE() AND a.tenant_id = %s"
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         afiliados_hoy = cursor.fetchone()['total']
@@ -4437,7 +4437,7 @@ def get_dashboard_data():
         sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE MONTH(a.fecha_registro) = MONTH(CURDATE()) AND YEAR(a.fecha_registro) = YEAR(CURDATE()) AND a.tenant_id = %s"
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         afiliados_mes = cursor.fetchone()['total']
@@ -4450,7 +4450,7 @@ def get_dashboard_data():
         """
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         sql += " GROUP BY a.ciudad ORDER BY total DESC LIMIT 5"
         cursor.execute(sql, tuple(params))
@@ -4510,7 +4510,7 @@ def get_dashboard_metrics():
         sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE a.tenant_id = %s"
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         total_candidatos = cursor.fetchone()['total']
@@ -4519,7 +4519,7 @@ def get_dashboard_metrics():
         sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE DATE(a.fecha_registro) = CURDATE() AND a.tenant_id = %s"
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         candidatos_hoy = cursor.fetchone()['total']
@@ -4532,7 +4532,7 @@ def get_dashboard_metrics():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         sql += " GROUP BY v.estado"
         cursor.execute(sql, tuple(params))
@@ -4550,7 +4550,7 @@ def get_dashboard_metrics():
         """
         params = [tenant_id, tenant_id, tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         conversion_data = cursor.fetchone()
@@ -4567,7 +4567,7 @@ def get_dashboard_metrics():
         """
         params = [tenant_id, tenant_id, tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         tiempo_promedio = cursor.fetchone()['tiempo_promedio'] or 0
@@ -4583,7 +4583,7 @@ def get_dashboard_metrics():
         """
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         sql += " GROUP BY DATE_FORMAT(a.fecha_registro, '%Y-%m') ORDER BY mes"
         cursor.execute(sql, tuple(params))
@@ -4615,7 +4615,7 @@ def get_dashboard_metrics():
         """
         params_clientes = [tenant_id, tenant_id, tenant_id, tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params_clientes.extend(vacancy_params)
         sql += " GROUP BY c.id_cliente, c.empresa ORDER BY total_postulaciones DESC LIMIT 5"
         cursor.execute(sql, tuple(params_clientes))
@@ -4818,8 +4818,7 @@ def get_candidates():
         # 🔐 MÓDULO B5: Filtrar por usuario según rol
         condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
         if condition:
-            query += f" AND ({condition} OR a.created_by_user IS NULL)"  # Incluir registros antiguos sin creador
-            params.extend(filter_params)
+            query += f" AND ({condition})"            params.extend(filter_params)
         
         # Aplicar filtros
         if search:
@@ -5420,7 +5419,7 @@ def get_notifications():
         """
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         new_candidates = cursor.fetchone()['count']
@@ -5445,7 +5444,7 @@ def get_notifications():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         today_interviews = cursor.fetchone()['count']
@@ -5470,7 +5469,7 @@ def get_notifications():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         new_applications = cursor.fetchone()['count']
@@ -5497,7 +5496,7 @@ def get_notifications():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         overdue_interviews = cursor.fetchone()['count']
@@ -5827,7 +5826,7 @@ def handle_vacancies():
             # 🔐 MÓDULO B6: Aplicar filtro por usuario
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'V.created_by_user')
             if condition:
-                base_query += f" AND ({condition} OR V.created_by_user IS NULL)"
+                base_query += f" AND ({condition})"
                 params.extend(filter_params)
             
             # Filtro de estado (debe ir antes del GROUP BY)
@@ -6103,7 +6102,7 @@ def handle_applications():
             # 🔐 MÓDULO B7: Filtrar por usuario según rol (a través de la vacante)
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
             if condition:
-                conditions.append(f"({condition} OR v.created_by_user IS NULL)")
+                conditions.append(f"({condition})")
                 params.extend(filter_params)
             
             # Filtros adicionales
@@ -6402,7 +6401,7 @@ def handle_interviews():
             # 🔐 MÓDULO B8: Filtrar por usuario según rol (a través de la vacante)
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
             if condition:
-                conditions.append(f"({condition} OR v.created_by_user IS NULL)")
+                conditions.append(f"({condition})")
                 params.extend(filter_params)
             
             # Filtros adicionales
@@ -6670,7 +6669,7 @@ def get_interview_stats():
         
         # 🔐 Aplicar filtro por usuario
         if vacancy_condition:
-            conditions.append(f"({vacancy_condition} OR v.created_by_user IS NULL)")
+            conditions.append(f"({vacancy_condition})")
             params.extend(vacancy_params)
         
         # Aplicar filtros de fecha y estado
@@ -6762,7 +6761,7 @@ def handle_hired():
             # 🔐 MÓDULO B10: Filtrar por usuario según rol
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'co.created_by_user')
             if condition:
-                sql += f" AND ({condition} OR co.created_by_user IS NULL)"
+                sql += f" AND ({condition})"
                 params.extend(filter_params)
             
             sql += " ORDER BY saldo_pendiente DESC, co.fecha_contratacion DESC"
@@ -7051,7 +7050,7 @@ def handle_clients():
             # 🔐 MÓDULO B9: Filtrar por usuario según rol
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user')
             if condition:
-                query += f" AND ({condition} OR c.created_by_user IS NULL)"
+                query += f" AND ({condition})"
                 params.extend(filter_params)
             
             query += " GROUP BY c.id_cliente ORDER BY c.empresa"
@@ -9081,7 +9080,7 @@ def get_dashboard_activity():
         """
         params_afiliados = [tenant_id]
         if candidate_condition:
-            sql_afiliados += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql_afiliados += f" AND ({candidate_condition})"
             params_afiliados.extend(candidate_params)
         sql_afiliados += " GROUP BY DATE(a.fecha_registro) ORDER BY dia"
         
@@ -9098,7 +9097,7 @@ def get_dashboard_activity():
         """
         params_postulaciones = [tenant_id, tenant_id]
         if vacancy_condition:
-            sql_postulaciones += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql_postulaciones += f" AND ({vacancy_condition})"
             params_postulaciones.extend(vacancy_params)
         sql_postulaciones += " GROUP BY DATE(p.fecha_aplicacion) ORDER BY dia"
         
@@ -9668,7 +9667,7 @@ def get_dashboard_stats():
         """
         params = [tenant_id]
         if candidate_condition:
-            sql += f" AND ({candidate_condition} OR a.created_by_user IS NULL)"
+            sql += f" AND ({candidate_condition})"
             params.extend(candidate_params)
         cursor.execute(sql, tuple(params))
         
@@ -9687,7 +9686,7 @@ def get_dashboard_stats():
         """
         params = [tenant_id, tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         aplicaciones_stats = cursor.fetchone()
@@ -9703,7 +9702,7 @@ def get_dashboard_stats():
         """
         params = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
         cursor.execute(sql, tuple(params))
         vacantes_stats = cursor.fetchone()
@@ -9896,7 +9895,7 @@ def calendar_interviews():
         params = [tenant_id, tenant_id, year, month]
         
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql += f" AND ({vacancy_condition})"
             # Insertar vacancy_params después de los dos tenant_id
             params = [tenant_id, tenant_id] + vacancy_params + [year, month]
         
@@ -9964,7 +9963,7 @@ def calendar_activities():
         """
         params_post = [tenant_id, year, month]
         if vacancy_condition:
-            sql_postulaciones += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql_postulaciones += f" AND ({vacancy_condition})"
             params_post = [tenant_id] + vacancy_params + [year, month]
         
         sql_interviews = """
@@ -9987,7 +9986,7 @@ def calendar_activities():
         """
         params_int = [tenant_id, tenant_id, year, month]
         if vacancy_condition:
-            sql_interviews += f" AND ({vacancy_condition} OR v.created_by_user IS NULL)"
+            sql_interviews += f" AND ({vacancy_condition})"
             params_int = [tenant_id, tenant_id] + vacancy_params + [year, month]
         
         # Combinar con UNION ALL
