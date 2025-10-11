@@ -4621,20 +4621,26 @@ def get_dashboard_metrics():
         cursor.execute(sql, tuple(params_clientes))
         top_clientes = cursor.fetchall()
         
-        # 9. Efectividad por usuario (si tenemos tabla de usuarios)
-        cursor.execute("""
+        # 9. Efectividad por usuario (FILTRADO POR USUARIO) 🔐
+        sql = """
             SELECT 
                 'Usuario Demo' as usuario,
                 COUNT(DISTINCT p.id_postulacion) as total_postulaciones,
                 COUNT(DISTINCT co.id_contratado) as total_contrataciones
             FROM Postulaciones p
+            JOIN Vacantes v ON p.id_vacante = v.id_vacante
             LEFT JOIN Contratados co ON p.id_afiliado = co.id_afiliado AND p.id_vacante = co.id_vacante
-            WHERE p.tenant_id = %s AND (co.tenant_id = %s OR co.tenant_id IS NULL)
-        """, (tenant_id, tenant_id))
+            WHERE p.tenant_id = %s AND v.tenant_id = %s AND (co.tenant_id = %s OR co.tenant_id IS NULL)
+        """
+        params_efectividad = [tenant_id, tenant_id, tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition})"
+            params_efectividad.extend(vacancy_params)
+        cursor.execute(sql, tuple(params_efectividad))
         efectividad_usuario = cursor.fetchone()
         
-        # 10. Tasa de éxito por tipo de vacante
-        cursor.execute("""
+        # 10. Tasa de éxito por tipo de vacante (FILTRADO POR USUARIO) 🔐
+        sql = """
             SELECT 
                 v.cargo_solicitado,
                 COUNT(DISTINCT p.id_postulacion) as total_postulaciones,
@@ -4648,15 +4654,22 @@ def get_dashboard_metrics():
             LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante
             LEFT JOIN Contratados co ON v.id_vacante = co.id_vacante
             WHERE v.tenant_id = %s AND (p.tenant_id = %s OR p.tenant_id IS NULL) AND (co.tenant_id = %s OR co.tenant_id IS NULL)
+        """
+        params_tasa = [tenant_id, tenant_id, tenant_id]
+        if vacancy_condition:
+            sql += f" AND ({vacancy_condition})"
+            params_tasa.extend(vacancy_params)
+        sql += """
             GROUP BY v.id_vacante, v.cargo_solicitado
             HAVING total_postulaciones > 0
             ORDER BY tasa_exito DESC
             LIMIT 5
-        """, (tenant_id, tenant_id, tenant_id))
+        """
+        cursor.execute(sql, tuple(params_tasa))
         tasa_exito_vacantes = cursor.fetchall()
         
-        # 11. Candidatos más activos
-        cursor.execute("""
+        # 11. Candidatos más activos (FILTRADO POR USUARIO) 🔐
+        sql = """
             SELECT 
                 a.nombre_completo as nombre,
                 a.email,
@@ -4670,18 +4683,26 @@ def get_dashboard_metrics():
                 a.puntuacion as rating
             FROM Afiliados a
             LEFT JOIN Postulaciones p ON a.id_afiliado = p.id_afiliado AND p.tenant_id = %s
+            LEFT JOIN Vacantes v ON p.id_vacante = v.id_vacante
             LEFT JOIN Entrevistas e ON p.id_postulacion = e.id_postulacion
             LEFT JOIN Contratados c ON p.id_afiliado = c.id_afiliado AND p.id_vacante = c.id_vacante AND c.tenant_id = %s
             WHERE a.tenant_id = %s
+        """
+        params_candidatos = [tenant_id, tenant_id, tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition})"
+            params_candidatos.extend(candidate_params)
+        sql += """
             GROUP BY a.id_afiliado, a.nombre_completo, a.email, a.ciudad, a.skills, a.ultimo_contacto, a.puntuacion
             HAVING postulaciones > 0
             ORDER BY postulaciones DESC, rating DESC
             LIMIT 5
-        """, (tenant_id, tenant_id, tenant_id))
+        """
+        cursor.execute(sql, tuple(params_candidatos))
         candidatos_mas_activos = cursor.fetchall()
         
-        # 12. Skills más demandados
-        cursor.execute("""
+        # 12. Skills más demandados (FILTRADO POR USUARIO) 🔐
+        sql = """
             SELECT 
                 TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(a.skills, ',', numbers.n), ',', -1)) as skill,
                 COUNT(*) as demanda,
@@ -4695,26 +4716,59 @@ def get_dashboard_metrics():
             AND a.skills IS NOT NULL 
             AND a.skills != ''
             AND CHAR_LENGTH(a.skills) - CHAR_LENGTH(REPLACE(a.skills, ',', '')) >= numbers.n - 1
+        """
+        params_skills = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition})"
+            params_skills.extend(candidate_params)
+        sql += """
             GROUP BY skill
             HAVING skill != '' AND LENGTH(skill) > 2
             ORDER BY demanda DESC
             LIMIT 8
-        """, (tenant_id,))
+        """
+        cursor.execute(sql, tuple(params_skills))
         skills_demandados = cursor.fetchall()
         
-        # 13. Distribución por ciudades
-        cursor.execute("""
+        # 13. Distribución por ciudades (FILTRADO POR USUARIO) 🔐
+        # Primero obtener el total de candidatos del usuario para calcular porcentaje
+        sql_total = "SELECT COUNT(*) as total FROM Afiliados a WHERE a.tenant_id = %s"
+        params_total = [tenant_id]
+        if candidate_condition:
+            sql_total += f" AND ({candidate_condition})"
+            params_total.extend(candidate_params)
+        cursor.execute(sql_total, tuple(params_total))
+        total_candidatos_usuario = cursor.fetchone()['total']
+        
+        # Luego obtener la distribución
+        sql = """
             SELECT 
-                ciudad,
-                COUNT(*) as candidatos,
-                ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM Afiliados WHERE tenant_id = %s), 1) as porcentaje
-            FROM Afiliados 
-            WHERE tenant_id = %s AND ciudad IS NOT NULL AND ciudad != ''
-            GROUP BY ciudad
+                a.ciudad,
+                COUNT(*) as candidatos
+            FROM Afiliados a
+            WHERE a.tenant_id = %s AND a.ciudad IS NOT NULL AND a.ciudad != ''
+        """
+        params_ciudades = [tenant_id]
+        if candidate_condition:
+            sql += f" AND ({candidate_condition})"
+            params_ciudades.extend(candidate_params)
+        sql += """
+            GROUP BY a.ciudad
             ORDER BY candidatos DESC
             LIMIT 10
-        """, (tenant_id, tenant_id))
-        distribucion_ciudades = cursor.fetchall()
+        """
+        cursor.execute(sql, tuple(params_ciudades))
+        ciudades_raw = cursor.fetchall()
+        
+        # Calcular porcentaje basado en el total del usuario
+        distribucion_ciudades = []
+        for ciudad in ciudades_raw:
+            porcentaje = round((ciudad['candidatos'] * 100.0 / total_candidatos_usuario), 1) if total_candidatos_usuario > 0 else 0
+            distribucion_ciudades.append({
+                'ciudad': ciudad['ciudad'],
+                'candidatos': ciudad['candidatos'],
+                'porcentaje': porcentaje
+            })
         
         # 14. Usuarios efectividad (para UserReports)
         usuarios_efectividad = [{
