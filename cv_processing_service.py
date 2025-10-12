@@ -411,54 +411,105 @@ class CVProcessingService:
             logger.error(f"Error extrayendo resumen de habilidades: {str(e)}")
             return ''
     
-    def validate_cv_data(self, cv_data: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_cv_data(self, cv_data: Union[Dict[str, Any], List[Any]]) -> Dict[str, Any]:
         """
         Validar y limpiar datos del CV
         
         Args:
-            cv_data: Datos del CV procesados por Gemini
+            cv_data: Datos del CV procesados por Gemini (puede ser dict o list)
             
         Returns:
             Dict con datos validados y limpiados
         """
         try:
+            # Si es una lista, convertir a diccionario con estructura esperada
+            if isinstance(cv_data, list):
+                logger.warning("Se recibió una lista en lugar de un diccionario, convirtiendo...")
+                cv_data = {
+                    'personal_info': {},
+                    'experiencia': [],
+                    'educacion': [],
+                    'habilidades': {
+                        'tecnicas': [],
+                        'blandas': [],
+                        'idiomas': []
+                    }
+                }
+            
             validated_data = cv_data.copy()
             
+            # Asegurar estructura básica
+            if 'personal_info' not in validated_data:
+                validated_data['personal_info'] = {}
+            
+            if 'experiencia' not in validated_data:
+                validated_data['experiencia'] = []
+            elif not isinstance(validated_data['experiencia'], list):
+                validated_data['experiencia'] = []
+            
+            if 'educacion' not in validated_data:
+                validated_data['educacion'] = []
+            elif not isinstance(validated_data['educacion'], list):
+                validated_data['educacion'] = []
+            
+            if 'habilidades' not in validated_data:
+                validated_data['habilidades'] = {
+                    'tecnicas': [],
+                    'blandas': [],
+                    'idiomas': []
+                }
+            
             # Validar información personal
-            if 'personal_info' in validated_data:
-                personal = validated_data['personal_info']
-                
-                # Validar email
-                if personal.get('email') and '@' not in personal['email']:
-                    personal['email'] = None
-                
-                # Limpiar teléfono
-                if personal.get('telefono'):
-                    phone = ''.join(filter(str.isdigit, personal['telefono']))
-                    if len(phone) < 7:
-                        personal['telefono'] = None
-                    else:
-                        personal['telefono'] = phone
+            personal = validated_data['personal_info']
+            if not isinstance(personal, dict):
+                personal = {}
+                validated_data['personal_info'] = personal
+            
+            # Validar email
+            if personal.get('email') and not isinstance(personal['email'], str):
+                personal['email'] = None
+            elif personal.get('email') and '@' not in personal['email']:
+                personal['email'] = None
+            
+            # Limpiar teléfono
+            if personal.get('telefono'):
+                if not isinstance(personal['telefono'], str):
+                    personal['telefono'] = str(personal['telefono'])
+                phone = ''.join(filter(str.isdigit, personal['telefono']))
+                if len(phone) < 7:
+                    personal['telefono'] = None
+                else:
+                    personal['telefono'] = phone
             
             # Validar experiencia
-            if 'experiencia' in validated_data:
-                exp = validated_data['experiencia']
-                
-                # Asegurar que años_experiencia sea número
-                if isinstance(exp.get('años_experiencia'), str):
-                    try:
-                        exp['años_experiencia'] = float(exp['años_experiencia'])
-                    except ValueError:
-                        exp['años_experiencia'] = 0
+            if 'años_experiencia' in validated_data and validated_data['años_experiencia'] is not None:
+                try:
+                    validated_data['años_experiencia'] = float(validated_data['años_experiencia'])
+                except (ValueError, TypeError):
+                    validated_data['años_experiencia'] = 0
             
             # Validar habilidades
-            if 'habilidades' in validated_data:
-                skills = validated_data['habilidades']
+            if 'habilidades' not in validated_data or not isinstance(validated_data['habilidades'], dict):
+                validated_data['habilidades'] = {
+                    'tecnicas': [],
+                    'blandas': [],
+                    'idiomas': []
+                }
+            
+            skills = validated_data['habilidades']
+            
+            # Asegurar que las listas de habilidades existan y sean listas
+            for skill_type in ['tecnicas', 'blandas', 'idiomas']:
+                if skill_type not in skills or not isinstance(skills[skill_type], list):
+                    skills[skill_type] = []
                 
-                # Asegurar que sean arrays
-                for skill_type in ['tecnicas', 'blandas', 'idiomas']:
-                    if skill_type in skills and not isinstance(skills[skill_type], list):
-                        skills[skill_type] = []
+                # Filtrar elementos no string
+                skills[skill_type] = [
+                    str(skill) for skill in skills[skill_type] 
+                    if skill and (isinstance(skill, str) or isinstance(skill, (int, float)))
+                ]
+            
+            logger.info("Validación de datos de CV completada exitosamente")
             
             return {
                 'success': True,
@@ -466,10 +517,12 @@ class CVProcessingService:
             }
             
         except Exception as e:
-            logger.error(f"Error validando datos del CV: {str(e)}")
+            error_msg = f"Error validando datos del CV: {str(e)}"
+            logger.error(error_msg, exc_info=True)
             return {
                 'success': False,
-                'error': str(e)
+                'error': error_msg,
+                'raw_data': str(cv_data)[:500]  # Incluir parte de los datos para depuración
             }
     
     def process_cv_batch(self, cv_texts: List[str], tenant_id: int) -> List[Dict[str, Any]]:
