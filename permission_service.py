@@ -467,10 +467,10 @@ def build_user_filter_condition(user_id, tenant_id, created_by_column='created_b
     
     # Si no se especifica resource_type, usar enfoque antiguo (solo created_by)
     if not resource_type or not resource_id_column:
-    if len(accessible_users) == 1:
-        return (f"{created_by_column} = %s", accessible_users)
-    placeholders = ','.join(['%s'] * len(accessible_users))
-    return (f"{created_by_column} IN ({placeholders})", accessible_users)
+        if len(accessible_users) == 1:
+            return (f"{created_by_column} = %s", accessible_users)
+        placeholders = ','.join(['%s'] * len(accessible_users))
+        return (f"{created_by_column} IN ({placeholders})", accessible_users)
     
     # 🔐 NUEVO: Incluir recursos asignados
     # Construir lista de placeholders para IN clause
