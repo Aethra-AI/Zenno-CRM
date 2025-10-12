@@ -12609,13 +12609,13 @@ def upload_cv_to_oci():
         # Procesar CV con Gemini AI en segundo plano (sin bloquear respuesta)
         def process_cv_background():
             try:
-                # Extraer texto del CV
+                # 1. Extraer texto del CV
                 cv_text = cv_processing_service.extract_text_from_file(
                     file_content=file_content,
                     filename=file.filename
                 )
                 
-                # Procesar con Gemini
+                # 2. Procesar con Gemini
                 gemini_result = cv_processing_service.process_cv_with_gemini(
                     cv_text=cv_text,
                     tenant_id=tenant_id
@@ -12630,24 +12630,66 @@ def upload_cv_to_oci():
                     if validation_result['success']:
                         processed_data = validation_result['validated_data']
                         
-                        # Crear candidato si no existe
-                        candidate_id = None
-                        if not candidate_id:
-                            try:
+                        # 3. Crear o actualizar candidato con los datos del CV
+                        try:
+                            # Buscar candidato existente por email o teléfono si están disponibles
+                            existing_candidate_id = None
+                            if processed_data.get('email'):
+                                with get_db_connection() as conn:
+                                    with conn.cursor(dictionary=True) as cursor:
+                                        cursor.execute("""
+                                            SELECT id_afiliado FROM Afiliados 
+                                            WHERE (email = %s OR telefono = %s) AND tenant_id = %s
+                                            LIMIT 1
+                                        """, (processed_data.get('email'), 
+                                             processed_data.get('telefono'), 
+                                             tenant_id))
+                                        if cursor.rowcount > 0:
+                                            existing_candidate = cursor.fetchone()
+                                            existing_candidate_id = existing_candidate['id_afiliado']
+                            
+                            # 4. Crear o actualizar el candidato
+                            candidate_id = existing_candidate_id or None
+                            
+                            # Si no existe, crear nuevo candidato
+                            if not candidate_id:
                                 candidate_id = create_candidate_from_cv_data(
                                     processed_data, tenant_id, user_id
                                 )
-                                app.logger.info(f"Candidato creado: ID {candidate_id} para tenant {tenant_id}")
-                            except Exception as e:
-                                app.logger.error(f"Error creando candidato: {str(e)}")
-                                # No fallar el proceso, solo loggear el error
-                        
-                        # Guardar CV en base de datos
-                        try:
-                            save_cv_to_database(
+                                app.logger.info(f"Nuevo candidato creado: ID {candidate_id} para tenant {tenant_id}")
+                            else:
+                                app.logger.info(f"Actualizando candidato existente: ID {candidate_id}")
+                                # Aquí podrías agregar lógica para actualizar datos existentes si es necesario
+                            
+                            # 5. Guardar CV en base de datos y asociar con el candidato
+                            save_cv_result = save_cv_to_database(
                                 tenant_id=tenant_id,
-                                candidate_id=int(candidate_id) if candidate_id else None,
+                                candidate_id=int(candidate_id),
                                 cv_identifier=cv_identifier,
+                                original_filename=file.filename,
+                                object_key=upload_result['object_key'],
+                                file_url=par_result['access_uri'],
+                                par_id=par_result['par_id'],
+                                mime_type=upload_result['mime_type'],
+                                file_size=upload_result['size'],
+                                processed_data=processed_data
+                            )
+                            
+                            if save_cv_result['success']:
+                                app.logger.info(f"CV guardado exitosamente para candidato {candidate_id}")
+                            else:
+                                app.logger.error(f"Error guardando CV: {save_cv_result.get('error')}")
+                                
+                        except Exception as e:
+                            app.logger.error(f"Error en procesamiento de candidato: {str(e)}", exc_info=True)
+                            
+                    else:
+                        app.logger.error(f"Error validando datos del CV: {validation_result.get('error')}")
+                else:
+                    app.logger.error(f"Error procesando CV con Gemini: {gemini_result.get('error')}")
+                    
+            except Exception as e:
+                app.logger.error(f"Error en procesamiento en segundo plano: {str(e)}", exc_info=True)
                                 original_filename=file.filename,
                                 object_key=upload_result['object_key'],
                                 file_url=par_result['access_uri'],
