@@ -3,6 +3,9 @@ import os
 import json
 import time
 import logging
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -4218,11 +4221,6 @@ def search_candidates_tool(term=None, tags=None, experience=None, city=None, rec
 # ===============================================================
 # MÓDULO 1: SELECCIÓN MASIVA INTELIGENTE
 # ===============================================================
-
-import asyncio
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 
 class BatchProcessor:
     """Procesador de lotes para asignaciones masivas de candidatos."""
