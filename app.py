@@ -13278,8 +13278,16 @@ def delete_cv_from_oci(cv_identifier):
         })
         
     except Exception as e:
-        app.logger.error(f"Error en delete_cv_from_oci: {str(e)}")
-        return jsonify({'error': 'Error al eliminar CV'}), 500
+        error_msg = f"Error eliminando CV: {str(e)}"
+        app.logger.error(error_msg)
+        if 'conn' in locals():
+            if 'cursor' in locals() and cursor:
+                cursor.close()
+            conn.close()
+        return jsonify({
+            'success': False,
+            'error': error_msg
+        }), 500
 
 # --- PUNTO DE ENTRADA PARA EJECUTAR EL SERVIDOR (SIN CAMBIOS) ---
 if __name__ == '__main__':
