@@ -13191,12 +13191,14 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
             WHERE id_afiliado = %s AND tenant_id = %s
         """, (file_url, candidate_id, tenant_id))
         
-        # Registrar en log de procesamiento (sin candidate_id ya que no existe en la tabla)
+        # Registrar en log de procesamiento
         cursor.execute("""
             INSERT INTO CV_Processing_Logs (
-                tenant_id, cv_identifier, processing_step, status, message, details
+                tenant_id, cv_identifier, processing_step, status, 
+                message, details, created_at
             ) VALUES (
-                %s, %s, 'cv_saved', 'success', 'CV guardado exitosamente en Afiliados', %s
+                %s, %s, 'cv_saved', 'success', 
+                'CV guardado exitosamente en Afiliados', %s, NOW()
             )
         """, (
             tenant_id, cv_identifier, json.dumps({
