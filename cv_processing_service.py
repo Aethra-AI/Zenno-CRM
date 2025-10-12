@@ -421,119 +421,38 @@ class CVProcessingService:
         Returns:
             Dict con datos validados y limpiados
         """
-        if not isinstance(cv_data, dict):
-            raise ValueError("Los datos del CV deben ser un diccionario")
-            
-        validated_data = {
-            'personal_info': {},
-            'experiencia': [],
-            'educacion': [],
-            'habilidades': {}
-        }
-        
         try:
+            validated_data = cv_data.copy()
+            
             # Validar información personal
-            personal = cv_data.get('personal_info', {})
-            if not isinstance(personal, dict):
-                personal = {}
+            if 'personal_info' in validated_data:
+                personal = validated_data['personal_info']
                 
-            # Validar campos personales
-            validated_data['personal_info'] = {
-                'nombre_completo': str(personal.get('nombre_completo', '')).strip() or None,
-                'email': str(personal.get('email', '')).strip().lower() if '@' in str(personal.get('email', '')).strip() else None,
-                'telefono': ''.join(filter(str.isdigit, str(personal.get('telefono', '')))) or None,
-                'ciudad': str(personal.get('ciudad', '')).strip() or None,
-                'pais': str(personal.get('pais', '')).strip() or None
-            }
+                # Validar email
+                if personal.get('email') and '@' not in personal['email']:
+                    personal['email'] = None
+                
+                # Limpiar teléfono
+                if personal.get('telefono'):
+                    phone = ''.join(filter(str.isdigit, personal['telefono']))
+                    if len(phone) < 7:
+                        personal['telefono'] = None
+                    else:
+                        personal['telefono'] = phone
             
             # Validar experiencia
-            experiencias = cv_data.get('experiencia', [])
-            if not isinstance(experiencias, list):
-                experiencias = []
+            if 'experiencia' in validated_data:
+                exp = validated_data['experiencia']
                 
-            for exp in experiencias:
-                if not isinstance(exp, dict):
-                    continue
-                    
-                exp_validada = {
-                    'empresa': str(exp.get('empresa', '')).strip(),
-                    'puesto': str(exp.get('puesto', '')).strip(),
-                    'fecha_inicio': str(exp.get('fecha_inicio', '')).strip(),
-                    'fecha_fin': str(exp.get('fecha_fin', '')).strip(),
-                    'descripcion': str(exp.get('descripcion', '')).strip(),
-                    'habilidades': [str(h).strip() for h in exp.get('habilidades', []) if h and str(h).strip()]
-                }
-                
-                if exp_validada['empresa']:  # Solo agregar si tiene al menos empresa
-                    validated_data['experiencia'].append(exp_validada)
-            
-            # Validar educación
-            educacion = cv_data.get('educacion', [])
-            if not isinstance(educacion, list):
-                educacion = []
-                
-            for edu in educacion:
-                if not isinstance(edu, dict):
-                    continue
-                    
-                edu_validada = {
-                    'institucion': str(edu.get('institucion', '')).strip(),
-                    'titulo': str(edu.get('titulo', '')).strip(),
-                    'fecha_inicio': str(edu.get('fecha_inicio', '')).strip(),
-                    'fecha_fin': str(edu.get('fecha_fin', '')).strip(),
-                    'grado': str(edu.get('grado', '')).strip()
-                }
-                
-                if edu_validada['institucion']:  # Solo agregar si tiene al menos institución
-                    validated_data['educacion'].append(edu_validada)
+                # Asegurar que años_experiencia sea número
+                if isinstance(exp.get('años_experiencia'), str):
+                    try:
+                        exp['años_experiencia'] = float(exp['años_experiencia'])
+                    except ValueError:
+                        exp['años_experiencia'] = 0
             
             # Validar habilidades
-            habilidades = cv_data.get('habilidades', {})
-            if not isinstance(habilidades, dict):
-                habilidades = {}
-                
-            validated_data['habilidades'] = {
-                'tecnicas': [str(h).strip() for h in habilidades.get('tecnicas', []) if h and str(h).strip()],
-                'blandas': [str(h).strip() for h in habilidades.get('blandas', []) if h and str(h).strip()],
-                'idiomas': []
-            }
-            
-            # Validar idiomas
-            idiomas = habilidades.get('idiomas', [])
-            if isinstance(idiomas, list):
-                for idioma in idiomas:
-                    if not isinstance(idioma, dict):
-                        continue
-                        
-                    idioma_validado = {
-                        'idioma': str(idioma.get('idioma', '')).strip(),
-                        'nivel': str(idioma.get('nivel', '')).strip().lower()
-                    }
-                    
-                    if idioma_validado['idioma']:  # Solo agregar si tiene idioma
-                        validated_data['habilidades']['idiomas'].append(idioma_validado)
-            
-            # Asegurar que los arrays no sean None
-            for key in ['tecnicas', 'blandas', 'idiomas']:
-                if key not in validated_data['habilidades']:
-                    validated_data['habilidades'][key] = []
-            
-            # Agregar resumen si existe
-            if 'resumen' in cv_data and cv_data['resumen']:
-                validated_data['resumen'] = str(cv_data['resumen']).strip()
-            
-            return {
-                'success': True,
-                'data': validated_data
-            }
-            
-        except Exception as e:
-            logger.error(f"Error validando datos del CV: {str(e)}", exc_info=True)
-            return {
-                'success': False,
-                'error': f"Error validando datos del CV: {str(e)}",
-                'data': None
-            }
+            if 'habilidades' in validated_data:
                 skills = validated_data['habilidades']
                 
                 # Asegurar que sean arrays
