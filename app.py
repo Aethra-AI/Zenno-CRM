@@ -6327,6 +6327,379 @@ def get_notifications():
         conn.close()
 
 
+# ===============================================================
+# 🔔 MÓDULO 3: SISTEMA DE NOTIFICACIONES EN TIEMPO REAL
+# ===============================================================
+
+@app.route('/api/notifications/user', methods=['GET'])
+@token_required
+def get_user_notifications():
+    """
+    🔔 MÓDULO 3: Obtiene notificaciones persistentes del usuario desde la BD.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Error de conexión"}), 500
+    
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # Obtener notificaciones del usuario
+        cursor.execute("""
+            SELECT 
+                id, user_id, tenant_id, tipo, titulo, mensaje, 
+                prioridad, leida, metadata, created_at, read_at
+            FROM notifications
+            WHERE user_id = %s AND tenant_id = %s
+            ORDER BY created_at DESC
+            LIMIT 50
+        """, (user_id, tenant_id))
+        
+        notifications = cursor.fetchall()
+        
+        # Convertir metadata de JSON string a dict
+        for notif in notifications:
+            if notif.get('metadata'):
+                try:
+                    notif['metadata'] = json.loads(notif['metadata'])
+                except:
+                    notif['metadata'] = {}
+            notif['leida'] = bool(notif['leida'])
+        
+        return jsonify({
+            'success': True,
+            'notifications': notifications
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error en get_user_notifications: {e}")
+        return jsonify({"error": "Error al obtener notificaciones"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route('/api/notifications/<int:notification_id>/read', methods=['PUT'])
+@token_required
+def mark_notification_as_read(notification_id):
+    """
+    🔔 MÓDULO 3: Marca una notificación como leída.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Error de conexión"}), 500
+    
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # Verificar que la notificación pertenece al usuario
+        cursor.execute("""
+            UPDATE notifications
+            SET leida = TRUE, read_at = NOW()
+            WHERE id = %s AND user_id = %s AND tenant_id = %s
+        """, (notification_id, user_id, tenant_id))
+        
+        conn.commit()
+        
+        if cursor.rowcount == 0:
+            return jsonify({"error": "Notificación no encontrada"}), 404
+        
+        return jsonify({
+            'success': True,
+            'message': 'Notificación marcada como leída'
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error en mark_notification_as_read: {e}")
+        return jsonify({"error": "Error al marcar notificación"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route('/api/notifications/read-all', methods=['PUT'])
+@token_required
+def mark_all_notifications_as_read():
+    """
+    🔔 MÓDULO 3: Marca todas las notificaciones del usuario como leídas.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Error de conexión"}), 500
+    
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        cursor.execute("""
+            UPDATE notifications
+            SET leida = TRUE, read_at = NOW()
+            WHERE user_id = %s AND tenant_id = %s AND leida = FALSE
+        """, (user_id, tenant_id))
+        
+        conn.commit()
+        updated_count = cursor.rowcount
+        
+        return jsonify({
+            'success': True,
+            'message': f'{updated_count} notificaciones marcadas como leídas',
+            'count': updated_count
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error en mark_all_notifications_as_read: {e}")
+        return jsonify({"error": "Error al marcar notificaciones"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route('/api/notifications/<int:notification_id>', methods=['DELETE'])
+@token_required
+def delete_notification(notification_id):
+    """
+    🔔 MÓDULO 3: Elimina una notificación.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Error de conexión"}), 500
+    
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # Verificar que la notificación pertenece al usuario
+        cursor.execute("""
+            DELETE FROM notifications
+            WHERE id = %s AND user_id = %s AND tenant_id = %s
+        """, (notification_id, user_id, tenant_id))
+        
+        conn.commit()
+        
+        if cursor.rowcount == 0:
+            return jsonify({"error": "Notificación no encontrada"}), 404
+        
+        return jsonify({
+            'success': True,
+            'message': 'Notificación eliminada'
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error en delete_notification: {e}")
+        return jsonify({"error": "Error al eliminar notificación"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ===============================================================
+# 🔍 MÓDULO 4: BÚSQUEDA AVANZADA DE CANDIDATOS CON IA
+# ===============================================================
+
+@app.route('/api/candidates/advanced-search', methods=['POST'])
+@token_required
+def advanced_search_candidates():
+    """
+    🔍 MÓDULO 4: Búsqueda avanzada de candidatos con filtros múltiples y sugerencias IA.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Error de conexión"}), 500
+    
+    cursor = conn.cursor(dictionary=True)
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # Obtener filtros del body
+        data = request.get_json() or {}
+        
+        # Término de búsqueda
+        search_term = data.get('searchTerm', '').strip()
+        
+        # Filtros avanzados
+        filters = data.get('filters', {})
+        
+        # Paginación
+        page = data.get('page', 1)
+        limit = min(data.get('limit', 20), 100)
+        offset = (page - 1) * limit
+        
+        # Construir consulta base
+        base_query = """
+            SELECT 
+                a.id_afiliado as id,
+                a.nombre_completo as name,
+                a.email as email,
+                a.telefono as phone,
+                a.ciudad as location,
+                a.experiencia as experience,
+                a.estado as status,
+                a.puntuacion as score,
+                a.fecha_registro as createdAt,
+                a.habilidades as skills,
+                a.cv_url,
+                a.disponibilidad as availability
+            FROM Afiliados a
+            WHERE 1=1
+        """
+        
+        conditions = []
+        params = []
+        
+        # Filtrar por tenant
+        conditions.append("a.tenant_id = %s")
+        params.append(tenant_id)
+        
+        # Filtrar por permisos de usuario
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        if condition:
+            conditions.append(f"({condition})")
+            params.extend(filter_params)
+        
+        # Búsqueda por término
+        if search_term:
+            conditions.append("""
+                (a.nombre_completo LIKE %s 
+                OR a.experiencia LIKE %s 
+                OR a.ciudad LIKE %s 
+                OR a.habilidades LIKE %s
+                OR a.email LIKE %s)
+            """)
+            search_pattern = f"%{search_term}%"
+            params.extend([search_pattern] * 5)
+        
+        # Filtros avanzados
+        if filters.get('city'):
+            conditions.append("a.ciudad LIKE %s")
+            params.append(f"%{filters['city']}%")
+        
+        if filters.get('minExperience') is not None:
+            # Extraer años de experiencia del campo texto
+            conditions.append("CAST(REGEXP_SUBSTR(a.experiencia, '[0-9]+') AS UNSIGNED) >= %s")
+            params.append(filters['minExperience'])
+        
+        if filters.get('maxExperience') is not None:
+            conditions.append("CAST(REGEXP_SUBSTR(a.experiencia, '[0-9]+') AS UNSIGNED) <= %s")
+            params.append(filters['maxExperience'])
+        
+        if filters.get('minScore') is not None:
+            conditions.append("a.puntuacion >= %s")
+            params.append(filters['minScore'])
+        
+        if filters.get('status') and len(filters['status']) > 0:
+            placeholders = ','.join(['%s'] * len(filters['status']))
+            conditions.append(f"a.estado IN ({placeholders})")
+            params.extend(filters['status'])
+        
+        if filters.get('availability') and len(filters['availability']) > 0:
+            placeholders = ','.join(['%s'] * len(filters['availability']))
+            conditions.append(f"a.disponibilidad IN ({placeholders})")
+            params.extend(filters['availability'])
+        
+        if filters.get('minSalary') is not None:
+            conditions.append("a.salario_esperado >= %s")
+            params.append(filters['minSalary'])
+        
+        if filters.get('maxSalary') is not None:
+            conditions.append("a.salario_esperado <= %s")
+            params.append(filters['maxSalary'])
+        
+        if filters.get('hasCV'):
+            conditions.append("a.cv_url IS NOT NULL")
+        
+        if filters.get('remote'):
+            conditions.append("(a.disponibilidad LIKE '%remoto%' OR a.disponibilidad LIKE '%remote%')")
+        
+        # Aplicar condiciones
+        if conditions:
+            base_query += " AND " + " AND ".join(conditions)
+        
+        # Ordenar por relevancia (puntuación + fecha)
+        base_query += " ORDER BY a.puntuacion DESC, a.fecha_registro DESC"
+        
+        # Contar total sin paginación
+        count_query = f"SELECT COUNT(*) as total FROM ({base_query}) as subquery"
+        cursor.execute(count_query, tuple(params))
+        total_results = cursor.fetchone()['total']
+        
+        # Aplicar paginación
+        base_query += " LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        
+        # Ejecutar consulta
+        cursor.execute(base_query, tuple(params))
+        results = cursor.fetchall()
+        
+        # Procesar resultados
+        formatted_results = []
+        for row in results:
+            # Convertir fechas
+            if row.get('createdAt') and isinstance(row['createdAt'], datetime):
+                row['createdAt'] = row['createdAt'].isoformat()
+            
+            # Procesar habilidades
+            if row.get('skills'):
+                try:
+                    skills_data = json.loads(row['skills'])
+                    if isinstance(skills_data, dict) and 'tecnologias' in skills_data:
+                        row['skills'] = skills_data['tecnologias']
+                    else:
+                        row['skills'] = []
+                except (json.JSONDecodeError, TypeError):
+                    row['skills'] = [skill.strip() for skill in str(row['skills']).split(',') if skill.strip()]
+            else:
+                row['skills'] = []
+            
+            # Valores por defecto
+            row['score'] = float(row['score']) if row.get('score') is not None else 0.0
+            row['avatar'] = f"https://ui-avatars.com/api/?name={row['name'].replace(' ', '+')}&background=random"
+            
+            formatted_results.append(row)
+        
+        # Generar sugerencias con IA (simuladas)
+        ai_suggestions = []
+        if search_term:
+            ai_suggestions = [
+                f"Candidatos con {search_term} y experiencia en startups",
+                f"{search_term} disponibles para remoto",
+                f"{search_term} con certificaciones recientes",
+                f"Senior {search_term} con más de 5 años",
+            ]
+        
+        return jsonify({
+            'success': True,
+            'data': formatted_results,
+            'pagination': {
+                'total': total_results,
+                'page': page,
+                'limit': limit,
+                'total_pages': (total_results + limit - 1) // limit
+            },
+            'aiSuggestions': ai_suggestions,
+            'appliedFilters': filters
+        }), 200
+        
+    except Exception as e:
+        app.logger.error(f"Error en advanced_search_candidates: {str(e)}")
+        app.logger.error(traceback.format_exc())
+        return jsonify({"error": "Error al buscar candidatos"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route('/api/activities', methods=['GET'])
 @token_required
 def get_activities():
@@ -11140,264 +11513,8 @@ def get_permissions():
         return jsonify({"error": "Error al obtener permisos"}), 500
 
 # ==================== ENDPOINTS DE CARGA MASIVA DE CVs ====================
-
-@app.route('/api/candidates/upload', methods=['POST'])
-@token_required
-def upload_cvs():
-    """Cargar CVs individual o masivamente"""
-    try:
-        app.logger.info(f"Upload CVs - User ID: {g.current_user.get('id')}, Tenant ID: {get_current_tenant_id()}")
-        app.logger.info(f"g.current_user completo: {g.current_user}")
-        tenant_id = get_current_tenant_id()
-        user_id = g.current_user.get('id') or g.current_user.get('user_id')
-        
-        if not user_id:
-            app.logger.error("No se pudo obtener user_id del token")
-            app.logger.error(f"g.current_user keys: {list(g.current_user.keys()) if g.current_user else 'None'}")
-            return jsonify({'error': 'Error de autenticación: ID de usuario no encontrado'}), 401
-        
-        # Verificar si hay archivos
-        if 'files' not in request.files:
-            return jsonify({'error': 'No se encontraron archivos'}), 400
-        
-        files = request.files.getlist('files')
-        if not files or all(f.filename == '' for f in files):
-            return jsonify({'error': 'No se seleccionaron archivos válidos'}), 400
-        
-        # Validar tipos de archivo
-        allowed_extensions = {'.pdf', '.docx', '.doc', '.jpg', '.jpeg', '.png', '.gif', '.bmp'}
-        valid_files = []
-        
-        for file in files:
-            if file.filename:
-                file_ext = os.path.splitext(file.filename.lower())[1]
-                if file_ext in allowed_extensions:
-                    valid_files.append(file)
-                else:
-                    return jsonify({'error': f'Tipo de archivo no soportado: {file_ext}'}), 400
-        
-        if not valid_files:
-            return jsonify({'error': 'No hay archivos válidos para procesar'}), 400
-        
-        # Crear gestor de lotes
-        try:
-            from cv_batch_manager import create_batch_manager
-            batch_manager = create_batch_manager()
-            app.logger.info("Batch manager creado exitosamente")
-        except Exception as e:
-            app.logger.error(f"Error importando batch manager: {e}")
-            return jsonify({'error': 'Error inicializando procesador de CVs'}), 500
-        
-        # Preparar archivos para procesamiento
-        try:
-            files_data = []
-            for i, file in enumerate(valid_files):
-                # Guardar archivo temporalmente
-                filename = secure_filename(file.filename)
-                file_path = os.path.join('temp_uploads', f"{tenant_id}_{user_id}_{i}_{filename}")
-                os.makedirs('temp_uploads', exist_ok=True)
-                file.save(file_path)
-                
-                files_data.append({
-                    'file_path': file_path,
-                    'original_name': file.filename,
-                    'file_type': os.path.splitext(filename)[1][1:].lower()
-                })
-            
-            app.logger.info(f"Archivos preparados: {len(files_data)}")
-        except Exception as e:
-            app.logger.error(f"Error preparando archivos: {e}")
-            return jsonify({'error': 'Error preparando archivos'}), 500
-        
-        # Crear trabajo de procesamiento
-        try:
-            job_id = batch_manager.create_job(files_data, tenant_id, user_id)
-            app.logger.info(f"Trabajo creado: {job_id}")
-        except Exception as e:
-            app.logger.error(f"Error creando trabajo: {e}")
-            return jsonify({'error': 'Error creando trabajo de procesamiento'}), 500
-        
-        # Iniciar procesamiento en background
-        try:
-            import threading
-            def process_background():
-                try:
-                    app.logger.info(f"Iniciando procesamiento del trabajo {job_id}")
-                    batch_manager.process_job(job_id)
-                    app.logger.info(f"Procesamiento completado para trabajo {job_id}")
-                except Exception as e:
-                    app.logger.error(f"Error procesando trabajo {job_id}: {e}")
-            
-            thread = threading.Thread(target=process_background)
-            thread.daemon = True
-            thread.start()
-            app.logger.info(f"Thread de procesamiento iniciado para trabajo {job_id}")
-        except Exception as e:
-            app.logger.error(f"Error iniciando procesamiento en background: {e}")
-            return jsonify({'error': 'Error iniciando procesamiento'}), 500
-        
-        return jsonify({
-            'success': True,
-            'job_id': job_id,
-            'total_files': len(valid_files),
-            'message': 'Procesamiento iniciado'
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en upload_cvs: {str(e)}")
-        return jsonify({'error': 'Error al procesar archivos'}), 500
-
-@app.route('/api/candidates/process-status/<job_id>', methods=['GET'])
-@token_required
-def get_processing_status(job_id):
-    """
-    🔐 CORREGIDO: Obtener estado del procesamiento con validación de usuario.
-    """
-    try:
-        tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
-        
-        from cv_batch_manager import create_batch_manager
-        batch_manager = create_batch_manager()
-        
-        job_data = batch_manager.get_job_status(job_id)
-        
-        # 🔐 Verificar que el trabajo pertenece al tenant
-        if job_data.get('tenant_id') != tenant_id:
-            return jsonify({'error': 'Trabajo no encontrado'}), 404
-        
-        # 🔐 Verificar que el trabajo pertenece al usuario (a menos que sea Admin)
-        if not is_admin(user_id, tenant_id):
-            if job_data.get('user_id') != user_id:
-                app.logger.warning(f"Usuario {user_id} intentó acceder a job {job_id} de otro usuario")
-                return jsonify({'error': 'Trabajo no encontrado'}), 404
-        
-        return jsonify({
-            'success': True,
-            'job_data': job_data
-        })
-        
-    except FileNotFoundError:
-        return jsonify({'error': 'Trabajo no encontrado'}), 404
-    except Exception as e:
-        app.logger.error(f"Error en get_processing_status: {str(e)}")
-        return jsonify({'error': 'Error al obtener estado'}), 500
-
-@app.route('/api/candidates/check-duplicates', methods=['POST'])
-@token_required
-def check_duplicates():
-    """Verificar duplicados antes del procesamiento usando múltiples criterios"""
-    try:
-        tenant_id = get_current_tenant_id()
-        data = request.json
-        
-        if not data or 'candidates' not in data:
-            return jsonify({'error': 'Lista de candidatos requerida'}), 400
-        
-        candidates = data['candidates']
-        if not isinstance(candidates, list):
-            return jsonify({'error': 'Candidatos debe ser una lista'}), 400
-        
-        # Importar detector de duplicados
-        from cv_duplicate_detector import create_duplicate_detector
-        duplicate_detector = create_duplicate_detector()
-        
-        duplicates_found = []
-        
-        for candidate in candidates:
-            # Buscar duplicados usando múltiples criterios
-            duplicates = duplicate_detector.find_duplicates_comprehensive(candidate, tenant_id)
-            
-            if duplicates:
-                # Calcular confianza para cada duplicado
-                for duplicate in duplicates:
-                    confidence = duplicate_detector.calculate_duplicate_confidence(candidate, duplicate)
-                    duplicate_type = duplicate_detector.classify_duplicate(candidate, duplicate)
-                    
-                    duplicates_found.append({
-                        'candidate': candidate,
-                        'duplicate': duplicate,
-                        'confidence': confidence,
-                        'type': duplicate_type
-                    })
-        
-        return jsonify({
-            'success': True,
-            'duplicates': duplicates_found,
-            'total_checked': len(candidates),
-            'duplicates_found': len(duplicates_found)
-        })
-
-    except Exception as e:
-        app.logger.error(f"Error en check_duplicates: {str(e)}")
-        return jsonify({'error': 'Error al verificar duplicados'}), 500
-
-@app.route('/api/candidates/batch-results/<job_id>', methods=['GET'])
-@token_required
-def get_batch_results(job_id):
-    """
-    🔐 CORREGIDO: Obtener resultados detallados del procesamiento con validación de usuario.
-    """
-    try:
-        tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
-        
-        from cv_batch_manager import create_batch_manager
-        batch_manager = create_batch_manager()
-        
-        job_data = batch_manager.get_job_status(job_id)
-        
-        # 🔐 Verificar que el trabajo pertenece al tenant
-        if job_data.get('tenant_id') != tenant_id:
-            return jsonify({'error': 'Trabajo no encontrado'}), 404
-        
-        # 🔐 Verificar que el trabajo pertenece al usuario (a menos que sea Admin)
-        if not is_admin(user_id, tenant_id):
-            if job_data.get('user_id') != user_id:
-                app.logger.warning(f"Usuario {user_id} intentó acceder a job {job_id} de otro usuario")
-                return jsonify({'error': 'Trabajo no encontrado'}), 404
-        
-        return jsonify({
-            'success': True,
-            'results': job_data.get('results', []),
-            'summary': {
-                'total_files': job_data.get('total_files', 0),
-                'processed': job_data.get('processed_files', 0),
-                'successful': job_data.get('successful', 0),
-                'errors': job_data.get('errors', 0),
-                'duplicates': job_data.get('duplicates', 0)
-            },
-            'status': job_data.get('status', 'unknown')
-        })
-        
-    except FileNotFoundError:
-        return jsonify({'error': 'Trabajo no encontrado'}), 404
-    except Exception as e:
-        app.logger.error(f"Error en get_batch_results: {str(e)}")
-        return jsonify({'error': 'Error al obtener resultados'}), 500
-
-@app.route('/api/candidates/cancel-job/<job_id>', methods=['POST'])
-@token_required
-def cancel_job(job_id):
-    """Cancelar un trabajo de procesamiento"""
-    try:
-        tenant_id = get_current_tenant_id()
-        
-        from cv_batch_manager import create_batch_manager
-        batch_manager = create_batch_manager()
-        
-        result = batch_manager.cancel_job(job_id)
-        
-        if result.get('success'):
-            return jsonify(result)
-        else:
-            return jsonify(result), 400
-        
-    except Exception as e:
-        app.logger.error(f"Error cancelando trabajo {job_id}: {str(e)}")
-        return jsonify({'error': 'Error cancelando trabajo'}), 500
+# NOTA: Los endpoints de carga de CVs ahora usan OCI Object Storage
+# Ver endpoints: /api/cv/upload-to-oci y /api/cv/bulk-upload
 
 @app.route('/api/candidates/<int:candidate_id>/missing-fields', methods=['GET'])
 @token_required

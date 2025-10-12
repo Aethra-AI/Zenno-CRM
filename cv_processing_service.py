@@ -172,18 +172,57 @@ class CVProcessingService:
             selected_api_key = self.gemini_api_keys[api_index % len(self.gemini_api_keys)]
             logger.info(f"Usando Gemini API {api_index % len(self.gemini_api_keys) + 1} para procesar CV")
             
-            # Prompt mejorado para Gemini
+            # Prompt mejorado y robusto para Gemini
             prompt = f"""
-            Analiza DETALLADAMENTE el siguiente CV y extrae TODA la información disponible en formato JSON estructurado.
+            Eres un experto analista de CVs con especialización en extracción de datos estructurados para sistemas de reclutamiento.
+            Tu tarea es analizar EXHAUSTIVAMENTE el siguiente CV y extraer TODA la información disponible en formato JSON estructurado.
             El CV pertenece al tenant {tenant_id}.
             
-            INSTRUCCIONES CRÍTICAS:
-            - Lee TODO el contenido del CV, no solo fragmentos
-            - Extrae TODA la experiencia laboral mencionada, sin omitir ningún trabajo
-            - Detalla cada logro, responsabilidad y tecnología mencionada
-            - Incluye TODAS las certificaciones, cursos y educación
-            - Extrae habilidades técnicas específicas y niveles de dominio
-            - Analiza el contexto completo para entender el perfil profesional
+            INSTRUCCIONES CRÍTICAS PARA ANÁLISIS PROFUNDO:
+            
+            📋 LECTURA COMPLETA:
+            - Lee TODO el contenido del CV palabra por palabra, no solo fragmentos
+            - Analiza cada sección: experiencia, educación, habilidades, certificaciones, proyectos
+            - Busca información implícita y explícita
+            - Identifica patrones y contextos profesionales
+            
+            💼 EXPERIENCIA LABORAL:
+            - Extrae TODAS las experiencias laborales sin omitir ninguna
+            - Para cada trabajo, identifica:
+              * Responsabilidades principales (todas las mencionadas)
+              * Logros cuantificables (números, porcentajes, resultados)
+              * Tecnologías y herramientas utilizadas (software, sistemas, plataformas)
+              * Habilidades demostradas en ese rol
+              * Contexto del trabajo (tamaño de equipo, industria, tipo de proyectos)
+            
+            🎯 EXTRACCIÓN INTELIGENTE DE HABILIDADES:
+            - Extrae habilidades de MÚLTIPLES fuentes:
+              1. Sección explícita de habilidades
+              2. Descripciones de experiencia laboral (qué hacía, qué usaba)
+              3. Proyectos mencionados (tecnologías aplicadas)
+              4. Educación y certificaciones (conocimientos adquiridos)
+              5. Logros y responsabilidades (competencias demostradas)
+            
+            - Identifica y extrae:
+              * Software: Excel, Word, PowerPoint, Outlook, SAP, Salesforce, Oracle, etc.
+              * Herramientas técnicas: Python, Java, SQL, JavaScript, React, etc.
+              * Sistemas: ERP, CRM, POS, gestión de inventarios, etc.
+              * Habilidades blandas: liderazgo, trabajo en equipo, comunicación, etc.
+              * Idiomas: español, inglés, etc. con niveles
+              * Certificaciones profesionales
+            
+            🔍 ANÁLISIS CONTEXTUAL:
+            - Infiere habilidades del contexto:
+              * Si fue "Gerente" → liderazgo, gestión de equipos, toma de decisiones
+              * Si trabajó en "ventas" → negociación, atención al cliente, CRM
+              * Si fue "analista" → análisis de datos, Excel, reportes
+              * Si fue "desarrollador" → programación, frameworks, bases de datos
+            
+            📊 ESTRUCTURA Y DETALLE:
+            - Cada experiencia debe tener descripción completa y detallada
+            - Lista TODAS las tecnologías mencionadas (no resumas)
+            - Separa habilidades técnicas de habilidades blandas
+            - Identifica niveles de dominio cuando sea posible
             
             Por favor, extrae y estructura la siguiente información:
             
@@ -258,6 +297,13 @@ class CVProcessingService:
                 "habilidades": {{
                     "tecnicas": ["array de strings con habilidades técnicas específicas"],
                     "blandas": ["array de strings con habilidades blandas"],
+                    "software_office": ["Excel, Word, PowerPoint, Outlook, Access, etc."],
+                    "software_empresarial": ["SAP, Oracle, Salesforce, Microsoft Dynamics, etc."],
+                    "herramientas_especializadas": ["AutoCAD, Photoshop, herramientas específicas del sector"],
+                    "sistemas_gestion": ["ERP, CRM, POS, WMS, sistemas de inventario, etc."],
+                    "tecnologias_programacion": ["Python, Java, JavaScript, C++, etc. si aplica"],
+                    "bases_datos": ["SQL, MySQL, PostgreSQL, MongoDB, etc. si aplica"],
+                    "metodologias": ["Agile, Scrum, Six Sigma, Lean, etc. si aplica"],
                     "idiomas": [
                         {{
                             "idioma": "string",
@@ -267,11 +313,13 @@ class CVProcessingService:
                         }}
                     ],
                     "niveles_dominio": {{
-                        "expert": ["array de strings con tecnologías donde es experto"],
-                        "avanzado": ["array de strings con tecnologías avanzadas"],
-                        "intermedio": ["array de strings con tecnologías intermedias"],
-                        "básico": ["array de strings con tecnologías básicas"]
-                    }}
+                        "experto": ["tecnologías/herramientas donde tiene más de 5 años o dominio experto"],
+                        "avanzado": ["tecnologías/herramientas con 3-5 años o nivel avanzado"],
+                        "intermedio": ["tecnologías/herramientas con 1-3 años o nivel intermedio"],
+                        "básico": ["tecnologías/herramientas con menos de 1 año o nivel básico"]
+                    }},
+                    "habilidades_extraidas_experiencia": ["TODAS las habilidades identificadas en descripciones de trabajo"],
+                    "competencias_profesionales": ["gestión de proyectos, liderazgo de equipos, análisis financiero, etc."]
                 }},
                 "proyectos": [
                     {{
@@ -302,18 +350,50 @@ class CVProcessingService:
                 }}
             }}
             
-            INSTRUCCIONES CRÍTICAS:
-            - Extrae TODA la información disponible, no omitas detalles
+            INSTRUCCIONES FINALES CRÍTICAS:
+            
+            ✅ COMPLETITUD:
+            - Extrae TODA la información disponible, no omitas ningún detalle
             - Para cada trabajo, incluye TODAS las responsabilidades mencionadas
-            - Lista TODAS las tecnologías, herramientas y frameworks mencionados
-            - Incluye logros específicos con números, fechas y resultados
-            - Si no encuentras información específica, usa null
-            - Para fechas, usa formato YYYY-MM-DD
-            - Para números, usa solo el valor numérico
+            - Lista TODAS las tecnologías, herramientas y frameworks mencionados (no resumas, lista todo)
+            - Incluye logros específicos con números, porcentajes, fechas y resultados medibles
+            
+            🎯 HABILIDADES - MÁXIMA PRIORIDAD:
+            - Extrae TODAS las habilidades mencionadas explícita o implícitamente
+            - Busca software mencionado: Excel, SAP, Salesforce, Oracle, etc.
+            - Identifica herramientas: sistemas, plataformas, aplicaciones
+            - Extrae habilidades de las descripciones de trabajo (qué hacía = qué sabe hacer)
+            - Categoriza correctamente: técnicas vs blandas, software vs sistemas
+            - Genera lista separada por comas en "habilidades_extraidas_experiencia"
+            
+            📝 DESCRIPCIONES DETALLADAS:
+            - Cada experiencia debe tener "descripcion_completa" con 3-5 líneas mínimo
+            - Explica qué hacía, cómo lo hacía, con qué herramientas, qué logró
+            - Incluye contexto: tamaño de equipo, tipo de proyectos, responsabilidades clave
+            
+            🔍 ANÁLISIS INTELIGENTE:
+            - Si menciona "atención al cliente" → extrae: comunicación, servicio al cliente, resolución de problemas
+            - Si menciona "ventas" → extrae: negociación, CRM, prospección, cierre de ventas
+            - Si menciona "administración" → extrae: Excel, gestión documental, organización
+            - Si menciona "supervisión" → extrae: liderazgo, gestión de equipos, toma de decisiones
+            - Si menciona nombres de software/sistemas → agrégalos a las categorías correspondientes
+            
+            📊 FORMATO Y VALIDACIÓN:
+            - Si no encuentras información específica, usa null (no inventes)
+            - Para fechas, usa formato YYYY-MM-DD o "YYYY-MM" si solo hay mes/año
+            - Para números, usa solo el valor numérico sin símbolos
             - Asegúrate de que el JSON sea válido y completo
+            - Todos los arrays deben tener al menos un elemento o estar vacíos []
+            
+            🎓 EDUCACIÓN Y CERTIFICACIONES:
+            - Extrae TODOS los estudios, cursos, certificaciones mencionados
+            - Incluye instituciones, fechas, títulos obtenidos
+            - Agrega certificaciones profesionales a habilidades también
             
             CV a analizar:
             {cv_text}
+            
+            IMPORTANTE: Devuelve SOLO el JSON, sin texto adicional antes o después.
             """
             
             # Preparar request para Gemini
@@ -332,9 +412,10 @@ class CVProcessingService:
                     }
                 ],
                 "generationConfig": {
-                    "temperature": 0.1,
-                    "topK": 1,
-                    "topP": 1
+                    "temperature": 0.2,
+                    "topK": 40,
+                    "topP": 0.95,
+                    "maxOutputTokens": 8192
                 }
             }
             
@@ -392,6 +473,98 @@ class CVProcessingService:
                 'success': False,
                 'error': str(e)
             }
+    
+    def extract_skills_summary(self, cv_data: Dict[str, Any]) -> str:
+        """
+        Extraer y consolidar todas las habilidades en una cadena separada por comas
+        para facilitar búsquedas en el motor de búsqueda
+        
+        Args:
+            cv_data: Datos del CV procesados
+            
+        Returns:
+            String con todas las habilidades separadas por comas
+        """
+        skills_list = []
+        
+        try:
+            habilidades = cv_data.get('habilidades', {})
+            
+            # Extraer de cada categoría
+            if isinstance(habilidades, dict):
+                # Habilidades técnicas
+                if 'tecnicas' in habilidades and isinstance(habilidades['tecnicas'], list):
+                    skills_list.extend(habilidades['tecnicas'])
+                
+                # Software Office
+                if 'software_office' in habilidades and isinstance(habilidades['software_office'], list):
+                    skills_list.extend(habilidades['software_office'])
+                
+                # Software empresarial
+                if 'software_empresarial' in habilidades and isinstance(habilidades['software_empresarial'], list):
+                    skills_list.extend(habilidades['software_empresarial'])
+                
+                # Herramientas especializadas
+                if 'herramientas_especializadas' in habilidades and isinstance(habilidades['herramientas_especializadas'], list):
+                    skills_list.extend(habilidades['herramientas_especializadas'])
+                
+                # Sistemas de gestión
+                if 'sistemas_gestion' in habilidades and isinstance(habilidades['sistemas_gestion'], list):
+                    skills_list.extend(habilidades['sistemas_gestion'])
+                
+                # Tecnologías de programación
+                if 'tecnologias_programacion' in habilidades and isinstance(habilidades['tecnologias_programacion'], list):
+                    skills_list.extend(habilidades['tecnologias_programacion'])
+                
+                # Bases de datos
+                if 'bases_datos' in habilidades and isinstance(habilidades['bases_datos'], list):
+                    skills_list.extend(habilidades['bases_datos'])
+                
+                # Metodologías
+                if 'metodologias' in habilidades and isinstance(habilidades['metodologias'], list):
+                    skills_list.extend(habilidades['metodologias'])
+                
+                # Habilidades blandas
+                if 'blandas' in habilidades and isinstance(habilidades['blandas'], list):
+                    skills_list.extend(habilidades['blandas'])
+                
+                # Habilidades extraídas de experiencia
+                if 'habilidades_extraidas_experiencia' in habilidades and isinstance(habilidades['habilidades_extraidas_experiencia'], list):
+                    skills_list.extend(habilidades['habilidades_extraidas_experiencia'])
+                
+                # Competencias profesionales
+                if 'competencias_profesionales' in habilidades and isinstance(habilidades['competencias_profesionales'], list):
+                    skills_list.extend(habilidades['competencias_profesionales'])
+                
+                # Idiomas
+                if 'idiomas' in habilidades and isinstance(habilidades['idiomas'], list):
+                    for idioma in habilidades['idiomas']:
+                        if isinstance(idioma, dict) and 'idioma' in idioma:
+                            nivel = idioma.get('nivel_oral', idioma.get('nivel_escrito', ''))
+                            skills_list.append(f"{idioma['idioma']} ({nivel})" if nivel else idioma['idioma'])
+            
+            # Extraer tecnologías de experiencia detallada
+            experiencia = cv_data.get('experiencia', {})
+            if isinstance(experiencia, dict) and 'experiencia_detallada' in experiencia:
+                for exp in experiencia['experiencia_detallada']:
+                    if isinstance(exp, dict):
+                        # Tecnologías
+                        if 'tecnologias' in exp and isinstance(exp['tecnologias'], list):
+                            skills_list.extend(exp['tecnologias'])
+                        # Herramientas
+                        if 'herramientas' in exp and isinstance(exp['herramientas'], list):
+                            skills_list.extend(exp['herramientas'])
+            
+            # Limpiar y deduplicar
+            skills_list = [skill.strip() for skill in skills_list if skill and isinstance(skill, str) and skill.strip()]
+            skills_list = list(set(skills_list))  # Eliminar duplicados
+            skills_list.sort()  # Ordenar alfabéticamente
+            
+            return ', '.join(skills_list)
+            
+        except Exception as e:
+            logger.error(f"Error extrayendo resumen de habilidades: {str(e)}")
+            return ''
     
     def validate_cv_data(self, cv_data: Dict[str, Any]) -> Dict[str, Any]:
         """
