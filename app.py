@@ -12690,17 +12690,6 @@ def upload_cv_to_oci():
                     
             except Exception as e:
                 app.logger.error(f"Error en procesamiento en segundo plano: {str(e)}", exc_info=True)
-                            app.logger.info(f"CV guardado en Afiliados: {cv_identifier} para candidato {candidate_id}")
-                        except Exception as e:
-                            app.logger.error(f"Error guardando CV en BD: {str(e)}")
-                            
-                    else:
-                        app.logger.warning(f"Error validando datos del CV: {validation_result['error']}")
-                else:
-                    app.logger.error(f"Error procesando CV con Gemini: {gemini_result['error']}")
-                    
-            except Exception as e:
-                app.logger.error(f"Error procesando CV en segundo plano: {str(e)}")
         
         # Ejecutar procesamiento en segundo plano
         import threading
