@@ -13096,7 +13096,14 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
         portfolio = personal_info.get('portfolio', '')
         
         # Extraer experiencia detallada
-        años_experiencia = experiencia.get('años_experiencia', 0)
+        años_experiencia = 0
+        if isinstance(experiencia, dict):
+            años_experiencia = experiencia.get('años_experiencia', 0)
+        elif isinstance(experiencia, list) and len(experiencia) > 0:
+            # Si es una lista, intentar obtener la experiencia del primer elemento
+            primera_exp = experiencia[0]
+            if isinstance(primera_exp, dict):
+                años_experiencia = primera_exp.get('años_experiencia', 0)
         if isinstance(años_experiencia, str):
             try:
                 años_experiencia = float(años_experiencia)
@@ -13104,9 +13111,13 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
                 años_experiencia = 0
         
         # Crear resumen de experiencia más detallado
-        experiencia_detallada = experiencia.get('experiencia_detallada', [])
-        experiencia_texto = ""
-        especializaciones = experiencia.get('especializaciones', [])
+        
+        experiencia_detallada = []
+        if isinstance(experiencia, dict):
+            experiencia_detallada = experiencia.get('experiencia_detallada', [])
+        elif isinstance(experiencia, list):
+            experiencia_detallada = experiencia  # Usar la lista directamente si es una lista
+            especializaciones = experiencia.get('especializaciones', [])
         
         if experiencia_detallada:
             # Incluir más experiencias y más detalles
