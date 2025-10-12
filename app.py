@@ -12690,14 +12690,6 @@ def upload_cv_to_oci():
                     
             except Exception as e:
                 app.logger.error(f"Error en procesamiento en segundo plano: {str(e)}", exc_info=True)
-                                original_filename=file.filename,
-                                object_key=upload_result['object_key'],
-                                file_url=par_result['access_uri'],
-                                par_id=par_result['par_id'],
-                                mime_type=upload_result['mime_type'],
-                                file_size=upload_result['size'],
-                                processed_data=processed_data
-                            )
                             app.logger.info(f"CV guardado en Afiliados: {cv_identifier} para candidato {candidate_id}")
                         except Exception as e:
                             app.logger.error(f"Error guardando CV en BD: {str(e)}")
