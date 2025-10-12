@@ -1,6 +1,7 @@
 """
 Servicio de procesamiento de CVs con Gemini AI
 """
+from typing import Union, Dict, List, Any
 import os
 import json
 import logging
