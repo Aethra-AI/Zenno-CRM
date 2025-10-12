@@ -439,20 +439,25 @@ def get_accessible_user_ids(user_id, tenant_id):
     return [user_id]
 
 
-def build_user_filter_condition(user_id, tenant_id, created_by_column='created_by_user'):
+def build_user_filter_condition(user_id, tenant_id, created_by_column='created_by_user',
+                                resource_type=None, resource_id_column=None):
     """
-    Construye la condición SQL para filtrar por usuarios accesibles.
+    🔐 CORREGIDO: Construye condición SQL que incluye recursos asignados.
+    
+    Un usuario puede ver recursos que:
+    1. ÉL creó (created_by_user)
+    2. Le fueron ASIGNADOS por el Admin (Resource_Assignments)
+    3. De su equipo si es Supervisor
     
     Args:
         user_id (int): ID del usuario actual
         tenant_id (int): ID del tenant
-        created_by_column (str): Nombre de la columna created_by_user
+        created_by_column (str): Nombre de la columna created_by_user (ej: 'a.created_by_user')
+        resource_type (str): Tipo de recurso ('candidate', 'vacancy', 'client')
+        resource_id_column (str): Columna del ID del recurso (ej: 'a.id_afiliado')
     
     Returns:
         tuple: (condition_str, params_list)
-            - Admin: ("", []) - sin filtro adicional
-            - Supervisor: ("created_by_user IN (%s, %s, %s)", [user_id, member1, member2])
-            - Reclutador: ("created_by_user = %s", [user_id])
     """
     accessible_users = get_accessible_user_ids(user_id, tenant_id)
     
@@ -460,13 +465,33 @@ def build_user_filter_condition(user_id, tenant_id, created_by_column='created_b
     if accessible_users is None:
         return ("", [])
     
-    # Reclutador (solo 1 usuario)
+    # Si no se especifica resource_type, usar enfoque antiguo (solo created_by)
+    if not resource_type or not resource_id_column:
     if len(accessible_users) == 1:
         return (f"{created_by_column} = %s", accessible_users)
-    
-    # Supervisor (varios usuarios)
     placeholders = ','.join(['%s'] * len(accessible_users))
     return (f"{created_by_column} IN ({placeholders})", accessible_users)
+    
+    # 🔐 NUEVO: Incluir recursos asignados
+    # Construir lista de placeholders para IN clause
+    user_placeholders = ','.join(['%s'] * len(accessible_users))
+    
+    condition = f"""(
+        {created_by_column} IN ({user_placeholders})
+        OR EXISTS (
+            SELECT 1 FROM Resource_Assignments ra
+            WHERE ra.resource_type = %s
+              AND ra.resource_id = {resource_id_column}
+              AND ra.assigned_to_user = %s
+              AND ra.tenant_id = %s
+              AND ra.is_active = TRUE
+        )
+    )"""
+    
+    # Parámetros: usuarios accesibles + tipo recurso + user_id + tenant_id
+    params = accessible_users + [resource_type, user_id, tenant_id]
+    
+    return (condition, params)
 
 
 # =====================================================

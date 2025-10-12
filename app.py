@@ -3776,9 +3776,9 @@ def get_kpi_reports():
         user_id = user_data.get('user_id')
         
         # 🔐 MÓDULO B12: Obtener condiciones de filtro
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
-        hired_condition, hired_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        hired_condition, hired_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user', 'client', 'c.id_cliente')
         
         # 1. Métricas de tiempo
         sql = """
@@ -4075,7 +4075,7 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         
         # 🔐 MÓDULO B5: Filtrar por usuario según rol
         if user_id and tenant_id:
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
             if condition:
                 conditions.append(f"({condition})")
                 params.extend(filter_params)
@@ -4216,6 +4216,729 @@ def search_candidates_tool(term=None, tags=None, experience=None, city=None, rec
 
 
 # ===============================================================
+# MÓDULO 1: SELECCIÓN MASIVA INTELIGENTE
+# ===============================================================
+
+import asyncio
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+class BatchProcessor:
+    """Procesador de lotes para asignaciones masivas de candidatos."""
+    
+    def __init__(self):
+        self.active_jobs = {}
+        self.executor = ThreadPoolExecutor(max_workers=3)
+    
+    def process_large_assignment(self, candidate_ids, target_user_id, access_level, tenant_id, user_id):
+        """
+        Procesa asignación masiva de candidatos en lotes.
+        
+        Args:
+            candidate_ids (list): Lista de IDs de candidatos
+            target_user_id (int): ID del usuario al que asignar
+            access_level (str): Nivel de acceso ('read', 'write', 'full')
+            tenant_id (int): ID del tenant
+            user_id (int): ID del usuario que ejecuta la asignación
+        
+        Returns:
+            str: Job ID para seguimiento
+        """
+        job_id = f"batch_{int(time.time())}_{len(candidate_ids)}"
+        
+        # Inicializar estado del trabajo
+        self.active_jobs[job_id] = {
+            'status': 'processing',
+            'total': len(candidate_ids),
+            'processed': 0,
+            'errors': 0,
+            'start_time': time.time(),
+            'candidate_ids': candidate_ids,
+            'target_user_id': target_user_id,
+            'access_level': access_level,
+            'tenant_id': tenant_id,
+            'user_id': user_id
+        }
+        
+        # Ejecutar en hilo separado
+        future = self.executor.submit(self._process_batch_async, job_id)
+        
+        return job_id
+    
+    def _process_batch_async(self, job_id):
+        """Procesa el lote de candidatos de forma asíncrona."""
+        job = self.active_jobs.get(job_id)
+        if not job:
+            return
+        
+        try:
+            conn = get_db_connection()
+            if not conn:
+                job['status'] = 'error'
+                job['error'] = 'Error de conexión a BD'
+                return
+            
+            cursor = conn.cursor()
+            
+            # Procesar en lotes de 1000
+            batch_size = 1000
+            candidate_ids = job['candidate_ids']
+            target_user_id = job['target_user_id']
+            access_level = job['access_level']
+            tenant_id = job['tenant_id']
+            
+            for i in range(0, len(candidate_ids), batch_size):
+                batch = candidate_ids[i:i + batch_size]
+                
+                # Insertar asignaciones en lote
+                placeholders = ','.join(['(%s, %s, %s, %s, %s)'] * len(batch))
+                values = []
+                
+                for candidate_id in batch:
+                    values.extend([candidate_id, target_user_id, 'candidate', access_level, tenant_id])
+                
+                sql = f"""
+                    INSERT IGNORE INTO Resource_Assignments 
+                    (resource_id, assigned_to_user, resource_type, access_level, tenant_id, is_active)
+                    VALUES {placeholders}
+                """
+                
+                # Agregar valores de fecha y activo
+                final_values = []
+                for j in range(0, len(values), 5):
+                    final_values.extend(values[j:j+5])
+                    final_values.extend([1])  # is_active=1
+                
+                cursor.execute(sql, final_values)
+                conn.commit()
+                
+                # Actualizar progreso
+                job['processed'] = min(i + batch_size, len(candidate_ids))
+                job['progress_percent'] = (job['processed'] / job['total']) * 100
+                
+                # Pequeña pausa para no sobrecargar
+                time.sleep(0.1)
+            
+            job['status'] = 'completed'
+            job['end_time'] = time.time()
+            job['duration'] = job['end_time'] - job['start_time']
+            
+        except Exception as e:
+            job['status'] = 'error'
+            job['error'] = str(e)
+            app.logger.error(f"Error en procesamiento de lote {job_id}: {str(e)}")
+        
+        finally:
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
+    
+    def get_job_status(self, job_id):
+        """Obtiene el estado actual de un trabajo."""
+        return self.active_jobs.get(job_id, {'status': 'not_found'})
+    
+    def cancel_job(self, job_id):
+        """Cancela un trabajo en progreso."""
+        if job_id in self.active_jobs:
+            self.active_jobs[job_id]['status'] = 'cancelled'
+            return True
+        return False
+
+class FilterEngine:
+    """Motor de filtros avanzados para candidatos."""
+    
+    def apply_filters(self, filters, tenant_id, user_id):
+        """
+        Aplica filtros avanzados y devuelve candidatos que coinciden.
+        
+        Args:
+            filters (dict): Diccionario de filtros
+            tenant_id (int): ID del tenant
+            user_id (int): ID del usuario actual
+        
+        Returns:
+            tuple: (candidate_ids, count)
+        """
+        conn = get_db_connection()
+        if not conn:
+            return [], 0
+        
+        cursor = conn.cursor(dictionary=True)
+        try:
+            # Consulta base
+            query = """
+                SELECT a.id_afiliado
+                FROM Afiliados a
+                WHERE a.tenant_id = %s
+            """
+            params = [tenant_id]
+            
+            # 🔐 Aplicar filtros de permisos
+            condition, filter_params = build_user_filter_condition(
+                user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+            )
+            if condition:
+                query += f" AND ({condition})"
+                params.extend(filter_params)
+            
+            # Aplicar filtros específicos
+            if filters.get('cities'):
+                cities = filters['cities']
+                placeholders = ','.join(['%s'] * len(cities))
+                query += f" AND a.ciudad IN ({placeholders})"
+                params.extend(cities)
+            
+            if filters.get('skills'):
+                skills = filters['skills']
+                for skill in skills:
+                    query += " AND a.skills LIKE %s"
+                    params.append(f"%{skill}%")
+            
+            if filters.get('experience_min'):
+                query += " AND CAST(SUBSTRING_INDEX(a.experiencia, ' ', 1) AS UNSIGNED) >= %s"
+                params.append(filters['experience_min'])
+            
+            if filters.get('status'):
+                query += " AND a.estado = %s"
+                params.append(filters['status'])
+            
+            if filters.get('availability'):
+                query += " AND a.disponibilidad_rotativos = %s"
+                params.append(filters['availability'])
+            
+            # Ejecutar consulta
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+            
+            candidate_ids = [row['id_afiliado'] for row in results]
+            return candidate_ids, len(candidate_ids)
+            
+        except Exception as e:
+            app.logger.error(f"Error aplicando filtros: {str(e)}")
+            return [], 0
+        finally:
+            cursor.close()
+            conn.close()
+
+class ProgressTracker:
+    """Rastreador de progreso para operaciones largas."""
+    
+    def __init__(self):
+        self.progress_data = {}
+    
+    def update_progress(self, job_id, processed, total, errors=0):
+        """Actualiza el progreso de un trabajo."""
+        self.progress_data[job_id] = {
+            'processed': processed,
+            'total': total,
+            'errors': errors,
+            'progress_percent': (processed / total) * 100 if total > 0 else 0,
+            'timestamp': time.time()
+        }
+    
+    def get_progress(self, job_id):
+        """Obtiene el progreso actual de un trabajo."""
+        return self.progress_data.get(job_id, {})
+
+# Instancias globales
+batch_processor = BatchProcessor()
+filter_engine = FilterEngine()
+progress_tracker = ProgressTracker()
+
+# ===============================================================
+# ENDPOINTS DEL MÓDULO 1
+# ===============================================================
+
+@app.route('/api/candidates/select-all', methods=['GET'])
+@token_required
+def get_all_candidates_for_selection():
+    """
+    🚀 MÓDULO 1: Obtiene todos los candidatos accesibles para selección masiva.
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"error": "Error de conexión a BD"}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Consulta optimizada para selección masiva
+        query = """
+            SELECT 
+                a.id_afiliado,
+                a.nombre_completo,
+                a.email,
+                a.ciudad,
+                a.experiencia,
+                a.skills,
+                a.estado,
+                a.fecha_registro
+            FROM Afiliados a
+            WHERE a.tenant_id = %s
+        """
+        params = [tenant_id]
+        
+        # 🔐 Aplicar filtros de permisos
+        condition, filter_params = build_user_filter_condition(
+            user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+        )
+        if condition:
+            query += f" AND ({condition})"
+            params.extend(filter_params)
+        
+        query += " ORDER BY a.fecha_registro DESC"
+        
+        cursor.execute(query, params)
+        candidates = cursor.fetchall()
+        
+        # Obtener estadísticas por filtros comunes
+        stats_query = """
+            SELECT 
+                COUNT(*) as total,
+                COUNT(DISTINCT a.ciudad) as cities_count,
+                COUNT(DISTINCT CASE WHEN a.estado = 'Activo' THEN a.id_afiliado END) as active_count,
+                COUNT(DISTINCT CASE WHEN a.disponibilidad_rotativos = 'si' THEN a.id_afiliado END) as available_count
+            FROM Afiliados a
+            WHERE a.tenant_id = %s
+        """
+        stats_params = [tenant_id]
+        
+        if condition:
+            stats_query += f" AND ({condition})"
+            stats_params.extend(filter_params)
+        
+        cursor.execute(stats_query, stats_params)
+        stats = cursor.fetchone()
+        
+        # Obtener ciudades disponibles
+        cities_query = """
+            SELECT DISTINCT a.ciudad, COUNT(*) as count
+            FROM Afiliados a
+            WHERE a.tenant_id = %s AND a.ciudad IS NOT NULL AND a.ciudad != ''
+        """
+        cities_params = [tenant_id]
+        
+        if condition:
+            cities_query += f" AND ({condition})"
+            cities_params.extend(filter_params)
+        
+        cities_query += " GROUP BY a.ciudad ORDER BY count DESC"
+        cursor.execute(cities_query, cities_params)
+        cities = cursor.fetchall()
+        
+        return jsonify({
+            'success': True,
+            'data': candidates,
+            'stats': stats,
+            'cities': cities,
+            'total': len(candidates)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo candidatos para selección: {str(e)}")
+        return jsonify({"error": "Error obteniendo candidatos"}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+@app.route('/api/candidates/filter-options', methods=['GET'])
+@token_required
+def get_filter_options():
+    """
+    🚀 MÓDULO 1: Obtiene opciones disponibles para filtros avanzados.
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"error": "Error de conexión a BD"}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # 🔐 Aplicar filtros de permisos
+        condition, filter_params = build_user_filter_condition(
+            user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+        )
+        
+        # Obtener ciudades
+        cities_query = """
+            SELECT DISTINCT a.ciudad, COUNT(*) as count
+            FROM Afiliados a
+            WHERE a.tenant_id = %s AND a.ciudad IS NOT NULL AND a.ciudad != ''
+        """
+        cities_params = [tenant_id]
+        
+        if condition:
+            cities_query += f" AND ({condition})"
+            cities_params.extend(filter_params)
+        
+        cities_query += " GROUP BY a.ciudad ORDER BY count DESC LIMIT 20"
+        cursor.execute(cities_query, cities_params)
+        cities = cursor.fetchall()
+        
+        # Obtener habilidades más comunes
+        skills_query = """
+            SELECT DISTINCT TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(a.skills, ',', numbers.n), ',', -1)) as skill,
+                   COUNT(*) as count
+            FROM Afiliados a
+            CROSS JOIN (
+                SELECT 1 n UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5
+                UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9 UNION SELECT 10
+            ) numbers
+            WHERE a.tenant_id = %s 
+              AND a.skills IS NOT NULL 
+              AND a.skills != ''
+              AND CHAR_LENGTH(a.skills) - CHAR_LENGTH(REPLACE(a.skills, ',', '')) >= numbers.n - 1
+        """
+        skills_params = [tenant_id]
+        
+        if condition:
+            skills_query += f" AND ({condition})"
+            skills_params.extend(filter_params)
+        
+        skills_query += """
+            GROUP BY skill
+            HAVING skill IS NOT NULL AND skill != ''
+            ORDER BY count DESC
+            LIMIT 15
+        """
+        cursor.execute(skills_query, skills_params)
+        skills = cursor.fetchall()
+        
+        # Obtener rangos de experiencia
+        experience_query = """
+            SELECT 
+                CASE 
+                    WHEN CAST(SUBSTRING_INDEX(a.experiencia, ' ', 1) AS UNSIGNED) < 1 THEN 'Sin experiencia'
+                    WHEN CAST(SUBSTRING_INDEX(a.experiencia, ' ', 1) AS UNSIGNED) < 2 THEN '1 año'
+                    WHEN CAST(SUBSTRING_INDEX(a.experiencia, ' ', 1) AS UNSIGNED) < 3 THEN '2 años'
+                    WHEN CAST(SUBSTRING_INDEX(a.experiencia, ' ', 1) AS UNSIGNED) < 5 THEN '3-4 años'
+                    WHEN CAST(SUBSTRING_INDEX(a.experiencia, ' ', 1) AS UNSIGNED) < 10 THEN '5-9 años'
+                    ELSE '10+ años'
+                END as experience_range,
+                COUNT(*) as count
+            FROM Afiliados a
+            WHERE a.tenant_id = %s AND a.experiencia IS NOT NULL AND a.experiencia != ''
+        """
+        experience_params = [tenant_id]
+        
+        if condition:
+            experience_query += f" AND ({condition})"
+            experience_params.extend(filter_params)
+        
+        experience_query += " GROUP BY experience_range ORDER BY count DESC"
+        cursor.execute(experience_query, experience_params)
+        experience_ranges = cursor.fetchall()
+        
+        # Obtener estados disponibles
+        status_query = """
+            SELECT DISTINCT a.estado, COUNT(*) as count
+            FROM Afiliados a
+            WHERE a.tenant_id = %s AND a.estado IS NOT NULL
+        """
+        status_params = [tenant_id]
+        
+        if condition:
+            status_query += f" AND ({condition})"
+            status_params.extend(filter_params)
+        
+        status_query += " GROUP BY a.estado ORDER BY count DESC"
+        cursor.execute(status_query, status_params)
+        statuses = cursor.fetchall()
+        
+        return jsonify({
+            'success': True,
+            'filters': {
+                'cities': cities,
+                'skills': skills,
+                'experience_ranges': experience_ranges,
+                'statuses': statuses
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo opciones de filtros: {str(e)}")
+        return jsonify({"error": "Error obteniendo opciones de filtros"}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+@app.route('/api/candidates/preview-criteria', methods=['POST'])
+@token_required
+def preview_criteria_assignment():
+    """
+    🚀 MÓDULO 1: Vista previa de candidatos que cumplen criterios específicos.
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        data = request.get_json()
+        
+        filters = data.get('filters', {})
+        
+        # Aplicar filtros usando FilterEngine
+        candidate_ids, count = filter_engine.apply_filters(filters, tenant_id, user_id)
+        
+        # Obtener información detallada de los candidatos
+        if candidate_ids and count <= 100:  # Solo mostrar detalles si son pocos
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor(dictionary=True)
+                
+                placeholders = ','.join(['%s'] * len(candidate_ids))
+                detail_query = f"""
+                    SELECT 
+                        a.id_afiliado,
+                        a.nombre_completo,
+                        a.email,
+                        a.ciudad,
+                        a.experiencia,
+                        a.skills,
+                        a.estado
+                    FROM Afiliados a
+                    WHERE a.id_afiliado IN ({placeholders})
+                    ORDER BY a.fecha_registro DESC
+                """
+                
+                cursor.execute(detail_query, candidate_ids)
+                candidates = cursor.fetchall()
+                
+                cursor.close()
+                conn.close()
+            else:
+                candidates = []
+        else:
+            candidates = []
+        
+        return jsonify({
+            'success': True,
+            'count': count,
+            'candidate_ids': candidate_ids,
+            'candidates': candidates,
+            'filters_applied': filters
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en vista previa de criterios: {str(e)}")
+        return jsonify({"error": "Error en vista previa"}), 500
+
+@app.route('/api/candidates/assign-batch', methods=['POST'])
+@token_required
+def assign_candidates_batch():
+    """
+    🚀 MÓDULO 1: Asignación masiva de candidatos con procesamiento en lotes.
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        data = request.get_json()
+        
+        # Validar datos
+        candidate_ids = data.get('candidate_ids', [])
+        target_user_id = data.get('target_user_id')
+        access_level = data.get('access_level', 'read')
+        
+        if not candidate_ids:
+            return jsonify({"error": "No se especificaron candidatos"}), 400
+        
+        if not target_user_id:
+            return jsonify({"error": "No se especificó usuario destino"}), 400
+        
+        if access_level not in ['read', 'write', 'full']:
+            return jsonify({"error": "Nivel de acceso inválido"}), 400
+        
+        # 🔐 Verificar permisos de asignación
+        if not can_assign_resources(user_id, tenant_id):
+            return jsonify({
+                'error': 'No tienes permisos para asignar recursos',
+                'required_permission': 'assign_resources'
+            }), 403
+        
+        # Verificar que el usuario destino existe y pertenece al tenant
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"error": "Error de conexión a BD"}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT id, nombre, email FROM Users 
+            WHERE id = %s AND tenant_id = %s AND activo = 1
+        """, (target_user_id, tenant_id))
+        
+        target_user = cursor.fetchone()
+        if not target_user:
+            return jsonify({"error": "Usuario destino no encontrado"}), 404
+        
+        cursor.close()
+        conn.close()
+        
+        # Procesar asignación masiva
+        job_id = batch_processor.process_large_assignment(
+            candidate_ids, target_user_id, access_level, tenant_id, user_id
+        )
+        
+        # Registrar actividad
+        log_activity(
+            activity_type='asignacion_masiva_iniciada',
+            description={
+                'job_id': job_id,
+                'candidate_count': len(candidate_ids),
+                'target_user_id': target_user_id,
+                'target_user_name': target_user['nombre'],
+                'access_level': access_level
+            },
+            tenant_id=tenant_id
+        )
+        
+        return jsonify({
+            'success': True,
+            'job_id': job_id,
+            'message': f'Asignación masiva iniciada para {len(candidate_ids)} candidatos',
+            'target_user': target_user,
+            'estimated_time': f'{len(candidate_ids) / 1000 * 2:.1f} minutos'
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en asignación masiva: {str(e)}")
+        return jsonify({"error": "Error en asignación masiva"}), 500
+
+@app.route('/api/candidates/batch-status/<job_id>', methods=['GET'])
+@token_required
+def get_batch_status(job_id):
+    """
+    🚀 MÓDULO 1: Obtiene el estado de una asignación masiva en progreso.
+    """
+    try:
+        job_status = batch_processor.get_job_status(job_id)
+        
+        if job_status.get('status') == 'not_found':
+            return jsonify({"error": "Trabajo no encontrado"}), 404
+        
+        # Calcular estadísticas adicionales
+        if job_status.get('status') == 'completed':
+            duration = job_status.get('duration', 0)
+            total = job_status.get('total', 0)
+            speed = total / duration if duration > 0 else 0
+            
+            job_status['stats'] = {
+                'duration_seconds': duration,
+                'candidates_per_second': speed,
+                'efficiency': 'Excelente' if speed > 50 else 'Buena' if speed > 20 else 'Normal'
+            }
+        
+        return jsonify({
+            'success': True,
+            'job': job_status
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo estado del lote: {str(e)}")
+        return jsonify({"error": "Error obteniendo estado"}), 500
+
+@app.route('/api/candidates/cancel-batch/<job_id>', methods=['POST'])
+@token_required
+def cancel_batch_assignment(job_id):
+    """
+    🚀 MÓDULO 1: Cancela una asignación masiva en progreso.
+    """
+    try:
+        success = batch_processor.cancel_job(job_id)
+        
+        if not success:
+            return jsonify({"error": "Trabajo no encontrado o ya completado"}), 404
+        
+        # Registrar actividad
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        log_activity(
+            activity_type='asignacion_masiva_cancelada',
+            description={
+                'job_id': job_id,
+                'cancelled_by': user_id
+            },
+            tenant_id=tenant_id
+        )
+        
+        return jsonify({
+            'success': True,
+            'message': 'Asignación masiva cancelada exitosamente'
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error cancelando asignación masiva: {str(e)}")
+        return jsonify({"error": "Error cancelando asignación"}), 500
+
+@app.route('/api/users/available-for-assignment', methods=['GET'])
+@token_required
+def get_users_for_assignment():
+    """
+    🚀 MÓDULO 1: Obtiene usuarios disponibles para asignación de candidatos.
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"error": "Error de conexión a BD"}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Obtener usuarios activos del tenant con información de rol
+        cursor.execute("""
+            SELECT 
+                u.id,
+                u.nombre,
+                u.email,
+                r.nombre as rol,
+                u.activo,
+                (SELECT COUNT(*) FROM Resource_Assignments ra 
+                 WHERE ra.assigned_to_user = u.id 
+                   AND ra.resource_type = 'candidate' 
+                   AND ra.is_active = 1) as candidatos_asignados
+            FROM Users u
+            LEFT JOIN Roles r ON u.rol_id = r.id
+            WHERE u.tenant_id = %s 
+              AND u.activo = 1
+              AND u.id != %s
+            ORDER BY u.nombre
+        """, (tenant_id, user_id))
+        
+        users = cursor.fetchall()
+        
+        return jsonify({
+            'success': True,
+            'users': users
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo usuarios para asignación: {str(e)}")
+        return jsonify({"error": "Error obteniendo usuarios"}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+# ===============================================================
 # SECCIÓN DE REPORTES AVANZADOS
 # ===============================================================
 
@@ -4239,8 +4962,8 @@ def get_reports():
         user_id = user_data.get('user_id')
         
         # 🔐 Construir filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Si no se especifica reporte o es 'summary', devolver resumen general
         if report_name == 'summary' or report_name == 'all':
@@ -4376,9 +5099,13 @@ def get_dashboard_data():
         user_data = g.current_user
         user_id = user_data.get('user_id')
         
-        # 🔐 MÓDULO B11: Obtener condiciones de filtro
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        # 🔐 CORREGIDO: Incluir recursos asignados
+        vacancy_condition, vacancy_params = build_user_filter_condition(
+            user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante'
+        )
+        candidate_condition, candidate_params = build_user_filter_condition(
+            user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+        )
         
         # Métricas básicas - Entrevistas (filtrar a través de Vacantes)
         sql = """
@@ -4503,8 +5230,8 @@ def get_dashboard_metrics():
             return jsonify({"error": "No se pudo obtener tenant_id del usuario autenticado"}), 401
         
         # 🔐 CORRECCIÓN: Obtener filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # 1. Candidatos activos totales (filtrado por usuario)
         sql = "SELECT COUNT(*) as total FROM Afiliados a WHERE a.tenant_id = %s"
@@ -4870,7 +5597,7 @@ def get_candidates():
         params = [tenant_id]
         
         # 🔐 MÓDULO B5: Filtrar por usuario según rol
-        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
         if condition:
             query += f" AND ({condition})"
             params.extend(filter_params)
@@ -5462,8 +6189,8 @@ def get_notifications():
         user_id = user_data.get('user_id')
         
         # 🔐 MÓDULO B13: Obtener condiciones de filtro
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
         
         notifications = []
         
@@ -5879,7 +6606,7 @@ def handle_vacancies():
             params = [tenant_id]
             
             # 🔐 MÓDULO B6: Aplicar filtro por usuario
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'V.created_by_user')
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'V.created_by_user', 'vacancy', 'V.id_vacante')
             if condition:
                 base_query += f" AND ({condition})"
                 params.extend(filter_params)
@@ -6155,7 +6882,7 @@ def handle_applications():
             params.append(tenant_id)
             
             # 🔐 MÓDULO B7: Filtrar por usuario según rol (a través de la vacante)
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
             if condition:
                 conditions.append(f"({condition})")
                 params.extend(filter_params)
@@ -6454,7 +7181,7 @@ def handle_interviews():
             params.append(tenant_id)
             
             # 🔐 MÓDULO B8: Filtrar por usuario según rol (a través de la vacante)
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
             if condition:
                 conditions.append(f"({condition})")
                 params.extend(filter_params)
@@ -6694,7 +7421,7 @@ def get_interview_stats():
         estado = request.args.get('estado')
         
         # 🔐 Construir filtros por usuario
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Construir consulta base FILTRADA
         sql = """
@@ -6814,7 +7541,7 @@ def handle_hired():
             params = [tenant_id]
             
             # 🔐 MÓDULO B10: Filtrar por usuario según rol
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'co.created_by_user')
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'co.created_by_user', 'hired', 'co.id_contratado')
             if condition:
                 sql += f" AND ({condition})"
                 params.extend(filter_params)
@@ -7103,7 +7830,7 @@ def handle_clients():
             params = [tenant_id, tenant_id]
             
             # 🔐 MÓDULO B9: Filtrar por usuario según rol
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user')
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user', 'client', 'c.id_cliente')
             if condition:
                 query += f" AND ({condition})"
                 params.extend(filter_params)
@@ -9123,8 +9850,8 @@ def get_dashboard_activity():
         user_id = user_data.get('user_id')
         
         # 🔐 Construir filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Consulta FILTRADA para nuevos afiliados por día en los últimos 30 días
         sql_afiliados = """
@@ -9708,8 +10435,8 @@ def get_dashboard_stats():
         user_id = user_data.get('user_id')
         
         # 🔐 CORRECCIÓN: Obtener filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user')
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Estadísticas de candidatos (filtrado por usuario)
         sql = """
@@ -9925,7 +10652,7 @@ def calendar_interviews():
         month = request.args.get('month', datetime.now().month)
         
         # 🔐 MÓDULO B17: Obtener condición de filtro por usuario
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         sql = """
             SELECT 
@@ -9996,7 +10723,7 @@ def calendar_activities():
         month = request.args.get('month', datetime.now().month)
         
         # 🔐 MÓDULO B17: Obtener condición de filtro por usuario
-        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user')
+        vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Construir query con filtros de tenant y usuario
         sql_postulaciones = """
