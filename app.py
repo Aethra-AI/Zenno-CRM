@@ -13125,16 +13125,18 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
             habilidades_texto = ", ".join(habilidades_tecnicas[:10])
         
         # Insertar candidato en tabla Afiliados con campos adicionales
+        # Incluye el user_id para rastrear quién subió el CV
         cursor.execute("""
             INSERT INTO Afiliados (
                 tenant_id, nombre_completo, email, telefono, ciudad,
-                experiencia, habilidades, linkedin, portfolio, estado, fecha_registro
+                experiencia, habilidades, linkedin, portfolio, estado, fecha_registro,
+                created_by_user_id, created_at
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Activo', NOW()
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Activo', NOW(), %s, NOW()
             )
         """, (
             tenant_id, nombre_completo, email, telefono, ciudad,
-            experiencia_texto, habilidades_texto, linkedin, portfolio
+            experiencia_texto, habilidades_texto, linkedin, portfolio, user_id
         ))
         
         candidate_id = cursor.lastrowid
