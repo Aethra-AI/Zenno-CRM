@@ -50,7 +50,7 @@ class CVProcessingService:
         if not docx:
             logger.warning("Módulo 'python-docx' no disponible. No se podrán procesar archivos DOCX.")
         
-        # Obtener las 3 APIs de Gemini disponibles
+        # Obtener las APIs de Gemini disponibles
         self.gemini_api_keys = [
             os.getenv('GEMINI_API_KEY_1'),
             os.getenv('GEMINI_API_KEY_2'),
@@ -60,10 +60,11 @@ class CVProcessingService:
         # Filtrar APIs válidas
         self.gemini_api_keys = [key for key in self.gemini_api_keys if key]
         
-        self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent')
+        # Usar el modelo gemini-2.0-flash
+        self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent')
         
-        # Rate limiting: 15 peticiones por minuto por API (Gemini 2.5 Flash Lite)
-        self.rate_limit_per_api = 15
+        # Rate limiting: 60 peticiones por minuto por API (Gemini 2.0 Flash)
+        self.rate_limit_per_api = 60
         self.rate_limit_window = 60  # segundos
         
         if not self.gemini_api_keys:
@@ -172,228 +173,56 @@ class CVProcessingService:
             selected_api_key = self.gemini_api_keys[api_index % len(self.gemini_api_keys)]
             logger.info(f"Usando Gemini API {api_index % len(self.gemini_api_keys) + 1} para procesar CV")
             
-            # Prompt mejorado y robusto para Gemini
+            # Prompt mejorado para Gemini 2.0 Flash
             prompt = f"""
-            Eres un experto analista de CVs con especialización en extracción de datos estructurados para sistemas de reclutamiento.
-            Tu tarea es analizar EXHAUSTIVAMENTE el siguiente CV y extraer TODA la información disponible en formato JSON estructurado.
-            El CV pertenece al tenant {tenant_id}.
+            Eres un asistente experto en análisis de CVs. Tu tarea es extraer información del siguiente CV y devolverla en formato JSON válido.
             
-            INSTRUCCIONES CRÍTICAS PARA ANÁLISIS PROFUNDO:
+            INSTRUCCIONES:
+            1. Analiza cuidadosamente TODO el contenido del CV
+            2. Extrae TODA la información relevante
+            3. Sigue ESTRICTAMENTE el esquema JSON proporcionado
+            4. Si un campo no aplica, usa null
+            5. No incluyas ningún texto fuera del JSON
             
-            📋 LECTURA COMPLETA:
-            - Lee TODO el contenido del CV palabra por palabra, no solo fragmentos
-            - Analiza cada sección: experiencia, educación, habilidades, certificaciones, proyectos
-            - Busca información implícita y explícita
-            - Identifica patrones y contextos profesionales
+            ESQUEMA REQUERIDO:
+            {json.dumps({
+                "personal_info": {
+                    "nombre_completo": "string | null",
+                    "email": "string | null",
+                    "telefono": "string | null",
+                    "ciudad": "string | null",
+                    "pais": "string | null"
+                },
+                "experiencia": [{
+                    "empresa": "string",
+                    "puesto": "string",
+                    "fecha_inicio": "string (YYYY-MM-DD)",
+                    "fecha_fin": "string (YYYY-MM-DD o 'actual')",
+                    "descripcion": "string",
+                    "habilidades": ["string"]
+                }],
+                "educacion": [{
+                    "institucion": "string",
+                    "titulo": "string",
+                    "fecha_inicio": "string (YYYY-MM-DD)",
+                    "fecha_fin": "string (YYYY-MM-DD)",
+                    "grado": "string"
+                }],
+                "habilidades": {
+                    "tecnicas": ["string"],
+                    "blandas": ["string"],
+                    "idiomas": [{
+                        "idioma": "string",
+                        "nivel": "string (básico/intermedio/avanzado/nativo)"
+                    }]
+                },
+                "resumen": "string"
+            }, indent=2, ensure_ascii=False)}
             
-            💼 EXPERIENCIA LABORAL:
-            - Extrae TODAS las experiencias laborales sin omitir ninguna
-            - Para cada trabajo, identifica:
-              * Responsabilidades principales (todas las mencionadas)
-              * Logros cuantificables (números, porcentajes, resultados)
-              * Tecnologías y herramientas utilizadas (software, sistemas, plataformas)
-              * Habilidades demostradas en ese rol
-              * Contexto del trabajo (tamaño de equipo, industria, tipo de proyectos)
-            
-            🎯 EXTRACCIÓN INTELIGENTE DE HABILIDADES:
-            - Extrae habilidades de MÚLTIPLES fuentes:
-              1. Sección explícita de habilidades
-              2. Descripciones de experiencia laboral (qué hacía, qué usaba)
-              3. Proyectos mencionados (tecnologías aplicadas)
-              4. Educación y certificaciones (conocimientos adquiridos)
-              5. Logros y responsabilidades (competencias demostradas)
-            
-            - Identifica y extrae:
-              * Software: Excel, Word, PowerPoint, Outlook, SAP, Salesforce, Oracle, etc.
-              * Herramientas técnicas: Python, Java, SQL, JavaScript, React, etc.
-              * Sistemas: ERP, CRM, POS, gestión de inventarios, etc.
-              * Habilidades blandas: liderazgo, trabajo en equipo, comunicación, etc.
-              * Idiomas: español, inglés, etc. con niveles
-              * Certificaciones profesionales
-            
-            🔍 ANÁLISIS CONTEXTUAL:
-            - Infiere habilidades del contexto:
-              * Si fue "Gerente" → liderazgo, gestión de equipos, toma de decisiones
-              * Si trabajó en "ventas" → negociación, atención al cliente, CRM
-              * Si fue "analista" → análisis de datos, Excel, reportes
-              * Si fue "desarrollador" → programación, frameworks, bases de datos
-            
-            📊 ESTRUCTURA Y DETALLE:
-            - Cada experiencia debe tener descripción completa y detallada
-            - Lista TODAS las tecnologías mencionadas (no resumas)
-            - Separa habilidades técnicas de habilidades blandas
-            - Identifica niveles de dominio cuando sea posible
-            
-            Por favor, extrae y estructura la siguiente información:
-            
-            {{
-                "personal_info": {{
-                    "nombre_completo": "string",
-                    "email": "string",
-                    "telefono": "string",
-                    "ciudad": "string",
-                    "pais": "string",
-                    "fecha_nacimiento": "string (YYYY-MM-DD o null si no se encuentra)",
-                    "linkedin": "string o null",
-                    "github": "string o null",
-                    "portfolio": "string o null",
-                    "sitio_web": "string o null"
-                }},
-                "experiencia": {{
-                    "años_experiencia": "number (calculado desde la primera experiencia)",
-                    "experiencia_detallada": [
-                        {{
-                            "empresa": "string",
-                            "posicion": "string",
-                            "fecha_inicio": "string (YYYY-MM-DD)",
-                            "fecha_fin": "string (YYYY-MM-DD o 'actual' si está trabajando)",
-                            "duracion_meses": "number",
-                            "descripcion_completa": "string (descripción detallada de responsabilidades)",
-                            "logros": ["array de strings con logros específicos"],
-                            "tecnologias": ["array de strings con todas las tecnologías mencionadas"],
-                            "herramientas": ["array de strings con herramientas usadas"],
-                            "tamaño_empresa": "string (startup/pequeña/mediana/grande/empresa)",
-                            "industria": "string",
-                            "reportes_a": "string o null",
-                            "equipo_a_cargo": "string o null"
-                        }}
-                    ],
-                    "resumen_experiencia": "string (resumen de 3-4 líneas del perfil profesional)",
-                    "especializaciones": ["array de strings con áreas de especialización"],
-                    "logros_destacados": ["array de strings con logros más importantes"]
-                }},
-                "educacion": [
-                    {{
-                        "institucion": "string",
-                        "titulo": "string",
-                        "fecha_inicio": "string (YYYY-MM-DD)",
-                        "fecha_fin": "string (YYYY-MM-DD)",
-                        "grado": "string",
-                        "estado": "string (completado/en_progreso)",
-                        "promedio": "string o null",
-                        "honores": "string o null"
-                    }}
-                ],
-                "certificaciones": [
-                    {{
-                        "nombre": "string",
-                        "institucion": "string",
-                        "fecha_obtencion": "string (YYYY-MM-DD)",
-                        "fecha_expiracion": "string (YYYY-MM-DD o null)",
-                        "vigencia": "string o null",
-                        "numero_certificado": "string o null",
-                        "url": "string o null"
-                    }}
-                ],
-                "cursos_formacion": [
-                    {{
-                        "nombre": "string",
-                        "institucion": "string",
-                        "fecha": "string (YYYY-MM-DD)",
-                        "duracion": "string o null",
-                        "estado": "string (completado/en_progreso)"
-                    }}
-                ],
-                "habilidades": {{
-                    "tecnicas": ["array de strings con habilidades técnicas específicas"],
-                    "blandas": ["array de strings con habilidades blandas"],
-                    "software_office": ["Excel, Word, PowerPoint, Outlook, Access, etc."],
-                    "software_empresarial": ["SAP, Oracle, Salesforce, Microsoft Dynamics, etc."],
-                    "herramientas_especializadas": ["AutoCAD, Photoshop, herramientas específicas del sector"],
-                    "sistemas_gestion": ["ERP, CRM, POS, WMS, sistemas de inventario, etc."],
-                    "tecnologias_programacion": ["Python, Java, JavaScript, C++, etc. si aplica"],
-                    "bases_datos": ["SQL, MySQL, PostgreSQL, MongoDB, etc. si aplica"],
-                    "metodologias": ["Agile, Scrum, Six Sigma, Lean, etc. si aplica"],
-                    "idiomas": [
-                        {{
-                            "idioma": "string",
-                            "nivel_escrito": "string (básico/intermedio/avanzado/nativo)",
-                            "nivel_oral": "string (básico/intermedio/avanzado/nativo)",
-                            "certificacion": "string o null"
-                        }}
-                    ],
-                    "niveles_dominio": {{
-                        "experto": ["tecnologías/herramientas donde tiene más de 5 años o dominio experto"],
-                        "avanzado": ["tecnologías/herramientas con 3-5 años o nivel avanzado"],
-                        "intermedio": ["tecnologías/herramientas con 1-3 años o nivel intermedio"],
-                        "básico": ["tecnologías/herramientas con menos de 1 año o nivel básico"]
-                    }},
-                    "habilidades_extraidas_experiencia": ["TODAS las habilidades identificadas en descripciones de trabajo"],
-                    "competencias_profesionales": ["gestión de proyectos, liderazgo de equipos, análisis financiero, etc."]
-                }},
-                "proyectos": [
-                    {{
-                        "nombre": "string",
-                        "descripcion": "string",
-                        "tecnologias": ["array de strings"],
-                        "fecha": "string (YYYY-MM-DD o período)",
-                        "url": "string o null",
-                        "rol": "string"
-                    }}
-                ],
-                "resumen": "string (resumen profesional detallado en 4-5 líneas)",
-                "expectativas": {{
-                    "salario_minimo": "number o null",
-                    "salario_deseado": "number o null",
-                    "tipo_trabajo": "string (remoto/presencial/hibrido)",
-                    "disponibilidad": "string",
-                    "ubicacion_preferida": "string o null",
-                    "tipo_empresa": "string o null"
-                }},
-                "metadata": {{
-                    "calidad_datos": "string (alta/media/baja)",
-                    "completitud": "number (0-100)",
-                    "confiabilidad": "string (alta/media/baja)",
-                    "fecha_procesamiento": "{json.dumps(datetime.now().isoformat())}",
-                    "version_cv": "string o null",
-                    "idioma_cv": "string"
-                }}
-            }}
-            
-            INSTRUCCIONES FINALES CRÍTICAS:
-            
-            ✅ COMPLETITUD:
-            - Extrae TODA la información disponible, no omitas ningún detalle
-            - Para cada trabajo, incluye TODAS las responsabilidades mencionadas
-            - Lista TODAS las tecnologías, herramientas y frameworks mencionados (no resumas, lista todo)
-            - Incluye logros específicos con números, porcentajes, fechas y resultados medibles
-            
-            🎯 HABILIDADES - MÁXIMA PRIORIDAD:
-            - Extrae TODAS las habilidades mencionadas explícita o implícitamente
-            - Busca software mencionado: Excel, SAP, Salesforce, Oracle, etc.
-            - Identifica herramientas: sistemas, plataformas, aplicaciones
-            - Extrae habilidades de las descripciones de trabajo (qué hacía = qué sabe hacer)
-            - Categoriza correctamente: técnicas vs blandas, software vs sistemas
-            - Genera lista separada por comas en "habilidades_extraidas_experiencia"
-            
-            📝 DESCRIPCIONES DETALLADAS:
-            - Cada experiencia debe tener "descripcion_completa" con 3-5 líneas mínimo
-            - Explica qué hacía, cómo lo hacía, con qué herramientas, qué logró
-            - Incluye contexto: tamaño de equipo, tipo de proyectos, responsabilidades clave
-            
-            🔍 ANÁLISIS INTELIGENTE:
-            - Si menciona "atención al cliente" → extrae: comunicación, servicio al cliente, resolución de problemas
-            - Si menciona "ventas" → extrae: negociación, CRM, prospección, cierre de ventas
-            - Si menciona "administración" → extrae: Excel, gestión documental, organización
-            - Si menciona "supervisión" → extrae: liderazgo, gestión de equipos, toma de decisiones
-            - Si menciona nombres de software/sistemas → agrégalos a las categorías correspondientes
-            
-            📊 FORMATO Y VALIDACIÓN:
-            - Si no encuentras información específica, usa null (no inventes)
-            - Para fechas, usa formato YYYY-MM-DD o "YYYY-MM" si solo hay mes/año
-            - Para números, usa solo el valor numérico sin símbolos
-            - Asegúrate de que el JSON sea válido y completo
-            - Todos los arrays deben tener al menos un elemento o estar vacíos []
-            
-            🎓 EDUCACIÓN Y CERTIFICACIONES:
-            - Extrae TODOS los estudios, cursos, certificaciones mencionados
-            - Incluye instituciones, fechas, títulos obtenidos
-            - Agrega certificaciones profesionales a habilidades también
-            
-            CV a analizar:
+            CV A ANALIZAR:
             {cv_text}
             
-            IMPORTANTE: Devuelve SOLO el JSON, sin texto adicional antes o después.
+            IMPORTANTE: Devuelve SOLO el JSON válido, sin texto adicional.
             """
             
             # Preparar request para Gemini
@@ -402,24 +231,19 @@ class CVProcessingService:
             }
             
             data = {
-                "contents": [
-                    {
-                        "parts": [
-                            {
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ],
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
                 "generationConfig": {
-                    "temperature": 0.2,
+                    "temperature": 0.1,  # Más determinista
+                    "topP": 0.9,
                     "topK": 40,
-                    "topP": 0.95,
-                    "maxOutputTokens": 8192
+                    "maxOutputTokens": 4096,
+                    "responseMimeType": "application/json"
                 }
             }
             
-            # Llamar a Gemini API con la API seleccionada
+            # Llamar a Gemini API
             response = requests.post(
                 f"{self.gemini_api_url}?key={selected_api_key}",
                 headers=headers,
@@ -428,44 +252,65 @@ class CVProcessingService:
             )
             
             if response.status_code != 200:
-                logger.error(f"Error en Gemini API: {response.status_code} - {response.text}")
-                raise Exception(f"Error en Gemini API: {response.status_code}")
+                error_msg = f"Error en Gemini API ({response.status_code}): {response.text}"
+                logger.error(error_msg)
+                return {
+                    'success': False,
+                    'error': error_msg
+                }
             
             # Procesar respuesta
-            gemini_response = response.json()
-            
-            if 'candidates' not in gemini_response or not gemini_response['candidates']:
-                raise Exception("Respuesta inválida de Gemini API")
-            
-            # Extraer texto de la respuesta
-            candidate = gemini_response['candidates'][0]
-            if 'content' not in candidate or 'parts' not in candidate['content']:
-                raise Exception("Formato de respuesta inválido de Gemini")
-            
-            response_text = candidate['content']['parts'][0]['text']
-            
-            # Limpiar y parsear JSON
-            # Remover markdown code blocks si existen
-            if '```json' in response_text:
-                response_text = response_text.split('```json')[1].split('```')[0]
-            elif '```' in response_text:
-                response_text = response_text.split('```')[1].split('```')[0]
-            
-            # Parsear JSON
             try:
-                structured_data = json.loads(response_text.strip())
-            except json.JSONDecodeError as e:
-                logger.error(f"Error parseando JSON de Gemini: {str(e)}")
-                logger.error(f"Respuesta raw: {response_text}")
-                raise Exception(f"Error parseando respuesta de Gemini: {str(e)}")
-            
-            logger.info("CV procesado exitosamente con Gemini")
-            
-            return {
-                'success': True,
-                'data': structured_data,
-                'raw_response': response_text
-            }
+                gemini_response = response.json()
+                
+                if 'candidates' not in gemini_response or not gemini_response['candidates']:
+                    raise ValueError("Respuesta de Gemini no contiene candidatos")
+                
+                candidate = gemini_response['candidates'][0]
+                if 'content' not in candidate or 'parts' not in candidate['content']:
+                    raise ValueError("Formato de respuesta inválido de Gemini")
+                
+                response_text = candidate['content']['parts'][0]['text']
+                
+                # Limpiar respuesta
+                response_text = response_text.strip()
+                if response_text.startswith('```json'):
+                    response_text = response_text[7:-3].strip()
+                elif response_text.startswith('```'):
+                    response_text = response_text[3:-3].strip()
+                
+                # Validar y parsear JSON
+                try:
+                    structured_data = json.loads(response_text)
+                    
+                    # Validar estructura básica
+                    required_sections = ['personal_info', 'experiencia', 'educacion', 'habilidades']
+                    if not all(section in structured_data for section in required_sections):
+                        raise ValueError("Faltan secciones requeridas en la respuesta")
+                    
+                    logger.info("CV procesado exitosamente con Gemini 2.0 Flash")
+                    
+                    return {
+                        'success': True,
+                        'data': structured_data,
+                        'raw_response': response_text
+                    }
+                    
+                except json.JSONDecodeError as e:
+                    error_msg = f"Error parseando JSON de Gemini: {str(e)}\nRespuesta: {response_text[:500]}..."
+                    logger.error(error_msg)
+                    return {
+                        'success': False,
+                        'error': error_msg
+                    }
+                    
+            except Exception as e:
+                error_msg = f"Error procesando respuesta de Gemini: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                return {
+                    'success': False,
+                    'error': error_msg
+                }
             
         except Exception as e:
             logger.error(f"Error procesando CV con Gemini: {str(e)}")
