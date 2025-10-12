@@ -11513,8 +11513,208 @@ def get_permissions():
         return jsonify({"error": "Error al obtener permisos"}), 500
 
 # ==================== ENDPOINTS DE CARGA MASIVA DE CVs ====================
-# NOTA: Los endpoints de carga de CVs ahora usan OCI Object Storage
-# Ver endpoints: /api/cv/upload-to-oci y /api/cv/bulk-upload
+
+@app.route('/api/candidates/upload', methods=['POST'])
+@token_required
+def upload_cvs():
+    """
+    Endpoint unificado para cargar CVs (individual o masivo)
+    Usa OCI Object Storage internamente
+    Compatible con el frontend existente
+    """
+    if not OCI_SERVICES_AVAILABLE:
+        return jsonify({'error': 'Servicios OCI no disponibles. Contacte al administrador.'}), 503
+    
+    try:
+        tenant_id = get_current_tenant_id()
+        user_id = g.current_user.get('id') or g.current_user.get('user_id')
+        
+        if not user_id:
+            app.logger.error("No se pudo obtener user_id del token")
+            return jsonify({'error': 'Error de autenticación: ID de usuario no encontrado'}), 401
+        
+        # Verificar si hay archivos
+        if 'files' not in request.files:
+            return jsonify({'error': 'No se encontraron archivos'}), 400
+        
+        files = request.files.getlist('files')
+        if not files or all(f.filename == '' for f in files):
+            return jsonify({'error': 'No se seleccionaron archivos válidos'}), 400
+        
+        # Validar límite de archivos
+        if len(files) > 100:
+            return jsonify({'error': 'Máximo 100 archivos por lote'}), 400
+        
+        # Validar tipos de archivo y tamaños
+        allowed_extensions = {'.pdf', '.docx', '.doc'}
+        valid_files = []
+        total_size = 0
+        max_file_size = 50 * 1024 * 1024  # 50MB por archivo
+        
+        for file in files:
+            if file.filename:
+                file_ext = os.path.splitext(file.filename.lower())[1]
+                if file_ext not in allowed_extensions:
+                    return jsonify({'error': f'Tipo de archivo no soportado: {file_ext}. Solo se permiten PDF, DOCX y DOC.'}), 400
+                
+                # Verificar tamaño del archivo
+                file.seek(0, 2)  # Ir al final del archivo
+                file_size = file.tell()
+                file.seek(0)  # Volver al inicio
+                
+                if file_size > max_file_size:
+                    return jsonify({'error': f'Archivo {file.filename} excede el límite de 50MB'}), 400
+                
+                total_size += file_size
+                valid_files.append(file)
+        
+        if not valid_files:
+            return jsonify({'error': 'No hay archivos válidos para procesar'}), 400
+        
+        # Verificar tamaño total
+        max_total_size = 500 * 1024 * 1024  # 500MB total
+        if total_size > max_total_size:
+            return jsonify({'error': 'El tamaño total de los archivos excede 500MB'}), 400
+        
+        app.logger.info(f"Procesando {len(valid_files)} archivos para tenant {tenant_id}")
+        
+        # Procesar archivos en segundo plano
+        def process_cvs_background():
+            results = []
+            errors = []
+            
+            for file in valid_files:
+                try:
+                    # Leer contenido del archivo
+                    file.seek(0)
+                    file_content = file.read()
+                    
+                    # Generar identificador único
+                    cv_identifier = oci_storage_service.generate_cv_identifier(
+                        tenant_id=tenant_id,
+                        candidate_id=None
+                    )
+                    
+                    # Subir a OCI
+                    upload_result = oci_storage_service.upload_cv(
+                        file_content=file_content,
+                        tenant_id=tenant_id,
+                        cv_identifier=cv_identifier,
+                        original_filename=file.filename,
+                        candidate_id=None
+                    )
+                    
+                    if not upload_result['success']:
+                        errors.append({
+                            'filename': file.filename,
+                            'error': f"Error subiendo a OCI: {upload_result['error']}"
+                        })
+                        continue
+                    
+                    # Crear PAR
+                    par_result = oci_storage_service.create_par(
+                        object_key=upload_result['object_key'],
+                        cv_identifier=cv_identifier
+                    )
+                    
+                    if not par_result['success']:
+                        errors.append({
+                            'filename': file.filename,
+                            'error': f"Error creando PAR: {par_result['error']}"
+                        })
+                        continue
+                    
+                    # Extraer texto del CV
+                    cv_text = cv_processing_service.extract_text_from_file(
+                        file_content=file_content,
+                        filename=file.filename
+                    )
+                    
+                    # Procesar con Gemini
+                    gemini_result = cv_processing_service.process_cv_with_gemini(
+                        cv_text=cv_text,
+                        tenant_id=tenant_id
+                    )
+                    
+                    if gemini_result['success']:
+                        # Validar datos
+                        validation_result = cv_processing_service.validate_cv_data(
+                            gemini_result['data']
+                        )
+                        
+                        if validation_result['success']:
+                            processed_data = validation_result['validated_data']
+                            
+                            # Crear candidato
+                            try:
+                                candidate_id = create_candidate_from_cv_data(
+                                    processed_data, tenant_id, user_id
+                                )
+                                
+                                # Guardar CV en BD
+                                save_cv_to_database(
+                                    tenant_id=tenant_id,
+                                    candidate_id=candidate_id,
+                                    cv_identifier=cv_identifier,
+                                    original_filename=file.filename,
+                                    object_key=upload_result['object_key'],
+                                    file_url=par_result['access_uri'],
+                                    par_id=par_result['par_id'],
+                                    mime_type=upload_result['mime_type'],
+                                    file_size=upload_result['size'],
+                                    processed_data=processed_data
+                                )
+                                
+                                results.append({
+                                    'filename': file.filename,
+                                    'success': True,
+                                    'candidate_id': candidate_id,
+                                    'cv_identifier': cv_identifier
+                                })
+                                
+                                app.logger.info(f"CV procesado exitosamente: {file.filename} -> Candidato {candidate_id}")
+                                
+                            except Exception as e:
+                                app.logger.error(f"Error creando candidato para {file.filename}: {str(e)}")
+                                errors.append({
+                                    'filename': file.filename,
+                                    'error': f"Error creando candidato: {str(e)}"
+                                })
+                        else:
+                            errors.append({
+                                'filename': file.filename,
+                                'error': f"Error validando datos: {validation_result['error']}"
+                            })
+                    else:
+                        errors.append({
+                            'filename': file.filename,
+                            'error': f"Error procesando con IA: {gemini_result['error']}"
+                        })
+                        
+                except Exception as e:
+                    app.logger.error(f"Error procesando {file.filename}: {str(e)}")
+                    errors.append({
+                        'filename': file.filename,
+                        'error': str(e)
+                    })
+            
+            app.logger.info(f"Procesamiento completado: {len(results)} exitosos, {len(errors)} errores")
+        
+        # Iniciar procesamiento en background
+        import threading
+        thread = threading.Thread(target=process_cvs_background)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Procesando {len(valid_files)} archivos. Los candidatos se crearán en segundo plano.',
+            'total_files': len(valid_files)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en upload_cvs: {str(e)}")
+        return jsonify({'error': 'Error al procesar archivos'}), 500
 
 @app.route('/api/candidates/<int:candidate_id>/missing-fields', methods=['GET'])
 @token_required
