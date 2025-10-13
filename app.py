@@ -6351,10 +6351,11 @@ def get_user_notifications():
         cursor.execute("""
             SELECT 
                 id, user_id, tenant_id, tipo, titulo, mensaje, 
-                prioridad, leida, metadata, created_at, read_at
+                prioridad, leida, metadata, fecha_creacion, 
+                fecha_lectura as read_at, title, message, type, is_read
             FROM notifications
             WHERE user_id = %s AND tenant_id = %s
-            ORDER BY created_at DESC
+            ORDER BY fecha_creacion DESC
             LIMIT 50
         """, (user_id, tenant_id))
         
@@ -13191,6 +13192,9 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
                        object_key, file_url, par_id, mime_type, file_size, processed_data):
     """
     Actualizar información del CV en tabla Afiliados
+    
+    Returns:
+        dict: {'success': bool, 'message': str, 'error': str or None}
     """
     try:
         conn = get_db_connection()
@@ -13231,9 +13235,20 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
         conn.close()
         
         app.logger.info(f"CV guardado en Afiliados: {cv_identifier} para candidato {candidate_id}")
+        return {
+            'success': True,
+            'message': 'CV guardado exitosamente',
+            'error': None
+        }
         
     except Exception as e:
-        app.logger.error(f"Error guardando CV en Afiliados: {str(e)}")
+        error_msg = f"Error guardando CV en Afiliados: {str(e)}"
+        app.logger.error(error_msg)
+        return {
+            'success': False,
+            'message': 'Error al guardar el CV',
+            'error': error_msg
+        }
         raise
 
 @app.route('/api/cv/delete/<cv_identifier>', methods=['DELETE'])
