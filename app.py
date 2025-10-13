@@ -13193,6 +13193,18 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
     """
     Actualizar información del CV en tabla Afiliados
     
+    Args:
+        tenant_id: ID del tenant
+        candidate_id: ID del candidato en Afiliados
+        cv_identifier: Identificador único del CV
+        original_filename: Nombre original del archivo
+        object_key: Clave del objeto en el almacenamiento
+        file_url: URL del archivo subido
+        par_id: ID del PAR (opcional)
+        mime_type: Tipo MIME del archivo
+        file_size: Tamaño del archivo en bytes
+        processed_data: Datos procesados del CV
+        
     Returns:
         dict: {'success': bool, 'message': str, 'error': str or None}
     """
@@ -13200,13 +13212,51 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         
-        # Actualizar el registro del candidato con la información del CV
+        # Extraer datos del CV procesado
+        personal_info = processed_data.get('personal_info', {})
+        experiencia = processed_data.get('experiencia', [])
+        habilidades = processed_data.get('habilidades', {})
+        
+        # Formatear experiencia para guardar en la base de datos
+        experiencia_texto = "\n\n".join([
+            f"{exp.get('puesto', '')} en {exp.get('empresa', '')} "
+            f"({exp.get('fecha_inicio', '')} - {exp.get('fecha_fin', 'actual')})\n"
+            f"- {exp.get('descripcion', '')}"
+            for exp in experiencia
+        ])
+        
+        # Combinar todas las habilidades en un solo texto
+        habilidades_tecnicas = habilidades.get('tecnicas', [])
+        habilidades_blandas = habilidades.get('blandas', [])
+        idiomas = [f"{i.get('idioma', '')} ({i.get('nivel', '')})" 
+                  for i in habilidades.get('idiomas', [])]
+        
+        # Combinar todas las habilidades en un solo campo
+        todas_las_habilidades = ", ".join(
+            habilidades_tecnicas + habilidades_blandas + idiomas
+        )
+        
+        # Actualizar el registro del candidato con toda la información del CV
         cursor.execute("""
             UPDATE Afiliados 
-            SET cv_url = %s, 
+            SET cv_url = %s,
+                experiencia = %s,
+                skills = %s,
+                telefono = COALESCE(%s, telefono),
+                email = COALESCE(%s, email),
+                ciudad = COALESCE(%s, ciudad),
                 ultima_actualizacion = NOW()
             WHERE id_afiliado = %s AND tenant_id = %s
-        """, (file_url, candidate_id, tenant_id))
+        """, (
+            file_url,
+            experiencia_texto,
+            todas_las_habilidades,
+            personal_info.get('telefono'),
+            personal_info.get('email'),
+            personal_info.get('ciudad'),
+            candidate_id,
+            tenant_id
+        ))
         
         # Registrar en log de procesamiento
         cursor.execute("""
@@ -13214,19 +13264,23 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
                 tenant_id, cv_identifier, processing_step, status, 
                 message, details, created_at
             ) VALUES (
-                %s, %s, 'cv_saved', 'success', 
-                'CV guardado exitosamente en Afiliados', %s, NOW()
+                %s, %s, 'cv_processed', 'success', 
+                'CV procesado exitosamente', %s, NOW()
             )
         """, (
-            tenant_id, cv_identifier, json.dumps({
+            tenant_id, 
+            cv_identifier, 
+            json.dumps({
                 'candidate_id': candidate_id,
                 'original_filename': original_filename,
                 'object_key': object_key,
                 'file_url': file_url,
-                'par_id': par_id,
                 'mime_type': mime_type,
                 'file_size': file_size,
-                'processed_data': processed_data
+                'processing_summary': {
+                    'experience_items': len(experiencia),
+                    'skills_count': len(habilidades_tecnicas) + len(habilidades_blandas) + len(idiomas)
+                }
             })
         ))
         
@@ -13234,22 +13288,21 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
         cursor.close()
         conn.close()
         
-        app.logger.info(f"CV guardado en Afiliados: {cv_identifier} para candidato {candidate_id}")
+        app.logger.info(f"CV procesado exitosamente: {cv_identifier} para candidato {candidate_id}")
         return {
             'success': True,
-            'message': 'CV guardado exitosamente',
+            'message': 'CV procesado exitosamente',
             'error': None
         }
         
     except Exception as e:
-        error_msg = f"Error guardando CV en Afiliados: {str(e)}"
-        app.logger.error(error_msg)
+        error_msg = f"Error procesando CV: {str(e)}"
+        app.logger.error(error_msg, exc_info=True)
         return {
             'success': False,
-            'message': 'Error al guardar el CV',
+            'message': 'Error al procesar el CV',
             'error': error_msg
         }
-        raise
 
 @app.route('/api/cv/delete/<cv_identifier>', methods=['DELETE'])
 @token_required
