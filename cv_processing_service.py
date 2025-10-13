@@ -289,32 +289,119 @@ class CVProcessingService:
             }
             
             # Llamar a Gemini API
-            response = requests.post(
-                f"{self.gemini_api_url}?key={selected_api_key}",
-                headers=headers,
-                json=data,
-                timeout=120
-            )
-            
-            if response.status_code != 200:
-                error_msg = f"Error en Gemini API ({response.status_code}): {response.text}"
-                logger.error(error_msg)
+            logger.info(f"Enviando solicitud a Gemini API con prompt de {len(prompt)} caracteres")
+            try:
+                response = requests.post(
+                    f"{self.gemini_api_url}?key={selected_api_key}",
+                    headers=headers,
+                    json=data,
+                    timeout=120
+                )
+                
+                # Registrar respuesta HTTP
+                logger.info(f"Respuesta de Gemini - Status: {response.status_code}")
+                
+                if response.status_code != 200:
+                    error_msg = f"Error en Gemini API ({response.status_code}): {response.text}"
+                    logger.error(error_msg)
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'response_status': response.status_code,
+                        'response_text': response.text[:1000]  # Primeros 1000 caracteres del error
+                    }
+                
+                # Procesar respuesta JSON
+                response_data = response.json()
+                
+                # Registrar metadatos de la respuesta
+                if 'candidates' in response_data and response_data['candidates']:
+                    candidate = response_data['candidates'][0]
+                    if 'content' in candidate and 'parts' in candidate['content']:
+                        for part in candidate['content']['parts']:
+                            if 'text' in part and part['text'].strip():
+                                logger.info("=== RESPUESTA CRUDA DE GEMINI ===")
+                                logger.info(part['text'][:2000])  # Primeros 2000 caracteres
+                                logger.info("=== FIN DE RESPUESTA CRUDA ===")
+                                break
+                
+                # Validar estructura de la respuesta
+                if 'candidates' not in response_data or not response_data['candidates']:
+                    error_msg = "Respuesta de Gemini sin candidatos válidos"
+                    logger.error(f"{error_msg}. Respuesta completa: {json.dumps(response_data, ensure_ascii=False)[:1000]}")
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'response_data': response_data
+                    }
+                
+                # Extraer el texto de la respuesta
+                response_text = None
+                for candidate in response_data.get('candidates', []):
+                    if 'content' in candidate and 'parts' in candidate['content']:
+                        for part in candidate['content']['parts']:
+                            if 'text' in part and part['text'].strip():
+                                response_text = part['text'].strip()
+                                break
+                    if response_text:
+                        break
+                
+                if not response_text:
+                    error_msg = "No se pudo extraer texto de la respuesta de Gemini"
+                    logger.error(f"{error_msg}. Respuesta completa: {json.dumps(response_data, ensure_ascii=False)[:1000]}")
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'response_data': response_data
+                    }
+                
+                # Intentar parsear el JSON de la respuesta
+                try:
+                    parsed_response = json.loads(response_text)
+                    logger.info("Respuesta de Gemini parseada correctamente")
+                    
+                    # Registrar información de experiencia extraída
+                    if 'experiencia' in parsed_response:
+                        logger.info(f"Experiencia extraída: {len(parsed_response['experiencia'])} trabajos")
+                        for i, exp in enumerate(parsed_response.get('experiencia', []), 1):
+                            logger.info(f"  Trabajo {i}: {exp.get('puesto', 'Sin puesto')} en {exp.get('empresa', 'Sin empresa')}")
+                    
+                    # Registrar habilidades extraídas
+                    if 'habilidades' in parsed_response:
+                        habs = parsed_response['habilidades']
+                        logger.info(f"Habilidades técnicas: {len(habs.get('tecnicas', []))}")
+                        logger.info(f"Habilidades blandas: {len(habs.get('blandas', []))}")
+                        logger.info(f"Idiomas: {len(habs.get('idiomas', []))}")
+                    
+                    return {
+                        'success': True,
+                        'data': parsed_response,
+                        'raw_response': response_text[:1000]  # Guardar parte de la respuesta para depuración
+                    }
+                    
+                except json.JSONDecodeError as e:
+                    error_msg = f"Error al parsear JSON de la respuesta de Gemini: {str(e)}"
+                    logger.error(f"{error_msg}. Texto de respuesta: {response_text[:1000]}")
+                    return {
+                        'success': False,
+                        'error': error_msg,
+                        'raw_response': response_text[:1000]
+                    }
+                
+            except requests.exceptions.RequestException as e:
+                error_msg = f"Error de conexión con Gemini API: {str(e)}"
+                logger.error(error_msg, exc_info=True)
                 return {
                     'success': False,
                     'error': error_msg
                 }
-            
-            # Procesar respuesta
-            try:
-                gemini_response = response.json()
-                
-                if 'candidates' not in gemini_response or not gemini_response['candidates']:
-                    raise ValueError("Respuesta de Gemini no contiene candidatos")
-                
-                candidate = gemini_response['candidates'][0]
-                if 'content' not in candidate or 'parts' not in candidate['content']:
-                    raise ValueError("Formato de respuesta inválido de Gemini")
-                
+            except Exception as e:
+                error_msg = f"Error inesperado al procesar respuesta de Gemini: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                return {
+                    'success': False,
+                    'error': error_msg
+                }
                 response_text = candidate['content']['parts'][0]['text']
                 
                 # Limpiar respuesta
