@@ -13218,12 +13218,47 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
         habilidades = processed_data.get('habilidades', {})
         
         # Formatear experiencia para guardar en la base de datos
-        experiencia_texto = "\n\n".join([
-            f"{exp.get('puesto', '')} en {exp.get('empresa', '')} "
-            f"({exp.get('fecha_inicio', '')} - {exp.get('fecha_fin', 'actual')})\n"
-            f"- {exp.get('descripcion', '')}"
-            for exp in experiencia
-        ])
+        def format_experience(exp):
+            parts = []
+            
+            # Agregar puesto si existe
+            puesto = exp.get('puesto')
+            if puesto:
+                parts.append(puesto)
+            
+            # Agregar empresa si existe
+            empresa = exp.get('empresa')
+            if empresa:
+                if parts:  # Si ya hay un puesto, agregar "en"
+                    parts[-1] = f"{parts[-1]} en {empresa}"
+                else:
+                    parts.append(empresa)
+            
+            # Agregar fechas si hay al menos una
+            fecha_inicio = exp.get('fecha_inicio')
+            fecha_fin = exp.get('fecha_fin', 'actual')
+            
+            if fecha_inicio or fecha_fin:
+                fechas = []
+                if fecha_inicio:
+                    fechas.append(fecha_inicio)
+                fechas.append(fecha_fin)
+                parts.append(f"({fechas[0]} - {fechas[-1]})")
+            
+            # Agregar descripción si existe
+            descripcion = exp.get('descripcion')
+            if descripcion and descripcion.lower() != 'none':
+                if not parts:  # Si no hay nada más, solo poner la descripción
+                    return f"- {descripcion}"
+                parts.append(f"\n- {descripcion}")
+            
+            return " ".join(parts)
+        
+        # Aplicar formato a cada experiencia
+        experiencias_formateadas = [format_experience(exp) for exp in experiencia]
+        
+        # Filtrar experiencias vacías y unir con doble salto de línea
+        experiencia_texto = "\n\n".join(filter(None, experiencias_formateadas))
         
         # Combinar todas las habilidades en un solo texto
         habilidades_tecnicas = habilidades.get('tecnicas', [])
