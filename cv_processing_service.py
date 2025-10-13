@@ -174,16 +174,26 @@ class CVProcessingService:
             selected_api_key = self.gemini_api_keys[api_index % len(self.gemini_api_keys)]
             logger.info(f"Usando Gemini API {api_index % len(self.gemini_api_keys) + 1} para procesar CV")
             
-            # Prompt mejorado para Gemini 2.0 Flash
+            # Prompt mejorado para Gemini 2.0 Flash con instrucciones más específicas
             prompt = f"""
-            Eres un asistente experto en análisis de CVs. Tu tarea es extraer información del siguiente CV y devolverla en formato JSON válido.
+            Eres un asistente experto en análisis de CVs con amplia experiencia en recursos humanos. 
+            Tu tarea es analizar meticulosamente el siguiente CV y extraer TODA la información relevante.
             
-            INSTRUCCIONES:
-            1. Analiza cuidadosamente TODO el contenido del CV
-            2. Extrae TODA la información relevante
-            3. Sigue ESTRICTAMENTE el esquema JSON proporcionado
-            4. Si un campo no aplica, usa null
-            5. No incluyas ningún texto fuera del JSON
+            INSTRUCCIONES DETALLADAS:
+            1. Lee TODO el contenido del CV sin omitir secciones
+            2. Extrae TODA la información relevante, especialmente experiencia y habilidades
+            3. Para la experiencia, asegúrate de incluir TODOS los trabajos con sus respectivos detalles
+            4. Para habilidades, extrae tanto habilidades técnicas como blandas, incluyendo tecnologías, herramientas y metodologías
+            5. Sigue ESTRICTAMENTE el esquema JSON proporcionado
+            6. Si un campo no aplica, usa null
+            7. No incluyas ningún texto fuera del JSON
+            
+            DETALLES DE EXTRACCIÓN:
+            - Para experiencia: Incluye todas las posiciones laborales, incluso si son pasantías o trabajos temporales
+            - Para habilidades técnicas: Incluye lenguajes de programación, frameworks, herramientas, bases de datos, etc.
+            - Para habilidades blandas: Incluye competencias como trabajo en equipo, liderazgo, comunicación, etc.
+            - Para idiomas: Incluye todos los idiomas con su nivel correspondiente
+            - Para el resumen: Crea un resumen profesional de 3-4 oraciones destacando la experiencia y habilidades principales
             
             ESQUEMA REQUERIDO:
             {json.dumps({
@@ -195,35 +205,69 @@ class CVProcessingService:
                     "pais": "string | null"
                 },
                 "experiencia": [{
-                    "empresa": "string",
-                    "puesto": "string",
-                    "fecha_inicio": "string (YYYY-MM-DD)",
-                    "fecha_fin": "string (YYYY-MM-DD o 'actual')",
-                    "descripcion": "string",
-                    "habilidades": ["string"]
+                    "empresa": "string (obligatorio)",
+                    "puesto": "string (obligatorio)",
+                    "fecha_inicio": "string (formato YYYY-MM-DD, estimar si no está claro)",
+                    "fecha_fin": "string (formato YYYY-MM-DD o 'actual' si aún trabaja allí)",
+                    "descripcion": "string (3-5 puntos destacando logros y responsabilidades)",
+                    "habilidades": ["string (habilidades específicas usadas en este trabajo)"]
                 }],
                 "educacion": [{
                     "institucion": "string",
-                    "titulo": "string",
-                    "fecha_inicio": "string (YYYY-MM-DD)",
-                    "fecha_fin": "string (YYYY-MM-DD)",
-                    "grado": "string"
+                    "titulo": "string (ej: 'Ingeniería en Sistemas')",
+                    "fecha_inicio": "string (YYYY-MM)",
+                    "fecha_fin": "string (YYYY-MM o 'actual')",
+                    "grado": "string (ej: 'Licenciatura', 'Maestría')"
                 }],
                 "habilidades": {
-                    "tecnicas": ["string"],
-                    "blandas": ["string"],
+                    "tecnicas": ["string (ej: 'Python', 'React', 'SQL')"],
+                    "blandas": ["string (ej: 'Liderazgo', 'Trabajo en equipo')"],
                     "idiomas": [{
                         "idioma": "string",
                         "nivel": "string (básico/intermedio/avanzado/nativo)"
                     }]
                 },
-                "resumen": "string"
+                "resumen": "string (resumen profesional de 3-4 oraciones)"
             }, indent=2, ensure_ascii=False)}
+            
+            EJEMPLO DE SALIDA ESPERADA:
+            {{
+                "personal_info": {{
+                    "nombre_completo": "Juan Pérez",
+                    "email": "juan.perez@email.com",
+                    "telefono": "+1234567890",
+                    "ciudad": "Ciudad de México",
+                    "pais": "México"
+                }},
+                "experiencia": [
+                    {{
+                        "empresa": "Empresa Tecnológica SA",
+                        "puesto": "Desarrollador Senior",
+                        "fecha_inicio": "2020-01-01",
+                        "fecha_fin": "actual",
+                        "descripcion": "Desarrollo de aplicaciones web con React y Node.js. Liderazgo de equipo de 5 desarrolladores. Implementación de prácticas ágiles.",
+                        "habilidades": ["React", "Node.js", "Liderazgo", "Metodologías Ágiles"]
+                    }}
+                ],
+                "habilidades": {{
+                    "tecnicas": ["JavaScript", "Python", "React", "Node.js", "SQL", "Git"],
+                    "blandas": ["Liderazgo", "Trabajo en equipo", "Comunicación"],
+                    "idiomas": [
+                        {{"idioma": "Español", "nivel": "nativo"}},
+                        {{"idioma": "Inglés", "nivel": "avanzado"}}
+                    ]
+                }},
+                "resumen": "Desarrollador Full Stack con 5+ años de experiencia en desarrollo web. Especializado en aplicaciones React y Node.js. Líder de equipo con experiencia en metodologías ágiles. Apasionado por crear soluciones tecnológicas innovadoras."
+            }}
             
             CV A ANALIZAR:
             {cv_text}
             
-            IMPORTANTE: Devuelve SOLO el JSON válido, sin texto adicional.
+            IMPORTANTE: 
+            - Devuelve SOLO el JSON válido, sin texto adicional.
+            - Asegúrate de que el JSON sea sintácticamente correcto.
+            - Si algún campo no está presente en el CV, usa null.
+            - Incluye TODA la experiencia laboral, sin omitir trabajos.
             """
             
             # Preparar request para Gemini
