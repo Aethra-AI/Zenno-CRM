@@ -13111,13 +13111,14 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
                 años_experiencia = 0
         
         # Crear resumen de experiencia más detallado
-        
         experiencia_detallada = []
         if isinstance(experiencia, dict):
             experiencia_detallada = experiencia.get('experiencia_detallada', [])
         elif isinstance(experiencia, list):
             experiencia_detallada = experiencia  # Usar la lista directamente si es una lista
-            especializaciones = experiencia.get('especializaciones', [])
+        
+        experiencia_texto = ""
+        especializaciones = []
         
         if experiencia_detallada:
             # Incluir más experiencias y más detalles
@@ -13133,14 +13134,15 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
             experiencia_texto = experiencia_texto.rstrip(', ')
         
         # Agregar especializaciones al texto de experiencia
+        if isinstance(experiencia, dict):
+            especializaciones = experiencia.get('especializaciones', [])
         if especializaciones:
             especializaciones_texto = ", ".join(especializaciones[:3])
             experiencia_texto += f" | Especializado en: {especializaciones_texto}"
         
         # Crear resumen de habilidades más completo
-        habilidades_tecnicas = habilidades.get('tecnicas', [])
+        habilidades_tecnicas = habilidades.get('habilidades_tecnicas', [])
         niveles_dominio = habilidades.get('niveles_dominio', {})
-        
         # Combinar habilidades técnicas con niveles de dominio
         habilidades_texto = ""
         if niveles_dominio:
