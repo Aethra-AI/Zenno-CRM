@@ -13165,7 +13165,7 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
         cursor.execute("""
             INSERT INTO Afiliados (
                 tenant_id, nombre_completo, email, telefono, ciudad,
-                experiencia, habilidades, linkedin, portfolio, estado, fecha_registro,
+                experiencia, skills, linkedin, portfolio, estado, fecha_registro,
                 created_by_user_id, created_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Activo', NOW(), %s, NOW()
