@@ -3257,9 +3257,56 @@ def upload_excel():
         processed_count = 0
 
         if data_type == 'afiliados':
-            # La lógica para afiliados se mantiene igual, si la tenías.
-            # Por ahora la dejamos pasar para enfocarnos en clientes.
-            pass
+            # Lógica para importar candidatos desde Excel
+            for _, row in df.iterrows():
+                # Validar campos obligatorios
+                if not row.get('nombre_completo') or not row.get('email'):
+                    continue  # Saltar filas sin datos mínimos
+                
+                # Procesar campos opcionales
+                telefono = row.get('telefono') if row.get('telefono') else None
+                ciudad = row.get('ciudad') if row.get('ciudad') else None
+                identidad = row.get('identidad') if row.get('identidad') else None
+                grado_academico = row.get('grado_academico') if row.get('grado_academico') else None
+                cv_url = row.get('cv_url') if row.get('cv_url') else None
+                linkedin = row.get('linkedin') if row.get('linkedin') else None
+                portfolio = row.get('portfolio') if row.get('portfolio') else None
+                skills = row.get('skills') if row.get('skills') else None
+                experiencia = row.get('experiencia') if row.get('experiencia') else None
+                disponibilidad = row.get('disponibilidad') if row.get('disponibilidad') else 'Disponible'
+                comentarios = row.get('comentarios') if row.get('comentarios') else None
+                observaciones = row.get('observaciones') if row.get('observaciones') else None
+                
+                # Procesar campos booleanos
+                disponibilidad_rotativos = 1 if str(row.get('disponibilidad_rotativos', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
+                transporte_propio = 1 if str(row.get('transporte_propio', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
+                
+                sql = """
+                    INSERT INTO Afiliados (
+                        tenant_id, nombre_completo, email, telefono, ciudad, identidad,
+                        grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
+                        disponibilidad, disponibilidad_rotativos, transporte_propio,
+                        comentarios, observaciones, estado, puntuacion, fecha_registro
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        nombre_completo=VALUES(nombre_completo), telefono=VALUES(telefono),
+                        ciudad=VALUES(ciudad), grado_academico=VALUES(grado_academico),
+                        cv_url=VALUES(cv_url), linkedin=VALUES(linkedin), portfolio=VALUES(portfolio),
+                        skills=VALUES(skills), experiencia=VALUES(experiencia), disponibilidad=VALUES(disponibilidad),
+                        disponibilidad_rotativos=VALUES(disponibilidad_rotativos), transporte_propio=VALUES(transporte_propio),
+                        comentarios=VALUES(comentarios), observaciones=VALUES(observaciones),
+                        ultima_actualizacion=CURRENT_TIMESTAMP
+                """
+                params = (
+                    tenant_id, row.get('nombre_completo'), row.get('email'), telefono, ciudad, identidad,
+                    grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
+                    disponibilidad, disponibilidad_rotativos, transporte_propio,
+                    comentarios, observaciones
+                )
+                cursor.execute(sql, params)
+                processed_count += 1
         
         # ✨ LÓGICA PARA CLIENTES AÑADIDA AQUÍ ✨
         elif data_type == 'clientes':
@@ -13074,6 +13121,838 @@ def bulk_upload_cvs_to_oci():
     except Exception as e:
         app.logger.error(f"Error en bulk_upload_cvs_to_oci: {str(e)}")
         return jsonify({'error': 'Error al procesar carga masiva'}), 500
+
+# ==================== SISTEMA DE IMPORTACIÓN/EXPORTACIÓN EXCEL PARA CANDIDATOS ====================
+
+@app.route('/api/candidates/excel/template', methods=['GET'])
+@token_required
+def download_candidates_excel_template():
+    """
+    Descarga la plantilla de Excel para importar candidatos
+    Incluye ejemplos y validaciones
+    """
+    try:
+        # Crear DataFrame con plantilla y ejemplos
+        template_data = {
+            'nombre_completo': ['Juan Pérez García', 'María López Rodríguez', 'Carlos Ruiz Martín'],
+            'email': ['juan.perez@email.com', 'maria.lopez@email.com', 'carlos.ruiz@email.com'],
+            'telefono': ['+52 55 1234 5678', '+52 33 9876 5432', '+52 81 5555 1234'],
+            'ciudad': ['Ciudad de México', 'Guadalajara', 'Monterrey'],
+            'identidad': ['RFC123456789', 'RFC987654321', 'RFC555666777'],
+            'grado_academico': ['Licenciatura en Informática', 'Ingeniería en Sistemas', 'Técnico Superior'],
+            'cv_url': [
+                'https://drive.google.com/file/d/ejemplo1/view',
+                'https://dropbox.com/s/ejemplo2/cv.pdf',
+                'https://onedrive.live.com/ejemplo3'
+            ],
+            'linkedin': [
+                'https://linkedin.com/in/juanperez',
+                'https://linkedin.com/in/marialopez',
+                'https://linkedin.com/in/carlosruiz'
+            ],
+            'portfolio': [
+                'https://juanperez.dev',
+                'https://marialopez.com',
+                'https://carlosruiz.portfolio.com'
+            ],
+            'skills': [
+                'Python, JavaScript, React, SQL',
+                'Java, Spring Boot, Docker, AWS',
+                'PHP, Laravel, MySQL, Git'
+            ],
+            'experiencia': [
+                '3 años desarrollando aplicaciones web con React y Node.js',
+                '5 años en desarrollo backend con Java y microservicios',
+                '2 años en desarrollo full-stack con PHP y Laravel'
+            ],
+            'disponibilidad': ['Disponible', 'Disponible', 'Trabajando'],
+            'disponibilidad_rotativos': ['Sí', 'No', 'Sí'],
+            'transporte_propio': ['Sí', 'No', 'Sí'],
+            'comentarios': [
+                'Interesado en proyectos de fintech',
+                'Especialista en arquitecturas cloud',
+                'Experiencia en e-commerce'
+            ],
+            'observaciones': [
+                'Disponible para viajar',
+                'Prefiere trabajo remoto',
+                'Interesado en startups'
+            ]
+        }
+        
+        # Crear DataFrame
+        df = pd.DataFrame(template_data)
+        
+        # Crear archivo Excel en memoria
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Hoja principal con datos de ejemplo
+            df.to_excel(writer, sheet_name='Candidatos', index=False)
+            
+            # Hoja con instrucciones
+            instructions = pd.DataFrame({
+                'Campo': [
+                    'nombre_completo',
+                    'email', 
+                    'telefono',
+                    'ciudad',
+                    'identidad',
+                    'grado_academico',
+                    'cv_url',
+                    'linkedin',
+                    'portfolio',
+                    'skills',
+                    'experiencia',
+                    'disponibilidad',
+                    'disponibilidad_rotativos',
+                    'transporte_propio',
+                    'comentarios',
+                    'observaciones'
+                ],
+                'Descripción': [
+                    'Nombre completo del candidato (OBLIGATORIO)',
+                    'Correo electrónico del candidato (OBLIGATORIO)',
+                    'Número de teléfono (opcional)',
+                    'Ciudad de residencia (opcional)',
+                    'Número de identidad o RFC (opcional)',
+                    'Nivel educativo alcanzado (opcional)',
+                    'URL del CV (puede ser Google Drive, Dropbox, etc.)',
+                    'Perfil de LinkedIn (opcional)',
+                    'URL del portfolio (opcional)',
+                    'Habilidades separadas por comas (opcional)',
+                    'Descripción de la experiencia laboral (opcional)',
+                    'Disponibilidad: Disponible, No disponible, Trabajando',
+                    'Disponibilidad para turnos rotativos: Sí, No',
+                    'Cuenta con transporte propio: Sí, No',
+                    'Comentarios adicionales (opcional)',
+                    'Observaciones internas (opcional)'
+                ],
+                'Obligatorio': [
+                    'Sí',
+                    'Sí',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
+                    'No'
+                ]
+            })
+            instructions.to_excel(writer, sheet_name='Instrucciones', index=False)
+        
+        output.seek(0)
+        
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name='plantilla_candidatos.xlsx',
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        
+    except Exception as e:
+        app.logger.error(f"Error generando plantilla Excel: {str(e)}")
+        return jsonify({'error': 'Error generando plantilla'}), 500
+
+@app.route('/api/candidates/excel/import', methods=['POST'])
+@token_required
+def import_candidates_from_excel():
+    """
+    Importa candidatos masivamente desde archivo Excel
+    Maneja validaciones, duplicados y errores
+    """
+    if 'file' not in request.files:
+        return jsonify({"success": False, "error": "No se encontró ningún archivo."}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"success": False, "error": "No se seleccionó ningún archivo."}), 400
+    
+    if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+        return jsonify({"success": False, "error": "Formato de archivo no válido. Use .xlsx o .xls"}), 400
+
+    try:
+        # Obtener datos del usuario y tenant
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # Leer archivo Excel
+        df = pd.read_excel(file, engine='openpyxl')
+        
+        # Limpiar datos (reemplazar NaN con None)
+        df = df.astype(object).where(df.notna(), None)
+        
+        # Validar columnas mínimas requeridas
+        required_columns = ['nombre_completo', 'email']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            return jsonify({
+                "success": False, 
+                "error": f"Faltan columnas obligatorias: {', '.join(missing_columns)}"
+            }), 400
+        
+        # Conectar a la base de datos
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"success": False, "error": "Error de conexión a la BD."}), 500
+        
+        cursor = conn.cursor()
+        
+        # Estadísticas de procesamiento
+        stats = {
+            'total_rows': len(df),
+            'processed': 0,
+            'created': 0,
+            'updated': 0,
+            'errors': 0,
+            'skipped': 0
+        }
+        
+        errors = []
+        results = []
+        
+        # Procesar cada fila
+        for index, row in df.iterrows():
+            try:
+                # Validar datos mínimos
+                nombre = str(row.get('nombre_completo', '')).strip()
+                email = str(row.get('email', '')).strip()
+                
+                if not nombre or not email:
+                    errors.append({
+                        'row': index + 2,  # +2 porque Excel empieza en 1 y tiene header
+                        'error': 'Nombre completo y email son obligatorios'
+                    })
+                    stats['errors'] += 1
+                    continue
+                
+                # Validar formato de email
+                import re
+                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                if not re.match(email_pattern, email):
+                    errors.append({
+                        'row': index + 2,
+                        'error': 'Formato de email inválido'
+                    })
+                    stats['errors'] += 1
+                    continue
+                
+                # Procesar campos opcionales
+                telefono = str(row.get('telefono', '')).strip() if row.get('telefono') else None
+                ciudad = str(row.get('ciudad', '')).strip() if row.get('ciudad') else None
+                identidad = str(row.get('identidad', '')).strip() if row.get('identidad') else None
+                grado_academico = str(row.get('grado_academico', '')).strip() if row.get('grado_academico') else None
+                cv_url = str(row.get('cv_url', '')).strip() if row.get('cv_url') else None
+                linkedin = str(row.get('linkedin', '')).strip() if row.get('linkedin') else None
+                portfolio = str(row.get('portfolio', '')).strip() if row.get('portfolio') else None
+                skills = str(row.get('skills', '')).strip() if row.get('skills') else None
+                experiencia = str(row.get('experiencia', '')).strip() if row.get('experiencia') else None
+                disponibilidad = str(row.get('disponibilidad', '')).strip() if row.get('disponibilidad') else 'Disponible'
+                comentarios = str(row.get('comentarios', '')).strip() if row.get('comentarios') else None
+                observaciones = str(row.get('observaciones', '')).strip() if row.get('observaciones') else None
+                
+                # Procesar campos booleanos
+                disponibilidad_rotativos = 1 if str(row.get('disponibilidad_rotativos', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
+                transporte_propio = 1 if str(row.get('transporte_propio', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
+                
+                # Verificar si el candidato ya existe (por email, identidad o nombre similar)
+                # Buscar duplicados más inteligentemente
+                duplicate_conditions = []
+                duplicate_params = [tenant_id]
+                
+                # Buscar por email exacto
+                if email:
+                    duplicate_conditions.append("email = %s")
+                    duplicate_params.append(email)
+                
+                # Buscar por identidad exacta
+                if identidad:
+                    duplicate_conditions.append("identidad = %s")
+                    duplicate_params.append(identidad)
+                
+                # Buscar por nombre similar (para detectar variaciones)
+                if nombre:
+                    # Normalizar nombre para búsqueda (remover acentos, convertir a minúsculas)
+                    nombre_normalizado = nombre.lower().strip()
+                    # Buscar nombres que contengan palabras clave del nombre
+                    palabras_nombre = nombre_normalizado.split()
+                    for palabra in palabras_nombre:
+                        if len(palabra) > 3:  # Solo palabras de más de 3 caracteres
+                            duplicate_conditions.append("LOWER(REPLACE(REPLACE(REPLACE(nombre_completo, 'á', 'a'), 'é', 'e'), 'í', 'i')) LIKE %s")
+                            duplicate_params.append(f"%{palabra}%")
+                
+                if duplicate_conditions:
+                    query = f"""
+                        SELECT id_afiliado, nombre_completo, email, identidad 
+                        FROM Afiliados 
+                        WHERE tenant_id = %s AND ({' OR '.join(duplicate_conditions)})
+                    """
+                    cursor.execute(query, duplicate_params)
+                    existing = cursor.fetchone()
+                else:
+                    existing = None
+                
+                if existing:
+                    # Actualizar candidato existente
+                    cursor.execute("""
+                        UPDATE Afiliados SET
+                            nombre_completo = %s,
+                            telefono = %s,
+                            ciudad = %s,
+                            grado_academico = %s,
+                            cv_url = %s,
+                            linkedin = %s,
+                            portfolio = %s,
+                            skills = %s,
+                            experiencia = %s,
+                            disponibilidad = %s,
+                            disponibilidad_rotativos = %s,
+                            transporte_propio = %s,
+                            comentarios = %s,
+                            observaciones = %s,
+                            ultima_actualizacion = CURRENT_TIMESTAMP
+                        WHERE id_afiliado = %s
+                    """, (
+                        nombre, telefono, ciudad, grado_academico, cv_url,
+                        linkedin, portfolio, skills, experiencia, disponibilidad,
+                        disponibilidad_rotativos, transporte_propio, comentarios,
+                        observaciones, existing[0]
+                    ))
+                    stats['updated'] += 1
+                    results.append({
+                        'row': index + 2,
+                        'action': 'updated',
+                        'candidate': nombre,
+                        'email': email
+                    })
+                else:
+                    # Crear nuevo candidato
+                    cursor.execute("""
+                        INSERT INTO Afiliados (
+                            tenant_id, nombre_completo, email, telefono, ciudad, identidad,
+                            grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
+                            disponibilidad, disponibilidad_rotativos, transporte_propio,
+                            comentarios, observaciones, estado, puntuacion, fecha_registro,
+                            created_by_user_id
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP, %s
+                        )
+                    """, (
+                        tenant_id, nombre, email, telefono, ciudad, identidad,
+                        grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
+                        disponibilidad, disponibilidad_rotativos, transporte_propio,
+                        comentarios, observaciones, user_id
+                    ))
+                    stats['created'] += 1
+                    results.append({
+                        'row': index + 2,
+                        'action': 'created',
+                        'candidate': nombre,
+                        'email': email
+                    })
+                
+                stats['processed'] += 1
+                
+            except Exception as row_error:
+                app.logger.error(f"Error procesando fila {index + 2}: {str(row_error)}")
+                errors.append({
+                    'row': index + 2,
+                    'error': f'Error interno: {str(row_error)}'
+                })
+                stats['errors'] += 1
+        
+        # Confirmar transacción
+        conn.commit()
+        
+        # Preparar respuesta
+        response_data = {
+            'success': True,
+            'message': f'Importación completada: {stats["processed"]} registros procesados',
+            'stats': stats,
+            'results': results[:50],  # Limitar resultados para evitar respuestas muy grandes
+            'errors': errors[:50],    # Limitar errores para evitar respuestas muy grandes
+            'has_more_results': len(results) > 50,
+            'has_more_errors': len(errors) > 50
+        }
+        
+        app.logger.info(f"Importación Excel completada: {stats}")
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        app.logger.error(f"Error en importación Excel: {str(e)}")
+        return jsonify({'error': f'Error procesando archivo: {str(e)}'}), 500
+    
+    finally:
+        if 'conn' in locals():
+            cursor.close()
+            conn.close()
+
+@app.route('/api/candidates/excel/export', methods=['GET'])
+@token_required
+def export_candidates_to_excel():
+    """
+    Exporta candidatos a archivo Excel
+    Incluye filtros y paginación
+    """
+    try:
+        # Obtener parámetros de consulta
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        # Filtros opcionales
+        city_filter = request.args.get('city')
+        status_filter = request.args.get('status')
+        availability_filter = request.args.get('availability')
+        date_from = request.args.get('date_from')
+        date_to = request.args.get('date_to')
+        
+        # Construir consulta con filtros
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"error": "Error de conexión"}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Consulta base
+        query = """
+            SELECT 
+                id_afiliado,
+                nombre_completo,
+                email,
+                telefono,
+                ciudad,
+                identidad,
+                grado_academico,
+                cv_url,
+                linkedin,
+                portfolio,
+                skills,
+                experiencia,
+                disponibilidad,
+                disponibilidad_rotativos,
+                transporte_propio,
+                comentarios,
+                observaciones,
+                estado,
+                puntuacion,
+                fecha_registro,
+                ultima_actualizacion
+            FROM Afiliados 
+            WHERE tenant_id = %s
+        """
+        params = [tenant_id]
+        
+        # Aplicar filtros
+        if city_filter:
+            query += " AND ciudad LIKE %s"
+            params.append(f"%{city_filter}%")
+        
+        if status_filter:
+            query += " AND estado = %s"
+            params.append(status_filter)
+        
+        if availability_filter:
+            query += " AND disponibilidad = %s"
+            params.append(availability_filter)
+        
+        if date_from:
+            query += " AND DATE(fecha_registro) >= %s"
+            params.append(date_from)
+        
+        if date_to:
+            query += " AND DATE(fecha_registro) <= %s"
+            params.append(date_to)
+        
+        query += " ORDER BY fecha_registro DESC"
+        
+        # Ejecutar consulta
+        cursor.execute(query, params)
+        candidates = cursor.fetchall()
+        
+        if not candidates:
+            return jsonify({'error': 'No se encontraron candidatos para exportar'}), 404
+        
+        # Preparar datos para Excel
+        export_data = []
+        for candidate in candidates:
+            export_data.append({
+                'ID': candidate['id_afiliado'],
+                'Nombre Completo': candidate['nombre_completo'],
+                'Email': candidate['email'],
+                'Teléfono': candidate['telefono'] or '',
+                'Ciudad': candidate['ciudad'] or '',
+                'Identidad': candidate['identidad'] or '',
+                'Grado Académico': candidate['grado_academico'] or '',
+                'CV URL': candidate['cv_url'] or '',
+                'LinkedIn': candidate['linkedin'] or '',
+                'Portfolio': candidate['portfolio'] or '',
+                'Skills': candidate['skills'] or '',
+                'Experiencia': candidate['experiencia'] or '',
+                'Disponibilidad': candidate['disponibilidad'] or '',
+                'Turnos Rotativos': 'Sí' if candidate['disponibilidad_rotativos'] else 'No',
+                'Transporte Propio': 'Sí' if candidate['transporte_propio'] else 'No',
+                'Comentarios': candidate['comentarios'] or '',
+                'Observaciones': candidate['observaciones'] or '',
+                'Estado': candidate['estado'] or '',
+                'Puntuación': candidate['puntuacion'] or 0,
+                'Fecha Registro': candidate['fecha_registro'].strftime('%Y-%m-%d %H:%M:%S') if candidate['fecha_registro'] else '',
+                'Última Actualización': candidate['ultima_actualizacion'].strftime('%Y-%m-%d %H:%M:%S') if candidate['ultima_actualizacion'] else ''
+            })
+        
+        # Crear DataFrame
+        df = pd.DataFrame(export_data)
+        
+        # Crear archivo Excel en memoria
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Hoja principal con datos
+            df.to_excel(writer, sheet_name='Candidatos', index=False)
+            
+            # Hoja con estadísticas
+            stats_data = {
+                'Métrica': [
+                    'Total de Candidatos',
+                    'Fecha de Exportación',
+                    'Filtros Aplicados',
+                    'Ciudad',
+                    'Estado',
+                    'Disponibilidad',
+                    'Fecha Desde',
+                    'Fecha Hasta'
+                ],
+                'Valor': [
+                    len(candidates),
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'Sí' if any([city_filter, status_filter, availability_filter, date_from, date_to]) else 'No',
+                    city_filter or 'Todos',
+                    status_filter or 'Todos',
+                    availability_filter or 'Todos',
+                    date_from or 'Sin filtro',
+                    date_to or 'Sin filtro'
+                ]
+            }
+            stats_df = pd.DataFrame(stats_data)
+            stats_df.to_excel(writer, sheet_name='Estadísticas', index=False)
+        
+        output.seek(0)
+        
+        # Generar nombre de archivo con timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'candidatos_export_{timestamp}.xlsx'
+        
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        
+    except Exception as e:
+        app.logger.error(f"Error exportando candidatos a Excel: {str(e)}")
+        return jsonify({'error': f'Error generando archivo Excel: {str(e)}'}), 500
+    
+    finally:
+        if 'conn' in locals():
+            cursor.close()
+            conn.close()
+
+@app.route('/api/candidates/excel/stats', methods=['GET'])
+@token_required
+def get_candidates_import_stats():
+    """
+    Obtiene estadísticas de importación masiva de candidatos
+    Útil para monitorear el rendimiento del sistema
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"error": "Error de conexión"}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Estadísticas generales
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_candidates,
+                COUNT(CASE WHEN fecha_registro >= DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 END) as candidates_last_week,
+                COUNT(CASE WHEN fecha_registro >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN 1 END) as candidates_last_month,
+                COUNT(CASE WHEN cv_url IS NOT NULL AND cv_url != '' THEN 1 END) as candidates_with_cv,
+                COUNT(CASE WHEN linkedin IS NOT NULL AND linkedin != '' THEN 1 END) as candidates_with_linkedin,
+                COUNT(CASE WHEN skills IS NOT NULL AND skills != '' THEN 1 END) as candidates_with_skills,
+                AVG(puntuacion) as average_score,
+                COUNT(CASE WHEN estado = 'active' THEN 1 END) as active_candidates,
+                COUNT(CASE WHEN estado = 'hired' THEN 1 END) as hired_candidates,
+                COUNT(CASE WHEN disponibilidad = 'Disponible' THEN 1 END) as available_candidates
+            FROM Afiliados 
+            WHERE tenant_id = %s
+        """, (tenant_id,))
+        
+        general_stats = cursor.fetchone()
+        
+        # Estadísticas por ciudad
+        cursor.execute("""
+            SELECT 
+                ciudad,
+                COUNT(*) as count,
+                AVG(puntuacion) as avg_score
+            FROM Afiliados 
+            WHERE tenant_id = %s AND ciudad IS NOT NULL AND ciudad != ''
+            GROUP BY ciudad
+            ORDER BY count DESC
+            LIMIT 10
+        """, (tenant_id,))
+        
+        city_stats = cursor.fetchall()
+        
+        # Estadísticas por disponibilidad
+        cursor.execute("""
+            SELECT 
+                disponibilidad,
+                COUNT(*) as count
+            FROM Afiliados 
+            WHERE tenant_id = %s
+            GROUP BY disponibilidad
+        """, (tenant_id,))
+        
+        availability_stats = cursor.fetchall()
+        
+        # Estadísticas por estado
+        cursor.execute("""
+            SELECT 
+                estado,
+                COUNT(*) as count
+            FROM Afiliados 
+            WHERE tenant_id = %s
+            GROUP BY estado
+        """, (tenant_id,))
+        
+        status_stats = cursor.fetchall()
+        
+        response_data = {
+            'success': True,
+            'general_stats': general_stats,
+            'city_stats': city_stats,
+            'availability_stats': availability_stats,
+            'status_stats': status_stats,
+            'last_updated': datetime.now().isoformat()
+        }
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo estadísticas de candidatos: {str(e)}")
+        return jsonify({'error': f'Error obteniendo estadísticas: {str(e)}'}), 500
+    
+    finally:
+        if 'conn' in locals():
+            cursor.close()
+            conn.close()
+
+@app.route('/api/candidates/excel/validate', methods=['POST'])
+@token_required
+def validate_candidates_excel():
+    """
+    Valida un archivo Excel de candidatos sin importarlo
+    Útil para verificar errores antes de la importación
+    """
+    if 'file' not in request.files:
+        return jsonify({"success": False, "error": "No se encontró ningún archivo."}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"success": False, "error": "No se seleccionó ningún archivo."}), 400
+    
+    if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+        return jsonify({"success": False, "error": "Formato de archivo no válido. Use .xlsx o .xls"}), 400
+
+    try:
+        # Leer archivo Excel
+        df = pd.read_excel(file, engine='openpyxl')
+        
+        # Limpiar datos
+        df = df.astype(object).where(df.notna(), None)
+        
+        validation_results = {
+            'total_rows': len(df),
+            'valid_rows': 0,
+            'invalid_rows': 0,
+            'errors': [],
+            'warnings': [],
+            'column_analysis': {},
+            'duplicate_emails': [],
+            'duplicate_identities': []
+        }
+        
+        # Analizar columnas
+        required_columns = ['nombre_completo', 'email']
+        optional_columns = [
+            'telefono', 'ciudad', 'identidad', 'grado_academico', 'cv_url',
+            'linkedin', 'portfolio', 'skills', 'experiencia', 'disponibilidad',
+            'disponibilidad_rotativos', 'transporte_propio', 'comentarios', 'observaciones'
+        ]
+        
+        for col in required_columns + optional_columns:
+            if col in df.columns:
+                non_null_count = df[col].notna().sum()
+                validation_results['column_analysis'][col] = {
+                    'present': True,
+                    'non_null_count': int(non_null_count),
+                    'null_count': int(len(df) - non_null_count),
+                    'required': col in required_columns
+                }
+            else:
+                validation_results['column_analysis'][col] = {
+                    'present': False,
+                    'non_null_count': 0,
+                    'null_count': len(df),
+                    'required': col in required_columns
+                }
+        
+        # Verificar columnas faltantes
+        missing_required = [col for col in required_columns if col not in df.columns]
+        if missing_required:
+            validation_results['errors'].append({
+                'type': 'missing_columns',
+                'message': f'Faltan columnas obligatorias: {", ".join(missing_required)}'
+            })
+            return jsonify({
+                'success': False,
+                'validation_results': validation_results
+            }), 400
+        
+        # Validar cada fila
+        emails = set()
+        identities = set()
+        
+        for index, row in df.iterrows():
+            row_errors = []
+            row_warnings = []
+            
+            # Validar campos obligatorios
+            nombre = str(row.get('nombre_completo', '')).strip()
+            email = str(row.get('email', '')).strip()
+            
+            if not nombre:
+                row_errors.append('Nombre completo es obligatorio')
+            
+            if not email:
+                row_errors.append('Email es obligatorio')
+            else:
+                # Validar formato de email
+                import re
+                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                if not re.match(email_pattern, email):
+                    row_errors.append('Formato de email inválido')
+                
+                # Verificar duplicados
+                if email in emails:
+                    row_warnings.append('Email duplicado en el archivo')
+                else:
+                    emails.add(email)
+            
+            # Validar identidad si está presente
+            identidad = str(row.get('identidad', '')).strip() if row.get('identidad') else None
+            if identidad:
+                if identidad in identities:
+                    row_warnings.append('Identidad duplicada en el archivo')
+                else:
+                    identities.add(identidad)
+            
+            # Validar disponibilidad
+            disponibilidad = str(row.get('disponibilidad', '')).strip() if row.get('disponibilidad') else None
+            if disponibilidad and disponibilidad not in ['Disponible', 'No disponible', 'Trabajando']:
+                row_warnings.append(f'Valor de disponibilidad inválido: {disponibilidad}')
+            
+            # Validar URLs si están presentes
+            cv_url = str(row.get('cv_url', '')).strip() if row.get('cv_url') else None
+            if cv_url and not cv_url.startswith(('http://', 'https://')):
+                row_warnings.append('CV URL no parece ser una URL válida')
+            
+            linkedin = str(row.get('linkedin', '')).strip() if row.get('linkedin') else None
+            if linkedin and not linkedin.startswith(('http://', 'https://')):
+                row_warnings.append('LinkedIn URL no parece ser una URL válida')
+            
+            portfolio = str(row.get('portfolio', '')).strip() if row.get('portfolio') else None
+            if portfolio and not portfolio.startswith(('http://', 'https://')):
+                row_warnings.append('Portfolio URL no parece ser una URL válida')
+            
+            if row_errors:
+                validation_results['errors'].extend([{
+                    'row': index + 2,
+                    'errors': row_errors
+                }])
+                validation_results['invalid_rows'] += 1
+            else:
+                validation_results['valid_rows'] += 1
+            
+            if row_warnings:
+                validation_results['warnings'].extend([{
+                    'row': index + 2,
+                    'warnings': row_warnings
+                }])
+        
+        # Verificar duplicados con base de datos
+        if emails or identities:
+            tenant_id = get_current_tenant_id()
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                
+                if emails:
+                    email_placeholders = ','.join(['%s'] * len(emails))
+                    cursor.execute(f"""
+                        SELECT email FROM Afiliados 
+                        WHERE tenant_id = %s AND email IN ({email_placeholders})
+                    """, [tenant_id] + list(emails))
+                    existing_emails = [row[0] for row in cursor.fetchall()]
+                    if existing_emails:
+                        validation_results['duplicate_emails'] = existing_emails
+                        validation_results['warnings'].append({
+                            'type': 'existing_emails',
+                            'message': f'{len(existing_emails)} emails ya existen en la base de datos',
+                            'emails': existing_emails[:10]  # Limitar para evitar respuestas muy grandes
+                        })
+                
+                if identities:
+                    identity_placeholders = ','.join(['%s'] * len(identities))
+                    cursor.execute(f"""
+                        SELECT identidad FROM Afiliados 
+                        WHERE tenant_id = %s AND identidad IN ({identity_placeholders})
+                    """, [tenant_id] + list(identities))
+                    existing_identities = [row[0] for row in cursor.fetchall()]
+                    if existing_identities:
+                        validation_results['duplicate_identities'] = existing_identities
+                        validation_results['warnings'].append({
+                            'type': 'existing_identities',
+                            'message': f'{len(existing_identities)} identidades ya existen en la base de datos',
+                            'identities': existing_identities[:10]  # Limitar para evitar respuestas muy grandes
+                        })
+                
+                cursor.close()
+                conn.close()
+        
+        return jsonify({
+            'success': True,
+            'validation_results': validation_results
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error validando archivo Excel: {str(e)}")
+        return jsonify({'error': f'Error validando archivo: {str(e)}'}), 500
 
 def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
     """
