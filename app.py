@@ -3211,7 +3211,7 @@ def download_template():
             'Cuentenos sus areas de experiencia. Necesitamos una descripción detallada de su experiencia laboral. Esta información es clave para realizar una búsqueda efectiva y presentarle a las vacantes más adecuadas',
             'Ciudad', '¿cuenta usted con disponibilidad de trabajar turnos rotativos?', '¿Cuenta con transporte propio ?',
             '¿Cual es su grado academico ?', 'Dejenos Su Cv(Enlace a Google Drive)',
-            'Foto revés y derecho de su tarjeta de identidad:(enlace Google Drive )', 'Estado', 'Observaciones'
+            'Foto revés y derecho de su tarjeta de identidad:(enlace Google Drive )', 'estado', 'Observaciones'
         ],
         'clientes': ['empresa', 'contacto_nombre', 'telefono', 'email', 'sector', 'observaciones'],
         'vacantes': ['id_cliente (ID numérico del cliente)', 'cargo_solicitado', 'ciudad', 'requisitos', 'salario', 'estado'],
@@ -3273,7 +3273,7 @@ def upload_excel():
                 portfolio = row.get('portfolio') if row.get('portfolio') else None
                 skills = row.get('skills') if row.get('skills') else None
                 experiencia = row.get('experiencia') if row.get('experiencia') else None
-                disponibilidad = row.get('disponibilidad') if row.get('disponibilidad') else 'Disponible'
+                estado = row.get('estado') if row.get('estado') else 'Activo'
                 comentarios = row.get('comentarios') if row.get('comentarios') else None
                 observaciones = row.get('observaciones') if row.get('observaciones') else None
                 
@@ -3285,16 +3285,16 @@ def upload_excel():
                     INSERT INTO Afiliados (
                         tenant_id, nombre_completo, email, telefono, ciudad, identidad,
                         grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                        disponibilidad, disponibilidad_rotativos, transporte_propio,
-                        comentarios, observaciones, estado, puntuacion, fecha_registro
+                        estado, disponibilidad_rotativos, transporte_propio,
+                        comentarios, observaciones, puntuacion, fecha_registro
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, CURRENT_TIMESTAMP
                     )
                     ON DUPLICATE KEY UPDATE
                         nombre_completo=VALUES(nombre_completo), telefono=VALUES(telefono),
                         ciudad=VALUES(ciudad), grado_academico=VALUES(grado_academico),
                         cv_url=VALUES(cv_url), linkedin=VALUES(linkedin), portfolio=VALUES(portfolio),
-                        skills=VALUES(skills), experiencia=VALUES(experiencia), disponibilidad=VALUES(disponibilidad),
+                        skills=VALUES(skills), experiencia=VALUES(experiencia), estado=VALUES(estado),
                         disponibilidad_rotativos=VALUES(disponibilidad_rotativos), transporte_propio=VALUES(transporte_propio),
                         comentarios=VALUES(comentarios), observaciones=VALUES(observaciones),
                         ultima_actualizacion=CURRENT_TIMESTAMP
@@ -3302,7 +3302,7 @@ def upload_excel():
                 params = (
                     tenant_id, row.get('nombre_completo'), row.get('email'), telefono, ciudad, identidad,
                     grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                    disponibilidad, disponibilidad_rotativos, transporte_propio,
+                    estado, disponibilidad_rotativos, transporte_propio,
                     comentarios, observaciones
                 )
                 cursor.execute(sql, params)
