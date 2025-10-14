@@ -3237,7 +3237,7 @@ def download_template():
 
 @app.route('/api/upload-excel', methods=['POST'])
 @token_required
-def upload_excel():
+ 
     if 'file' not in request.files:
         return jsonify({"success": False, "error": "No se encontró ningún archivo."}), 400
     
@@ -3351,7 +3351,7 @@ def upload_excel():
                     portfolio = safe_get('portfolio')
                     skills = safe_get('skills')
                     experiencia = safe_get('experiencia')
-                    disponibilidad = safe_get('disponibilidad', 'Disponible')
+                    estado = safe_get('estado', 'Activo')  # Cambiado de 'disponibilidad' a 'estado'
                     comentarios = safe_get('comentarios')
                     observaciones = safe_get('observaciones')
                     
@@ -3373,10 +3373,10 @@ def upload_excel():
                         INSERT INTO Afiliados (
                             tenant_id, nombre_completo, email, telefono, ciudad, identidad,
                             grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                            disponibilidad, disponibilidad_rotativos, transporte_propio,
-                            comentarios, observaciones, estado, puntuacion, fecha_registro
+                            estado, disponibilidad_rotativos, transporte_propio,
+                            comentarios, observaciones, puntuacion, fecha_registro
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, CURRENT_TIMESTAMP
                         )
                         ON DUPLICATE KEY UPDATE
                             nombre_completo=VALUES(nombre_completo), 
@@ -3388,7 +3388,7 @@ def upload_excel():
                             portfolio=VALUES(portfolio),
                             skills=VALUES(skills), 
                             experiencia=VALUES(experiencia), 
-                            disponibilidad=VALUES(disponibilidad),
+                            estado=VALUES(estado),
                             disponibilidad_rotativos=VALUES(disponibilidad_rotativos), 
                             transporte_propio=VALUES(transporte_propio),
                             comentarios=VALUES(comentarios), 
@@ -3399,7 +3399,7 @@ def upload_excel():
                     params = (
                         tenant_id, nombre, email, telefono, ciudad, identidad,
                         grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                        disponibilidad, disponibilidad_rotativos, transporte_propio,
+                        estado, disponibilidad_rotativos, transporte_propio,
                         comentarios, observaciones
                     )
                     
