@@ -13947,6 +13947,7 @@ def import_candidates_from_excel():
         if conn:
             conn.close()
 
+            
 @app.route('/api/candidates/excel/export', methods=['GET'])
 @token_required
 def export_candidates_to_excel():
