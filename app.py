@@ -13839,16 +13839,29 @@ def import_candidates_from_excel():
                             duplicate_conditions.append("LOWER(REPLACE(REPLACE(REPLACE(nombre_completo, 'á', 'a'), 'é', 'e'), 'í', 'i')) LIKE %s")
                             duplicate_params.append(f"%{palabra}%")
                 
+                existing = None
                 if duplicate_conditions:
+                    # Consumir cualquier resultado pendiente primero
+                    try:
+                        cursor.fetchall()
+                    except:
+                        pass
+                        
+                    # Construir y ejecutar la consulta de duplicados
                     query = f"""
                         SELECT id_afiliado, nombre_completo, email, identidad 
                         FROM Afiliados 
-                        WHERE tenant_id = %s AND ({' OR '.join(duplicate_conditions)})
+                        WHERE tenant_id = %s AND ({" OR ".join(duplicate_conditions)})
+                        LIMIT 1  # Solo necesitamos un resultado
                     """
-                    cursor.execute(query, duplicate_params)
-                    existing = cursor.fetchone()
-                else:
-                    existing = None
+                    try:
+                        cursor.execute(query, duplicate_params)
+                        existing = cursor.fetchone()
+                        # Asegurarse de consumir cualquier resultado adicional
+                        cursor.fetchall()
+                    except Exception as e:
+                        app.logger.error(f"Error buscando duplicados: {str(e)}")
+                        existing = None
                 
                 if existing:
                     # Actualizar candidato existente
