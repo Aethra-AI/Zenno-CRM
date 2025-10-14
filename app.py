@@ -13573,19 +13573,33 @@ def download_candidates_excel_template():
     Incluye ejemplos y validaciones
     """
     try:
-        # Crear DataFrame con plantilla y ejemplos
+        # Crear DataFrame con plantilla y ejemplos que coincidan con la tabla Afiliados
         template_data = {
             'nombre_completo': ['Juan Pérez García', 'María López Rodríguez', 'Carlos Ruiz Martín'],
-            'email': ['juan.perez@email.com', 'maria.lopez@email.com', 'carlos.ruiz@email.com'],
-            'telefono': ['+52 55 1234 5678', '+52 33 9876 5432', '+52 81 5555 1234'],
-            'ciudad': ['Ciudad de México', 'Guadalajara', 'Monterrey'],
             'identidad': ['RFC123456789', 'RFC987654321', 'RFC555666777'],
+            'telefono': ['+52 55 1234 5678', '+52 33 9876 5432', '+52 81 5555 1234'],
+            'email': ['juan.perez@email.com', 'maria.lopez@email.com', 'carlos.ruiz@email.com'],
+            'experiencia': [
+                '3 años desarrollando aplicaciones web con React y Node.js',
+                '5 años en desarrollo backend con Java y microservicios',
+                '2 años en desarrollo full-stack con PHP y Laravel'
+            ],
+            'ciudad': ['Ciudad de México', 'Guadalajara', 'Monterrey'],
             'grado_academico': ['Licenciatura en Informática', 'Ingeniería en Sistemas', 'Técnico Superior'],
             'cv_url': [
                 'https://drive.google.com/file/d/ejemplo1/view',
                 'https://dropbox.com/s/ejemplo2/cv.pdf',
                 'https://onedrive.live.com/ejemplo3'
             ],
+            'observaciones': [
+                'Disponible para viajar',
+                'Prefiere trabajo remoto',
+                'Interesado en startups'
+            ],
+            'disponibilidad_rotativos': [1, 0, 1],  # 1 para Sí, 0 para No
+            'transporte_propio': [1, 0, 1],  # 1 para Sí, 0 para No
+            'estado': ['Activo', 'Activo', 'Activo'],  # Usando 'estado' en lugar de 'disponibilidad'
+            'puntuacion': [4.5, 4.8, 3.9],  # Puntuación numérica
             'linkedin': [
                 'https://linkedin.com/in/juanperez',
                 'https://linkedin.com/in/marialopez',
@@ -13601,24 +13615,9 @@ def download_candidates_excel_template():
                 'Java, Spring Boot, Docker, AWS',
                 'PHP, Laravel, MySQL, Git'
             ],
-            'experiencia': [
-                '3 años desarrollando aplicaciones web con React y Node.js',
-                '5 años en desarrollo backend con Java y microservicios',
-                '2 años en desarrollo full-stack con PHP y Laravel'
-            ],
-            'disponibilidad': ['Disponible', 'Disponible', 'Trabajando'],
-            'disponibilidad_rotativos': ['Sí', 'No', 'Sí'],
-            'transporte_propio': ['Sí', 'No', 'Sí'],
-            'comentarios': [
-                'Interesado en proyectos de fintech',
-                'Especialista en arquitecturas cloud',
-                'Experiencia en e-commerce'
-            ],
-            'observaciones': [
-                'Disponible para viajar',
-                'Prefiere trabajo remoto',
-                'Interesado en startups'
-            ]
+            'cargo_solicitado': ['Desarrollador Full Stack', 'Arquitecto de Software', 'Desarrollador Backend'],
+            'fuente_reclutamiento': ['LinkedIn', 'Referido', 'Portal de empleo'],
+            'fecha_nacimiento': ['1990-05-15', '1988-11-22', '1993-03-07']
         }
         
         # Crear DataFrame
@@ -13630,47 +13629,77 @@ def download_candidates_excel_template():
             # Hoja principal con datos de ejemplo
             df.to_excel(writer, sheet_name='Candidatos', index=False)
             
-            # Hoja con instrucciones
+            # Hoja con instrucciones actualizada
             instructions = pd.DataFrame({
                 'Campo': [
                     'nombre_completo',
-                    'email', 
-                    'telefono',
-                    'ciudad',
                     'identidad',
+                    'telefono',
+                    'email',
+                    'experiencia',
+                    'ciudad',
                     'grado_academico',
                     'cv_url',
+                    'observaciones',
+                    'disponibilidad_rotativos',
+                    'transporte_propio',
+                    'estado',
+                    'puntuacion',
                     'linkedin',
                     'portfolio',
                     'skills',
-                    'experiencia',
-                    'disponibilidad',
-                    'disponibilidad_rotativos',
-                    'transporte_propio',
-                    'comentarios',
-                    'observaciones'
+                    'cargo_solicitado',
+                    'fuente_reclutamiento',
+                    'fecha_nacimiento'
                 ],
                 'Descripción': [
                     'Nombre completo del candidato (OBLIGATORIO)',
-                    'Correo electrónico del candidato (OBLIGATORIO)',
-                    'Número de teléfono (opcional)',
-                    'Ciudad de residencia (opcional)',
                     'Número de identidad o RFC (opcional)',
+                    'Número de teléfono (opcional)',
+                    'Correo electrónico (opcional)',
+                    'Descripción de la experiencia laboral (opcional)',
+                    'Ciudad de residencia (opcional)',
                     'Nivel educativo alcanzado (opcional)',
-                    'URL del CV (puede ser Google Drive, Dropbox, etc.)',
+                    'URL del CV (opcional, puede ser Google Drive, Dropbox, etc.)',
+                    'Observaciones internas (opcional)',
+                    'Disponibilidad para turnos rotativos: 1 para Sí, 0 para No (opcional, default: 0)',
+                    'Transporte propio: 1 para Sí, 0 para No (opcional, default: 0)',
+                    'Estado del candidato: Activo, Inactivo, etc. (opcional, default: Activo)',
+                    'Puntuación del candidato (0.0 a 5.0) (opcional)',
                     'Perfil de LinkedIn (opcional)',
                     'URL del portfolio (opcional)',
                     'Habilidades separadas por comas (opcional)',
-                    'Descripción de la experiencia laboral (opcional)',
-                    'Disponibilidad: Disponible, No disponible, Trabajando',
-                    'Disponibilidad para turnos rotativos: Sí, No',
-                    'Cuenta con transporte propio: Sí, No',
-                    'Comentarios adicionales (opcional)',
-                    'Observaciones internas (opcional)'
+                    'Cargo al que postula (opcional)',
+                    'Fuente de reclutamiento (opcional)',
+                    'Fecha de nacimiento en formato YYYY-MM-DD (opcional)'
+                ],
+                'Tipo de Dato': [
+                    'Texto',
+                    'Texto',
+                    'Texto',
+                    'Texto',
+                    'Texto',
+                    'Texto',
+                    'Texto',
+                    'URL',
+                    'Texto',
+                    'Entero (0 o 1)',
+                    'Entero (0 o 1)',
+                    'Texto',
+                    'Decimal (0.0-5.0)',
+                    'URL',
+                    'URL',
+                    'Texto',
+                    'Texto',
+                    'Texto',
+                    'Fecha (YYYY-MM-DD)'
                 ],
                 'Obligatorio': [
                     'Sí',
-                    'Sí',
+                    'No',
+                    'No',
+                    'No',
+                    'No',
                     'No',
                     'No',
                     'No',
