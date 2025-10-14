@@ -5601,7 +5601,7 @@ def get_candidates():
         
         # Obtener parámetros de consulta
         page = int(request.args.get('page', 1))
-        limit = min(int(request.args.get('limit', 100)), 100)  # Máximo 100 por página
+        limit = min(int(request.args.get('limit', 100)), 500)  # Máximo 500 por página
         search = request.args.get('search', '')
         status = request.args.get('status', '')
         sort_order = request.args.get('sort', 'newest')  # newest o oldest
