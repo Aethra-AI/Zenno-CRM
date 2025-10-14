@@ -3248,6 +3248,8 @@ def upload_excel():
     if not file.filename.lower().endswith(('.xlsx', '.xls')):
         return jsonify({"success": False, "error": "Formato de archivo no válido. Solo se permiten archivos .xlsx o .xls"}), 400
 
+    conn = None
+    cursor = None
     try:
         # 1. Leer el archivo con parámetros específicos
         try:
@@ -3300,11 +3302,20 @@ def upload_excel():
         if not conn:
             return jsonify({"success": False, "error": "Error de conexión a la base de datos."}), 500
         
-        cursor = conn.cursor()
+        # Configurar el cursor para no almacenar resultados en memoria
+        cursor = conn.cursor(buffered=True)
+        
+        # Desactivar autocommit para manejar la transacción manualmente
+        conn.autocommit = False
+
         processed_count = 0
         errors = []
+        batch_size = 100  # Procesar en lotes de 100 registros
 
         try:
+            # Iniciar transacción
+            cursor.execute("START TRANSACTION")
+            
             for index, row in df.iterrows():
                 try:
                     # Validar fila vacía
@@ -3354,8 +3365,8 @@ def upload_excel():
                             return value.lower().strip() in ('sí', 'si', 'yes', 'true', '1', 'verdadero')
                         return default
 
-                    disponibilidad_rotativos = parse_bool(row.get('disponibilidad_rotativos'), False)
-                    transporte_propio = parse_bool(row.get('transporte_propio'), False)
+                    disponibilidad_rotativos = 1 if parse_bool(row.get('disponibilidad_rotativos'), False) else 0
+                    transporte_propio = 1 if parse_bool(row.get('transporte_propio'), False) else 0
 
                     # Insertar en la base de datos
                     sql = """
@@ -3395,11 +3406,17 @@ def upload_excel():
                     cursor.execute(sql, params)
                     processed_count += 1
 
+                    # Confirmar cambios cada batch_size registros
+                    if processed_count % batch_size == 0:
+                        conn.commit()
+                        # Iniciar nueva transacción
+                        cursor.execute("START TRANSACTION")
+
                 except Exception as row_error:
                     errors.append(f"Error en fila {index + 2}: {str(row_error)}")
                     continue
 
-            # Confirmar cambios
+            # Confirmar cambios finales
             conn.commit()
             
             # Preparar respuesta
@@ -3418,7 +3435,8 @@ def upload_excel():
             return jsonify(response)
 
         except Exception as e:
-            conn.rollback()
+            if conn:
+                conn.rollback()
             return jsonify({
                 "success": False,
                 "error": f"Error al procesar los datos: {str(e)}",
@@ -3426,16 +3444,26 @@ def upload_excel():
                 "detalle": str(e)
             }), 500
 
-        finally:
-            cursor.close()
-            conn.close()
-
     except Exception as e:
         return jsonify({
             "success": False,
             "error": f"Error inesperado: {str(e)}",
             "tipo_error": type(e).__name__
         }), 500
+
+    finally:
+        # Cerrar cursor y conexión de manera segura
+        try:
+            if cursor:
+                cursor.close()
+        except:
+            pass
+            
+        try:
+            if conn and conn.is_connected():
+                conn.close()
+        except:
+            pass
 
 # ===============================================================
 # SECCIÓN 3: GESTIÓN DE ETIQUETAS Y COMUNICACIONES
