@@ -7011,7 +7011,7 @@ def handle_vacancies():
         if request.method == 'GET':
             estado = request.args.get('estado')
             page = int(request.args.get('page', 1))
-            limit = int(request.args.get('limit', 10))
+            limit = min(int(request.args.get('limit', 100)), 500)  # Máximo 500 por página
             offset = (page - 1) * limit
             
             # 🔐 MÓDULO B6: Filtrar por usuario según rol
