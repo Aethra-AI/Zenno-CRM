@@ -13802,7 +13802,7 @@ def import_candidates_from_excel():
                 portfolio = clean_value(row.get('portfolio', ''))
                 skills = clean_value(row.get('skills', ''))
                 experiencia = clean_value(row.get('experiencia', ''))
-                disponibilidad = clean_value(row.get('disponibilidad', '')) or 'Disponible'
+                estado = clean_value(row.get('estado', '')) or 'Disponible'
                 comentarios = clean_value(row.get('comentarios', ''))
                 observaciones = clean_value(row.get('observaciones', ''))
                 
@@ -13876,7 +13876,7 @@ def import_candidates_from_excel():
                             portfolio = %s,
                             skills = %s,
                             experiencia = %s,
-                            disponibilidad = %s,
+                            estado = %s,
                             disponibilidad_rotativos = %s,
                             transporte_propio = %s,
                             comentarios = %s,
@@ -13885,7 +13885,7 @@ def import_candidates_from_excel():
                         WHERE id_afiliado = %s
                     """, (
                         nombre, telefono, ciudad, grado_academico, cv_url,
-                        linkedin, portfolio, skills, experiencia, disponibilidad,
+                        linkedin, portfolio, skills, experiencia, estado,
                         disponibilidad_rotativos, transporte_propio, comentarios,
                         observaciones, existing[0]
                     ))
