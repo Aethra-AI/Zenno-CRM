@@ -13748,6 +13748,8 @@ def import_candidates_from_excel():
     if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
         return jsonify({"success": False, "error": "Formato de archivo no válido. Use .xlsx o .xls"}), 400
 
+    conn = None
+    cursor = None
     try:
         # Obtener datos del usuario y tenant
         tenant_id = get_current_tenant_id()
@@ -13804,7 +13806,7 @@ def import_candidates_from_excel():
                 
                 if not nombre or not email:
                     errors.append({
-                        'row': index + 2,  # +2 porque Excel empieza en 1 y tiene header
+                        'row': index + 2,
                         'error': 'Nombre completo y email son obligatorios'
                     })
                     stats['errors'] += 1
@@ -13831,126 +13833,86 @@ def import_candidates_from_excel():
                 portfolio = clean_value(row.get('portfolio', ''))
                 skills = clean_value(row.get('skills', ''))
                 experiencia = clean_value(row.get('experiencia', ''))
-                estado = clean_value(row.get('estado', '')) or 'Disponible'
-                comentarios = clean_value(row.get('comentarios', ''))
+                estado = clean_value(row.get('estado', '')) or 'Activo'  # Cambiado de 'Disponible' a 'Activo'
                 observaciones = clean_value(row.get('observaciones', ''))
                 
-                # Procesar campos booleanos con valores más flexibles
-                disponibilidad_rotativos_raw = clean_value(row.get('disponibilidad_rotativos', ''))
-                disponibilidad_rotativos = 1 if disponibilidad_rotativos_raw and disponibilidad_rotativos_raw.lower() in ['sí', 'si', 'yes', 'true', '1', 'verdadero', 'disponible'] else 0
+                # Procesar campos booleanos
+                disponibilidad_rotativos = 1 if clean_value(row.get('disponibilidad_rotativos', '')).lower() in ['sí', 'si', 'yes', 'true', '1', 'verdadero', 'disponible'] else 0
+                transporte_propio = 1 if clean_value(row.get('transporte_propio', '')).lower() in ['sí', 'si', 'yes', 'true', '1', 'verdadero', 'tengo', 'poseo'] else 0
                 
-                transporte_propio_raw = clean_value(row.get('transporte_propio', ''))
-                transporte_propio = 1 if transporte_propio_raw and transporte_propio_raw.lower() in ['sí', 'si', 'yes', 'true', '1', 'verdadero', 'tengo', 'poseo'] else 0
-                
-                # Verificar si el candidato ya existe (por email, identidad o nombre similar)
-                # Buscar duplicados más inteligentemente
-                duplicate_conditions = []
-                duplicate_params = [tenant_id]
-                
-                # Buscar por email exacto
-                if email:
-                    duplicate_conditions.append("email = %s")
-                    duplicate_params.append(email)
-                
-                # Buscar por identidad exacta
-                if identidad:
-                    duplicate_conditions.append("identidad = %s")
-                    duplicate_params.append(identidad)
-                
-                # Buscar por nombre similar (para detectar variaciones)
-                if nombre:
-                    # Normalizar nombre para búsqueda (remover acentos, convertir a minúsculas)
-                    nombre_normalizado = nombre.lower().strip()
-                    # Buscar nombres que contengan palabras clave del nombre
-                    palabras_nombre = nombre_normalizado.split()
-                    for palabra in palabras_nombre:
-                        if len(palabra) > 3:  # Solo palabras de más de 3 caracteres
-                            duplicate_conditions.append("LOWER(REPLACE(REPLACE(REPLACE(nombre_completo, 'á', 'a'), 'é', 'e'), 'í', 'i')) LIKE %s")
-                            duplicate_params.append(f"%{palabra}%")
-                
+                # Verificar si el candidato ya existe (por email o identidad)
                 existing = None
-                if duplicate_conditions:
-                    # Consumir cualquier resultado pendiente primero
-                    try:
-                        cursor.fetchall()
-                    except:
-                        pass
-                        
-                    # Construir y ejecutar la consulta de duplicados
-                    query = f"""
-                        SELECT id_afiliado, nombre_completo, email, identidad 
-                        FROM Afiliados 
-                        WHERE tenant_id = %s AND ({" OR ".join(duplicate_conditions)})
-                        LIMIT 1  # Solo necesitamos un resultado
-                    """
-                    try:
-                        cursor.execute(query, duplicate_params)
-                        existing = cursor.fetchone()
-                        # Asegurarse de consumir cualquier resultado adicional
-                        cursor.fetchall()
-                    except Exception as e:
-                        app.logger.error(f"Error buscando duplicados: {str(e)}")
-                        existing = None
+                query = "SELECT id_afiliado FROM Afiliados WHERE tenant_id = %s AND (email = %s"
+                params = [tenant_id, email]
+                
+                if identidad:
+                    query += " OR identidad = %s"
+                    params.append(identidad)
+                query += ") LIMIT 1"
+                
+                try:
+                    cursor.execute(query, params)
+                    existing = cursor.fetchone()
+                    cursor.fetchall()  # Limpiar resultados pendientes
+                except Exception as e:
+                    app.logger.error(f"Error buscando duplicados: {str(e)}")
+                    existing = None
                 
                 if existing:
                     # Actualizar candidato existente
                     cursor.execute("""
                         UPDATE Afiliados SET
                             nombre_completo = %s,
-                            telefono = %s,
-                            ciudad = %s,
-                            grado_academico = %s,
-                            cv_url = %s,
-                            linkedin = %s,
-                            portfolio = %s,
-                            skills = %s,
-                            experiencia = %s,
-                            estado = %s,
+                            telefono = COALESCE(NULLIF(%s, ''), telefono),
+                            ciudad = COALESCE(NULLIF(%s, ''), ciudad),
+                            identidad = COALESCE(NULLIF(%s, ''), identidad),
+                            grado_academico = COALESCE(NULLIF(%s, ''), grado_academico),
+                            cv_url = COALESCE(NULLIF(%s, ''), cv_url),
+                            linkedin = COALESCE(NULLIF(%s, ''), linkedin),
+                            portfolio = COALESCE(NULLIF(%s, ''), portfolio),
+                            skills = COALESCE(NULLIF(%s, ''), skills),
+                            experiencia = COALESCE(NULLIF(%s, ''), experiencia),
+                            estado = COALESCE(NULLIF(%s, ''), estado),
                             disponibilidad_rotativos = %s,
                             transporte_propio = %s,
-                            comentarios = %s,
-                            observaciones = %s,
+                            observaciones = COALESCE(NULLIF(%s, ''), observaciones),
                             ultima_actualizacion = CURRENT_TIMESTAMP
                         WHERE id_afiliado = %s
                     """, (
-                        nombre, telefono, ciudad, grado_academico, cv_url,
+                        nombre, telefono, ciudad, identidad, grado_academico, cv_url,
                         linkedin, portfolio, skills, experiencia, estado,
-                        disponibilidad_rotativos, transporte_propio, comentarios,
-                        observaciones, existing[0]
+                        disponibilidad_rotativos, transporte_propio, observaciones,
+                        existing[0]
                     ))
+                    action = 'updated'
                     stats['updated'] += 1
-                    results.append({
-                        'row': index + 2,
-                        'action': 'updated',
-                        'candidate': nombre,
-                        'email': email
-                    })
                 else:
                     # Crear nuevo candidato
                     cursor.execute("""
                         INSERT INTO Afiliados (
                             tenant_id, nombre_completo, email, telefono, ciudad, identidad,
                             grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                            disponibilidad, disponibilidad_rotativos, transporte_propio,
-                            comentarios, observaciones, estado, puntuacion, fecha_registro,
-                            created_by_user_id
+                            estado, disponibilidad_rotativos, transporte_propio, observaciones,
+                            fecha_registro, created_by_user_id
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP, %s
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+                            CURRENT_TIMESTAMP, %s
                         )
                     """, (
                         tenant_id, nombre, email, telefono, ciudad, identidad,
                         grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                        disponibilidad, disponibilidad_rotativos, transporte_propio,
-                        comentarios, observaciones, user_id
+                        estado, disponibilidad_rotativos, transporte_propio, observaciones,
+                        user_id
                     ))
+                    action = 'created'
                     stats['created'] += 1
-                    results.append({
-                        'row': index + 2,
-                        'action': 'created',
-                        'candidate': nombre,
-                        'email': email
-                    })
                 
+                results.append({
+                    'row': index + 2,
+                    'action': action,
+                    'candidate': nombre,
+                    'email': email
+                })
                 stats['processed'] += 1
                 
             except Exception as row_error:
@@ -13961,31 +13923,28 @@ def import_candidates_from_excel():
                 })
                 stats['errors'] += 1
         
-        # Confirmar transacción
         conn.commit()
         
-        # Preparar respuesta
-        response_data = {
+        return jsonify({
             'success': True,
             'message': f'Importación completada: {stats["processed"]} registros procesados',
             'stats': stats,
-            'results': results[:50],  # Limitar resultados para evitar respuestas muy grandes
-            'errors': errors[:50],    # Limitar errores para evitar respuestas muy grandes
+            'results': results[:50],
+            'errors': errors[:50],
             'has_more_results': len(results) > 50,
             'has_more_errors': len(errors) > 50
-        }
-        
-        app.logger.info(f"Importación Excel completada: {stats}")
-        
-        return jsonify(response_data)
+        })
         
     except Exception as e:
-        app.logger.error(f"Error en importación Excel: {str(e)}")
-        return jsonify({'error': f'Error procesando archivo: {str(e)}'}), 500
+        if conn:
+            conn.rollback()
+        app.logger.error(f"Error en importación Excel: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': f'Error procesando archivo: {str(e)}'}), 500
     
     finally:
-        if 'conn' in locals():
+        if cursor:
             cursor.close()
+        if conn:
             conn.close()
 
 @app.route('/api/candidates/excel/export', methods=['GET'])
