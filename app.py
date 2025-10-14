@@ -3351,7 +3351,7 @@ def download_template():
                     portfolio = safe_get('portfolio')
                     skills = safe_get('skills')
                     experiencia = safe_get('experiencia')
-                    estado = safe_get('estado', 'Activo')  # Cambiado de 'disponibilidad' a 'estado'
+                    disponibilidad = safe_get('disponibilidad', 'Disponible')
                     comentarios = safe_get('comentarios')
                     observaciones = safe_get('observaciones')
                     
@@ -3373,10 +3373,10 @@ def download_template():
                         INSERT INTO Afiliados (
                             tenant_id, nombre_completo, email, telefono, ciudad, identidad,
                             grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                            estado, disponibilidad_rotativos, transporte_propio,
-                            comentarios, observaciones, puntuacion, fecha_registro
+                            disponibilidad_rotativos, transporte_propio,
+                            comentarios, observaciones, estado, puntuacion, fecha_registro
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, CURRENT_TIMESTAMP
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Activo', 0, CURRENT_TIMESTAMP
                         )
                         ON DUPLICATE KEY UPDATE
                             nombre_completo=VALUES(nombre_completo), 
@@ -3388,18 +3388,18 @@ def download_template():
                             portfolio=VALUES(portfolio),
                             skills=VALUES(skills), 
                             experiencia=VALUES(experiencia), 
-                            estado=VALUES(estado),
                             disponibilidad_rotativos=VALUES(disponibilidad_rotativos), 
-                            transporte_propio=VALUES(transporte_propio),
+                            transporte_propio=VALUES(transporte_propico),
                             comentarios=VALUES(comentarios), 
                             observaciones=VALUES(observaciones),
+                            estado=VALUES(estado),
                             ultima_actualizacion=CURRENT_TIMESTAMP
                     """
                     
                     params = (
                         tenant_id, nombre, email, telefono, ciudad, identidad,
                         grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                        estado, disponibilidad_rotativos, transporte_propio,
+                        disponibilidad_rotativos, transporte_propio,
                         comentarios, observaciones
                     )
                     
