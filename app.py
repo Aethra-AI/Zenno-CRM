@@ -3238,116 +3238,204 @@ def download_template():
 @app.route('/api/upload-excel', methods=['POST'])
 @token_required
 def upload_excel():
-    if 'file' not in request.files: return jsonify({"success": False, "error": "No se encontró ningún archivo."}), 400
-    data_type = request.form.get('type', 'afiliados')
+    if 'file' not in request.files:
+        return jsonify({"success": False, "error": "No se encontró ningún archivo."}), 400
+    
     file = request.files['file']
-    if file.filename == '': return jsonify({"success": False, "error": "No se seleccionó ningún archivo."}), 400
-    if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')): return jsonify({"success": False, "error": "Formato de archivo no válido."}), 400
+    if file.filename == '':
+        return jsonify({"success": False, "error": "No se seleccionó ningún archivo."}), 400
+    
+    if not file.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({"success": False, "error": "Formato de archivo no válido. Solo se permiten archivos .xlsx o .xls"}), 400
 
     try:
-        df = pd.read_excel(file, engine='openpyxl')
-        # ✨ CORRECCIÓN PRINCIPAL AQUÍ ✨
-        # Reemplazamos los valores vacíos (NaN) de pandas por None de Python.
-        # La condición ahora se aplica a la tabla de datos (df) misma.
-        df = df.astype(object).where(df.notna(), None)
+        # 1. Leer el archivo con parámetros específicos
+        try:
+            df = pd.read_excel(
+                file,
+                engine='openpyxl',
+                dtype=str,  # Leer todo como string inicialmente
+                keep_default_na=False,  # No convertir cadenas vacías a NaN
+                na_values=['', ' ', '  ', 'N/A', 'n/a', 'NULL', 'null', 'NaN', 'nan'],
+                na_filter=True
+            )
+            
+            # Reemplazar cualquier valor NA/NaN restante con None
+            df = df.replace([pd.NA, pd.NaT, 'nan', 'None', 'NONE', 'null', 'NULL'], None)
+            
+        except Exception as e:
+            return jsonify({
+                "success": False, 
+                "error": f"Error al leer el archivo Excel: {str(e)}"
+            }), 400
 
+        # 2. Validar que el archivo no esté vacío
+        if df.empty:
+            return jsonify({"success": False, "error": "El archivo está vacío o no contiene datos válidos."}), 400
+
+        # 3. Normalizar nombres de columnas (minúsculas, sin espacios)
+        df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+        
+        # 4. Validar columnas requeridas
+        required_columns = ['nombre_completo', 'email']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            return jsonify({
+                "success": False,
+                "error": f"Columnas requeridas faltantes en el archivo: {', '.join(missing_columns)}",
+                "columnas_encontradas": list(df.columns)
+            }), 400
+
+        # 5. Obtener tenant_id del token
+        try:
+            token = request.headers.get('Authorization', '').split(" ")[-1]
+            payload = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            tenant_id = payload.get('tenant_id')
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Error de autenticación: {str(e)}"}), 401
+
+        # 6. Procesar los datos
         conn = get_db_connection()
-        if not conn: return jsonify({"success": False, "error": "Error de conexión a la BD."}), 500
+        if not conn:
+            return jsonify({"success": False, "error": "Error de conexión a la base de datos."}), 500
+        
         cursor = conn.cursor()
         processed_count = 0
+        errors = []
 
-        if data_type == 'afiliados':
-            # Lógica para importar candidatos desde Excel
-            for _, row in df.iterrows():
-                # Validar campos obligatorios
-                if not row.get('nombre_completo') or not row.get('email'):
-                    continue  # Saltar filas sin datos mínimos
-                
-                # Procesar campos opcionales
-                telefono = row.get('telefono') if row.get('telefono') else None
-                ciudad = row.get('ciudad') if row.get('ciudad') else None
-                identidad = row.get('identidad') if row.get('identidad') else None
-                grado_academico = row.get('grado_academico') if row.get('grado_academico') else None
-                cv_url = row.get('cv_url') if row.get('cv_url') else None
-                linkedin = row.get('linkedin') if row.get('linkedin') else None
-                portfolio = row.get('portfolio') if row.get('portfolio') else None
-                skills = row.get('skills') if row.get('skills') else None
-                experiencia = row.get('experiencia') if row.get('experiencia') else None
-                disponibilidad = row.get('disponibilidad') if row.get('disponibilidad') else 'Disponible'
-                comentarios = row.get('comentarios') if row.get('comentarios') else None
-                observaciones = row.get('observaciones') if row.get('observaciones') else None
-                
-                # Procesar campos booleanos
-                disponibilidad_rotativos = 1 if str(row.get('disponibilidad_rotativos', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
-                transporte_propio = 1 if str(row.get('transporte_propio', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
-                
-                sql = """
-                    INSERT INTO Afiliados (
-                        tenant_id, nombre_completo, email, telefono, ciudad, identidad,
+        try:
+            for index, row in df.iterrows():
+                try:
+                    # Validar fila vacía
+                    if row.isna().all():
+                        continue
+                        
+                    # Validar campos obligatorios
+                    nombre = str(row.get('nombre_completo', '')).strip()
+                    email = str(row.get('email', '')).strip().lower()
+                    
+                    if not nombre or not email:
+                        errors.append(f"Fila {index + 2}: Faltan campos obligatorios (nombre_completo o email)")
+                        continue
+                    
+                    # Validar formato de email
+                    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+                        errors.append(f"Fila {index + 2}: Formato de email inválido: {email}")
+                        continue
+
+                    # Procesar campos opcionales con manejo seguro
+                    def safe_get(field, default=None):
+                        val = row.get(field)
+                        if pd.isna(val) or val in (None, '', ' ', 'nan', 'None'):
+                            return default
+                        return str(val).strip() if default is None else default
+
+                    telefono = safe_get('telefono')
+                    ciudad = safe_get('ciudad')
+                    identidad = safe_get('identidad')
+                    grado_academico = safe_get('grado_academico')
+                    cv_url = safe_get('cv_url')
+                    linkedin = safe_get('linkedin')
+                    portfolio = safe_get('portfolio')
+                    skills = safe_get('skills')
+                    experiencia = safe_get('experiencia')
+                    disponibilidad = safe_get('disponibilidad', 'Disponible')
+                    comentarios = safe_get('comentarios')
+                    observaciones = safe_get('observaciones')
+                    
+                    # Procesar booleanos
+                    def parse_bool(value, default=False):
+                        if isinstance(value, bool):
+                            return value
+                        if isinstance(value, (int, float)):
+                            return bool(value)
+                        if isinstance(value, str):
+                            return value.lower().strip() in ('sí', 'si', 'yes', 'true', '1', 'verdadero')
+                        return default
+
+                    disponibilidad_rotativos = parse_bool(row.get('disponibilidad_rotativos'), False)
+                    transporte_propio = parse_bool(row.get('transporte_propio'), False)
+
+                    # Insertar en la base de datos
+                    sql = """
+                        INSERT INTO Afiliados (
+                            tenant_id, nombre_completo, email, telefono, ciudad, identidad,
+                            grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
+                            disponibilidad, disponibilidad_rotativos, transporte_propio,
+                            comentarios, observaciones, estado, puntuacion, fecha_registro
+                        ) VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP
+                        )
+                        ON DUPLICATE KEY UPDATE
+                            nombre_completo=VALUES(nombre_completo), 
+                            telefono=VALUES(telefono),
+                            ciudad=VALUES(ciudad), 
+                            grado_academico=VALUES(grado_academico),
+                            cv_url=VALUES(cv_url), 
+                            linkedin=VALUES(linkedin), 
+                            portfolio=VALUES(portfolio),
+                            skills=VALUES(skills), 
+                            experiencia=VALUES(experiencia), 
+                            disponibilidad=VALUES(disponibilidad),
+                            disponibilidad_rotativos=VALUES(disponibilidad_rotativos), 
+                            transporte_propio=VALUES(transporte_propio),
+                            comentarios=VALUES(comentarios), 
+                            observaciones=VALUES(observaciones),
+                            ultima_actualizacion=CURRENT_TIMESTAMP
+                    """
+                    
+                    params = (
+                        tenant_id, nombre, email, telefono, ciudad, identidad,
                         grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
                         disponibilidad, disponibilidad_rotativos, transporte_propio,
-                        comentarios, observaciones, estado, puntuacion, fecha_registro
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP
+                        comentarios, observaciones
                     )
-                    ON DUPLICATE KEY UPDATE
-                        nombre_completo=VALUES(nombre_completo), telefono=VALUES(telefono),
-                        ciudad=VALUES(ciudad), grado_academico=VALUES(grado_academico),
-                        cv_url=VALUES(cv_url), linkedin=VALUES(linkedin), portfolio=VALUES(portfolio),
-                        skills=VALUES(skills), experiencia=VALUES(experiencia), disponibilidad=VALUES(disponibilidad),
-                        disponibilidad_rotativos=VALUES(disponibilidad_rotativos), transporte_propio=VALUES(transporte_propio),
-                        comentarios=VALUES(comentarios), observaciones=VALUES(observaciones),
-                        ultima_actualizacion=CURRENT_TIMESTAMP
-                """
-                params = (
-                    tenant_id, row.get('nombre_completo'), row.get('email'), telefono, ciudad, identidad,
-                    grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                    disponibilidad, disponibilidad_rotativos, transporte_propio,
-                    comentarios, observaciones
-                )
-                cursor.execute(sql, params)
-                processed_count += 1
-        
-        # ✨ LÓGICA PARA CLIENTES AÑADIDA AQUÍ ✨
-        elif data_type == 'clientes':
-            # Columnas esperadas en la plantilla de clientes
-            # ['empresa', 'contacto_nombre', 'telefono', 'email', 'sector', 'observaciones']
-            for _, row in df.iterrows():
-                # Validamos que la empresa (campo obligatorio) no esté vacía
-                if not row.get('empresa'):
-                    continue # Si no hay nombre de empresa, saltamos esta fila
+                    
+                    cursor.execute(sql, params)
+                    processed_count += 1
 
-                sql = """
-                    INSERT INTO Clientes (empresa, contacto_nombre, telefono, email, sector, observaciones, tenant_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        contacto_nombre=VALUES(contacto_nombre), telefono=VALUES(telefono),
-                        email=VALUES(email), sector=VALUES(sector), observaciones=VALUES(observaciones);
-                """
-                params = (
-                    row.get('empresa'),
-                    row.get('contacto_nombre'),
-                    row.get('telefono'),
-                    row.get('email'),
-                    row.get('sector'),
-                    row.get('observaciones'),
-                    tenant_id
-                )
-                cursor.execute(sql, params)
-                processed_count += 1
-        
-        elif data_type == 'postulaciones':
-            # La lógica para postulaciones se mantiene igual, si la tenías.
-            pass
+                except Exception as row_error:
+                    errors.append(f"Error en fila {index + 2}: {str(row_error)}")
+                    continue
 
-        conn.commit()
-        cursor.close()
-        conn.close()
-        return jsonify({"success": True, "message": f"{processed_count} registros de '{data_type}' procesados correctamente."})
+            # Confirmar cambios
+            conn.commit()
+            
+            # Preparar respuesta
+            response = {
+                "success": True,
+                "message": f"Se procesaron {processed_count} registros correctamente.",
+                "total_registros": len(df),
+                "errores_encontrados": len(errors)
+            }
+            
+            if errors:
+                response["errores"] = errors[:50]  # Limitar a los primeros 50 errores
+                if len(errors) > 50:
+                    response["mensaje_adicional"] = f"Mostrando 50 de {len(errors)} errores. Hay más errores no mostrados."
+            
+            return jsonify(response)
+
+        except Exception as e:
+            conn.rollback()
+            return jsonify({
+                "success": False,
+                "error": f"Error al procesar los datos: {str(e)}",
+                "tipo_error": type(e).__name__,
+                "detalle": str(e)
+            }), 500
+
+        finally:
+            cursor.close()
+            conn.close()
 
     except Exception as e:
-        # Devolvemos el error específico para facilitar la depuración
-        return jsonify({"success": False, "error": f"Error al procesar el archivo: {str(e)}"}), 500
+        return jsonify({
+            "success": False,
+            "error": f"Error inesperado: {str(e)}",
+            "tipo_error": type(e).__name__
+        }), 500
 
 # ===============================================================
 # SECCIÓN 3: GESTIÓN DE ETIQUETAS Y COMUNICACIONES
