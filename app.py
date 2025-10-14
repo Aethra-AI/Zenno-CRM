@@ -4176,7 +4176,7 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
             params.append(status)
             
         if availability:
-            conditions.append("a.disponibilidad = %s")
+            conditions.append("a.estado = %s")
             params.append(availability)
             
         if min_score and min_score.isdigit():
