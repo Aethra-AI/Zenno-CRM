@@ -13110,6 +13110,35 @@ def get_batch_cv_status(job_id):
             cursor.close()
             conn.close()
 
+@app.route('/api/test-cv-upload', methods=['POST'])
+@token_required
+def test_cv_upload():
+    """
+    Endpoint de prueba para verificar conectividad
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_id = g.current_user.get('id') or g.current_user.get('user_id')
+        
+        # Verificar si hay archivos
+        if 'files' not in request.files:
+            return jsonify({'error': 'No se encontraron archivos'}), 400
+        
+        files = request.files.getlist('files')
+        app.logger.info(f"Test endpoint recibió {len(files)} archivos")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Endpoint de prueba funcionando. Recibidos {len(files)} archivos.',
+            'tenant_id': tenant_id,
+            'user_id': user_id,
+            'files_count': len(files)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en test endpoint: {str(e)}")
+        return jsonify({'error': f'Error en test: {str(e)}'}), 500
+
 @app.route('/api/cv/process-existing/<cv_identifier>', methods=['POST'])
 @token_required
 def process_existing_cv(cv_identifier):
