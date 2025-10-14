@@ -13572,6 +13572,7 @@ def download_candidates_excel_template():
     Descarga la plantilla de Excel para importar candidatos
     Incluye ejemplos y validaciones
     """
+    app.logger.info("📄 SOLICITANDO PLANTILLA DE EXCEL - download_candidates_excel_template()")
     try:
         # Crear DataFrame con plantilla y ejemplos
         template_data = {
@@ -13709,17 +13710,25 @@ def import_candidates_from_excel():
     Importa candidatos masivamente desde archivo Excel
     Maneja validaciones, duplicados y errores
     """
+    app.logger.info("📥 INICIANDO IMPORTACIÓN DE EXCEL - import_candidates_from_excel()")
+    
     if 'file' not in request.files:
+        app.logger.error("❌ No se encontró archivo en request.files")
         return jsonify({"success": False, "error": "No se encontró ningún archivo."}), 400
     
     file = request.files['file']
+    app.logger.info(f"📁 Archivo recibido para importación: {file.filename}")
+    
     if file.filename == '':
+        app.logger.error("❌ Nombre de archivo vacío")
         return jsonify({"success": False, "error": "No se seleccionó ningún archivo."}), 400
     
     if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+        app.logger.error(f"❌ Formato de archivo no válido: {file.filename}")
         return jsonify({"success": False, "error": "Formato de archivo no válido. Use .xlsx o .xls"}), 400
 
     try:
+        app.logger.info(f"✅ Iniciando importación del archivo: {file.filename}")
         # Obtener datos del usuario y tenant
         tenant_id = get_current_tenant_id()
         user_data = g.current_user
@@ -14219,22 +14228,34 @@ def validate_candidates_excel():
     Valida un archivo Excel de candidatos sin importarlo
     Útil para verificar errores antes de la importación
     """
+    app.logger.info("🔍 INICIANDO VALIDACIÓN DE EXCEL - validate_candidates_excel()")
+    
     if 'file' not in request.files:
+        app.logger.error("❌ No se encontró archivo en request.files")
         return jsonify({"success": False, "error": "No se encontró ningún archivo."}), 400
     
     file = request.files['file']
+    app.logger.info(f"📁 Archivo recibido: {file.filename}")
+    
     if file.filename == '':
+        app.logger.error("❌ Nombre de archivo vacío")
         return jsonify({"success": False, "error": "No se seleccionó ningún archivo."}), 400
     
     if not (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+        app.logger.error(f"❌ Formato de archivo no válido: {file.filename}")
         return jsonify({"success": False, "error": "Formato de archivo no válido. Use .xlsx o .xls"}), 400
 
     try:
+        app.logger.info(f"✅ Iniciando validación del archivo: {file.filename}")
         # Leer archivo Excel
+        app.logger.info("📖 Leyendo archivo Excel con pandas...")
         df = pd.read_excel(file, engine='openpyxl')
+        app.logger.info(f"📊 Archivo leído: {len(df)} filas, {len(df.columns)} columnas")
+        app.logger.info(f"📋 Columnas encontradas: {list(df.columns)}")
         
         # Limpiar datos
         df = df.astype(object).where(df.notna(), None)
+        app.logger.info("🧹 Datos limpiados (NaN reemplazados con None)")
         
         validation_results = {
             'total_rows': len(df),
@@ -14246,6 +14267,8 @@ def validate_candidates_excel():
             'duplicate_emails': [],
             'duplicate_identities': []
         }
+        
+        app.logger.info(f"🎯 Iniciando validación de {len(df)} filas...")
         
         # Analizar columnas
         required_columns = ['nombre_completo', 'email']
@@ -14274,7 +14297,11 @@ def validate_candidates_excel():
         
         # Verificar columnas faltantes
         missing_required = [col for col in required_columns if col not in df.columns]
+        app.logger.info(f"🔍 Columnas requeridas: {required_columns}")
+        app.logger.info(f"❌ Columnas faltantes: {missing_required}")
+        
         if missing_required:
+            app.logger.error(f"❌ FALTAN COLUMNAS OBLIGATORIAS: {missing_required}")
             validation_results['errors'].append({
                 'type': 'missing_columns',
                 'message': f'Faltan columnas obligatorias: {", ".join(missing_required)}'
@@ -14415,6 +14442,10 @@ def validate_candidates_excel():
                     'row': index + 2,
                     'warnings': row_warnings
                 }])
+                
+            # Log cada 100 filas procesadas
+            if (index + 1) % 100 == 0:
+                app.logger.info(f"📊 Procesadas {index + 1} filas de {len(df)} - Válidas: {validation_results['valid_rows']}, Errores: {validation_results['invalid_rows']}, Advertencias: {len(validation_results['warnings'])}")
         
         # Verificar duplicados con base de datos
         if emails or identities:
@@ -14456,13 +14487,17 @@ def validate_candidates_excel():
                 cursor.close()
                 conn.close()
         
+        app.logger.info(f"✅ VALIDACIÓN COMPLETADA - Total: {validation_results['total_rows']}, Válidas: {validation_results['valid_rows']}, Errores: {validation_results['invalid_rows']}, Advertencias: {len(validation_results['warnings'])}")
+        
         return jsonify({
             'success': True,
             'validation_results': validation_results
         })
         
     except Exception as e:
-        app.logger.error(f"Error validando archivo Excel: {str(e)}")
+        app.logger.error(f"❌ ERROR VALIDANDO EXCEL: {str(e)}")
+        import traceback
+        app.logger.error(f"❌ TRACEBACK: {traceback.format_exc()}")
         return jsonify({'error': f'Error validando archivo: {str(e)}'}), 500
 
 def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
