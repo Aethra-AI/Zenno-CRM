@@ -12808,7 +12808,7 @@ def upload_multiple_cvs_to_oci():
         # Crear job para procesamiento masivo
         job_id = f"batch_cv_{tenant_id}_{int(time.time())}_{user_id}"
         
-        # Guardar información del job en la base de datos
+        # Guardar información del job en la tabla CV_Processing_Logs
         conn = get_db_connection()
         if not conn:
             return jsonify({'error': 'Error de conexión a la base de datos'}), 500
@@ -12816,38 +12816,34 @@ def upload_multiple_cvs_to_oci():
         cursor = conn.cursor()
         
         try:
-            # Crear tabla si no existe
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS cv_processing_jobs (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    job_id VARCHAR(255) NOT NULL UNIQUE,
-                    tenant_id INT NOT NULL,
-                    user_id INT NOT NULL,
-                    total_files INT NOT NULL DEFAULT 0,
-                    processed_files INT NOT NULL DEFAULT 0,
-                    successful_files INT NOT NULL DEFAULT 0,
-                    failed_files INT NOT NULL DEFAULT 0,
-                    status ENUM('processing', 'completed', 'failed', 'cancelled') NOT NULL DEFAULT 'processing',
-                    error_message TEXT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    completed_at TIMESTAMP NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            """)
-            
             # Insertar job en la tabla de procesamiento
             cursor.execute("""
-                INSERT INTO cv_processing_jobs (
-                    job_id, tenant_id, user_id, total_files, processed_files, 
-                    status, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-            """, (job_id, tenant_id, user_id, len(valid_files), 0, 'processing'))
+                INSERT INTO CV_Processing_Logs (
+                    tenant_id, cv_identifier, processing_step, status, 
+                    message, details, created_at
+                ) VALUES (
+                    %s, %s, 'batch_start', 'processing', 
+                    %s, %s, NOW()
+                )
+            """, (
+                tenant_id, 
+                job_id, 
+                f'Iniciando procesamiento de {len(valid_files)} archivos',
+                json.dumps({
+                    'total_files': len(valid_files),
+                    'processed_files': 0,
+                    'successful_files': 0,
+                    'failed_files': 0
+                })
+            ))
             
             conn.commit()
             
             # Procesar archivos en segundo plano
             def process_files_background():
                 try:
+                    app.logger.info(f"🔄 INICIANDO PROCESAMIENTO EN SEGUNDO PLANO para job {job_id}")
+                    
                     processed_count = 0
                     successful_count = 0
                     failed_count = 0
@@ -12891,7 +12887,7 @@ def upload_multiple_cvs_to_oci():
                                             filename=file.filename
                                         )
                                         
-                                        # 2. Procesar con Gemini (usando round robin)
+                                        # 2. Procesar con Gemini
                                         gemini_result = cv_processing_service.process_cv_with_gemini(
                                             cv_text=cv_text,
                                             tenant_id=tenant_id
@@ -12939,11 +12935,12 @@ def upload_multiple_cvs_to_oci():
                                                     candidate_id=int(candidate_id),
                                                     cv_identifier=cv_identifier,
                                                     original_filename=file.filename,
-                                                    file_size=len(file_content),
-                                                    mime_type=upload_result.get('mime_type', 'application/octet-stream'),
-                                                    access_uri=par_result['access_uri'],
+                                                    object_key=upload_result['object_key'],
+                                                    file_url=par_result['access_uri'],
                                                     par_id=par_result['par_id'],
-                                                    expiration_date=par_result['expiration_date']
+                                                    mime_type=upload_result['mime_type'],
+                                                    file_size=upload_result['size'],
+                                                    processed_data=processed_data
                                                 )
                                                 
                                                 if save_cv_result['success']:
@@ -12973,10 +12970,18 @@ def upload_multiple_cvs_to_oci():
                             
                             # Actualizar progreso del job
                             cursor.execute("""
-                                UPDATE cv_processing_jobs 
-                                SET processed_files = %s, successful_files = %s, failed_files = %s, updated_at = NOW()
-                                WHERE job_id = %s
-                            """, (processed_count, successful_count, failed_count, job_id))
+                                UPDATE CV_Processing_Logs 
+                                SET details = %s, created_at = NOW()
+                                WHERE tenant_id = %s AND cv_identifier = %s
+                            """, (
+                                json.dumps({
+                                    'total_files': len(valid_files),
+                                    'processed_files': processed_count,
+                                    'successful_files': successful_count,
+                                    'failed_files': failed_count
+                                }),
+                                tenant_id, job_id
+                            ))
                             conn.commit()
                             
                         except Exception as file_error:
@@ -12986,18 +12991,26 @@ def upload_multiple_cvs_to_oci():
                             
                             # Actualizar progreso del job
                             cursor.execute("""
-                                UPDATE cv_processing_jobs 
-                                SET processed_files = %s, successful_files = %s, failed_files = %s, updated_at = NOW()
-                                WHERE job_id = %s
-                            """, (processed_count, successful_count, failed_count, job_id))
+                                UPDATE CV_Processing_Logs 
+                                SET details = %s, created_at = NOW()
+                                WHERE tenant_id = %s AND cv_identifier = %s
+                            """, (
+                                json.dumps({
+                                    'total_files': len(valid_files),
+                                    'processed_files': processed_count,
+                                    'successful_files': successful_count,
+                                    'failed_files': failed_count
+                                }),
+                                tenant_id, job_id
+                            ))
                             conn.commit()
                     
                     # Marcar job como completado
                     cursor.execute("""
-                        UPDATE cv_processing_jobs 
-                        SET status = 'completed', completed_at = NOW(), updated_at = NOW()
-                        WHERE job_id = %s
-                    """, (job_id,))
+                        UPDATE CV_Processing_Logs 
+                        SET processing_step = 'batch_completed', status = 'completed', created_at = NOW()
+                        WHERE tenant_id = %s AND cv_identifier = %s
+                    """, (tenant_id, job_id))
                     conn.commit()
                     
                     app.logger.info(f"Procesamiento masivo completado: {successful_count} exitosos, {failed_count} fallidos")
@@ -13007,19 +13020,21 @@ def upload_multiple_cvs_to_oci():
                     # Marcar job como fallido
                     try:
                         cursor.execute("""
-                            UPDATE cv_processing_jobs 
-                            SET status = 'failed', error_message = %s, updated_at = NOW()
-                            WHERE job_id = %s
-                        """, (str(batch_error), job_id))
+                            UPDATE CV_Processing_Logs 
+                            SET processing_step = 'batch_failed', status = 'failed', message = %s, created_at = NOW()
+                            WHERE tenant_id = %s AND cv_identifier = %s
+                        """, (str(batch_error), tenant_id, job_id))
                         conn.commit()
                     except:
                         pass
             
             # Iniciar procesamiento en segundo plano
             import threading
+            app.logger.info(f"🚀 Iniciando thread para procesamiento de {len(valid_files)} archivos")
             thread = threading.Thread(target=process_files_background)
             thread.daemon = True
             thread.start()
+            app.logger.info(f"✅ Thread iniciado exitosamente")
             
             # Responder inmediatamente al frontend
             response_data = {
@@ -13046,15 +13061,14 @@ def upload_multiple_cvs_to_oci():
             cursor.close()
             conn.close()
 
-@app.route('/api/cv/batch-status/<job_id>', methods=['GET'])
+@app.route('/api/candidates/process-status/<job_id>', methods=['GET'])
 @token_required
-def get_batch_cv_status(job_id):
+def get_cv_processing_status(job_id):
     """
     Obtener el estado del procesamiento masivo de CVs
     """
     try:
         tenant_id = get_current_tenant_id()
-        user_id = g.current_user.get('id') or g.current_user.get('user_id')
         
         conn = get_db_connection()
         if not conn:
@@ -13065,37 +13079,43 @@ def get_batch_cv_status(job_id):
         # Obtener información del job
         cursor.execute("""
             SELECT 
-                job_id, tenant_id, user_id, total_files, processed_files, 
-                successful_files, failed_files, status, error_message,
-                created_at, updated_at, completed_at
-            FROM cv_processing_jobs 
-            WHERE job_id = %s AND tenant_id = %s
-        """, (job_id, tenant_id))
+                cv_identifier, processing_step, status, message, details, created_at
+            FROM CV_Processing_Logs 
+            WHERE tenant_id = %s AND cv_identifier = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (tenant_id, job_id))
         
         job_data = cursor.fetchone()
         
         if not job_data:
             return jsonify({"error": "Job no encontrado"}), 404
         
+        # Parsear detalles
+        details = {}
+        if job_data['details']:
+            try:
+                details = json.loads(job_data['details'])
+            except:
+                details = {}
+        
         # Calcular progreso
         progress_percent = 0
-        if job_data['total_files'] > 0:
-            progress_percent = (job_data['processed_files'] / job_data['total_files']) * 100
+        if details.get('total_files', 0) > 0:
+            progress_percent = (details.get('processed_files', 0) / details.get('total_files', 1)) * 100
         
         response_data = {
             'success': True,
             'job_data': {
-                'job_id': job_data['job_id'],
-                'total_files': job_data['total_files'],
-                'processed_files': job_data['processed_files'],
-                'successful_files': job_data['successful_files'],
-                'failed_files': job_data['failed_files'],
+                'job_id': job_data['cv_identifier'],
+                'total_files': details.get('total_files', 0),
+                'processed_files': details.get('processed_files', 0),
+                'successful_files': details.get('successful_files', 0),
+                'failed_files': details.get('failed_files', 0),
                 'status': job_data['status'],
                 'progress_percent': round(progress_percent, 2),
-                'error_message': job_data['error_message'],
-                'created_at': job_data['created_at'].isoformat() if job_data['created_at'] else None,
-                'updated_at': job_data['updated_at'].isoformat() if job_data['updated_at'] else None,
-                'completed_at': job_data['completed_at'].isoformat() if job_data['completed_at'] else None
+                'message': job_data['message'],
+                'created_at': job_data['created_at'].isoformat() if job_data['created_at'] else None
             }
         }
         
@@ -13110,34 +13130,69 @@ def get_batch_cv_status(job_id):
             cursor.close()
             conn.close()
 
-@app.route('/api/test-cv-upload', methods=['POST'])
+@app.route('/api/candidates/batch-results/<job_id>', methods=['GET'])
 @token_required
-def test_cv_upload():
+def get_cv_batch_results(job_id):
     """
-    Endpoint de prueba para verificar conectividad
+    Obtener resultados detallados del procesamiento masivo de CVs
     """
     try:
         tenant_id = get_current_tenant_id()
-        user_id = g.current_user.get('id') or g.current_user.get('user_id')
         
-        # Verificar si hay archivos
-        if 'files' not in request.files:
-            return jsonify({'error': 'No se encontraron archivos'}), 400
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"error": "Error de conexión"}), 500
         
-        files = request.files.getlist('files')
-        app.logger.info(f"Test endpoint recibió {len(files)} archivos")
+        cursor = conn.cursor(dictionary=True)
         
-        return jsonify({
+        # Obtener información del job
+        cursor.execute("""
+            SELECT 
+                cv_identifier, processing_step, status, message, details, created_at
+            FROM CV_Processing_Logs 
+            WHERE tenant_id = %s AND cv_identifier = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (tenant_id, job_id))
+        
+        job_data = cursor.fetchone()
+        
+        if not job_data:
+            return jsonify({"error": "Job no encontrado"}), 404
+        
+        # Parsear detalles
+        details = {}
+        if job_data['details']:
+            try:
+                details = json.loads(job_data['details'])
+            except:
+                details = {}
+        
+        # Preparar respuesta con formato esperado por el frontend
+        response_data = {
             'success': True,
-            'message': f'Endpoint de prueba funcionando. Recibidos {len(files)} archivos.',
-            'tenant_id': tenant_id,
-            'user_id': user_id,
-            'files_count': len(files)
-        })
+            'summary': {
+                'successful': details.get('successful_files', 0),
+                'duplicates': 0,  # No aplica para CVs
+                'errors': details.get('failed_files', 0),
+                'total': details.get('total_files', 0)
+            },
+            'results': [],  # Se puede expandir para incluir detalles específicos
+            'job_id': job_id,
+            'status': job_data['status'],
+            'message': job_data['message']
+        }
+        
+        return jsonify(response_data)
         
     except Exception as e:
-        app.logger.error(f"Error en test endpoint: {str(e)}")
-        return jsonify({'error': f'Error en test: {str(e)}'}), 500
+        app.logger.error(f"Error obteniendo resultados del job {job_id}: {str(e)}")
+        return jsonify({'error': f'Error obteniendo resultados: {str(e)}'}), 500
+    
+    finally:
+        if 'conn' in locals():
+            cursor.close()
+            conn.close()
 
 @app.route('/api/cv/process-existing/<cv_identifier>', methods=['POST'])
 @token_required
