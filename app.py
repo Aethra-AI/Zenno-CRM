@@ -3373,10 +3373,10 @@ def download_template():
                         INSERT INTO Afiliados (
                             tenant_id, nombre_completo, email, telefono, ciudad, identidad,
                             grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                            disponibilidad_rotativos, transporte_propio,
+                            disponibilidad, disponibilidad_rotativos, transporte_propio,
                             comentarios, observaciones, estado, puntuacion, fecha_registro
                         ) VALUES (
-                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Activo', 0, CURRENT_TIMESTAMP
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', 0, CURRENT_TIMESTAMP
                         )
                         ON DUPLICATE KEY UPDATE
                             nombre_completo=VALUES(nombre_completo), 
@@ -3388,18 +3388,18 @@ def download_template():
                             portfolio=VALUES(portfolio),
                             skills=VALUES(skills), 
                             experiencia=VALUES(experiencia), 
+                            disponibilidad=VALUES(disponibilidad),
                             disponibilidad_rotativos=VALUES(disponibilidad_rotativos), 
-                            transporte_propio=VALUES(transporte_propico),
+                            transporte_propio=VALUES(transporte_propio),
                             comentarios=VALUES(comentarios), 
                             observaciones=VALUES(observaciones),
-                            estado=VALUES(estado),
                             ultima_actualizacion=CURRENT_TIMESTAMP
                     """
                     
                     params = (
                         tenant_id, nombre, email, telefono, ciudad, identidad,
                         grado_academico, cv_url, linkedin, portfolio, skills, experiencia,
-                        disponibilidad_rotativos, transporte_propio,
+                        disponibilidad, disponibilidad_rotativos, transporte_propio,
                         comentarios, observaciones
                     )
                     
