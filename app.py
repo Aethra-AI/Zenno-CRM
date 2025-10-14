@@ -13760,12 +13760,18 @@ def import_candidates_from_excel():
         errors = []
         results = []
         
+        # Función auxiliar para limpiar valores
+        def clean_value(value):
+            if pd.isna(value) or value is None or str(value).strip() == '' or str(value).strip().lower() in ['nan', 'null', 'none', 'n/a', 'na']:
+                return None
+            return str(value).strip()
+        
         # Procesar cada fila
         for index, row in df.iterrows():
             try:
                 # Validar datos mínimos
-                nombre = str(row.get('nombre_completo', '')).strip()
-                email = str(row.get('email', '')).strip()
+                nombre = clean_value(row.get('nombre_completo', ''))
+                email = clean_value(row.get('email', ''))
                 
                 if not nombre or not email:
                     errors.append({
@@ -13786,23 +13792,26 @@ def import_candidates_from_excel():
                     stats['errors'] += 1
                     continue
                 
-                # Procesar campos opcionales
-                telefono = str(row.get('telefono', '')).strip() if row.get('telefono') else None
-                ciudad = str(row.get('ciudad', '')).strip() if row.get('ciudad') else None
-                identidad = str(row.get('identidad', '')).strip() if row.get('identidad') else None
-                grado_academico = str(row.get('grado_academico', '')).strip() if row.get('grado_academico') else None
-                cv_url = str(row.get('cv_url', '')).strip() if row.get('cv_url') else None
-                linkedin = str(row.get('linkedin', '')).strip() if row.get('linkedin') else None
-                portfolio = str(row.get('portfolio', '')).strip() if row.get('portfolio') else None
-                skills = str(row.get('skills', '')).strip() if row.get('skills') else None
-                experiencia = str(row.get('experiencia', '')).strip() if row.get('experiencia') else None
-                disponibilidad = str(row.get('disponibilidad', '')).strip() if row.get('disponibilidad') else 'Disponible'
-                comentarios = str(row.get('comentarios', '')).strip() if row.get('comentarios') else None
-                observaciones = str(row.get('observaciones', '')).strip() if row.get('observaciones') else None
+                # Procesar campos opcionales con limpieza mejorada
+                telefono = clean_value(row.get('telefono', ''))
+                ciudad = clean_value(row.get('ciudad', ''))
+                identidad = clean_value(row.get('identidad', ''))
+                grado_academico = clean_value(row.get('grado_academico', ''))
+                cv_url = clean_value(row.get('cv_url', ''))
+                linkedin = clean_value(row.get('linkedin', ''))
+                portfolio = clean_value(row.get('portfolio', ''))
+                skills = clean_value(row.get('skills', ''))
+                experiencia = clean_value(row.get('experiencia', ''))
+                disponibilidad = clean_value(row.get('disponibilidad', '')) or 'Disponible'
+                comentarios = clean_value(row.get('comentarios', ''))
+                observaciones = clean_value(row.get('observaciones', ''))
                 
-                # Procesar campos booleanos
-                disponibilidad_rotativos = 1 if str(row.get('disponibilidad_rotativos', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
-                transporte_propio = 1 if str(row.get('transporte_propio', '')).strip().lower() in ['sí', 'si', 'yes', 'true', '1'] else 0
+                # Procesar campos booleanos con valores más flexibles
+                disponibilidad_rotativos_raw = clean_value(row.get('disponibilidad_rotativos', ''))
+                disponibilidad_rotativos = 1 if disponibilidad_rotativos_raw and disponibilidad_rotativos_raw.lower() in ['sí', 'si', 'yes', 'true', '1', 'verdadero', 'disponible'] else 0
+                
+                transporte_propio_raw = clean_value(row.get('transporte_propio', ''))
+                transporte_propio = 1 if transporte_propio_raw and transporte_propio_raw.lower() in ['sí', 'si', 'yes', 'true', '1', 'verdadero', 'tengo', 'poseo'] else 0
                 
                 # Verificar si el candidato ya existe (por email, identidad o nombre similar)
                 # Buscar duplicados más inteligentemente
@@ -14283,9 +14292,15 @@ def validate_candidates_excel():
             row_errors = []
             row_warnings = []
             
+            # Función auxiliar para limpiar valores
+            def clean_value(value):
+                if pd.isna(value) or value is None or str(value).strip() == '' or str(value).strip().lower() in ['nan', 'null', 'none', 'n/a', 'na']:
+                    return None
+                return str(value).strip()
+            
             # Validar campos obligatorios
-            nombre = str(row.get('nombre_completo', '')).strip()
-            email = str(row.get('email', '')).strip()
+            nombre = clean_value(row.get('nombre_completo', ''))
+            email = clean_value(row.get('email', ''))
             
             if not nombre:
                 row_errors.append('Nombre completo es obligatorio')
@@ -14305,32 +14320,86 @@ def validate_candidates_excel():
                 else:
                     emails.add(email)
             
-            # Validar identidad si está presente
-            identidad = str(row.get('identidad', '')).strip() if row.get('identidad') else None
+            # Validar identidad si está presente (solo si no está vacía)
+            identidad = clean_value(row.get('identidad', ''))
             if identidad:
                 if identidad in identities:
                     row_warnings.append('Identidad duplicada en el archivo')
                 else:
                     identities.add(identidad)
             
-            # Validar disponibilidad
-            disponibilidad = str(row.get('disponibilidad', '')).strip() if row.get('disponibilidad') else None
-            if disponibilidad and disponibilidad not in ['Disponible', 'No disponible', 'Trabajando']:
-                row_warnings.append(f'Valor de disponibilidad inválido: {disponibilidad}')
+            # Validar disponibilidad (solo si está presente y no está vacía)
+            disponibilidad = clean_value(row.get('disponibilidad', ''))
+            if disponibilidad and disponibilidad not in ['Disponible', 'No disponible', 'Trabajando', 'Disponible Inmediatamente', 'En búsqueda']:
+                # Solo advertencia si el valor no está vacío pero no es válido
+                row_warnings.append(f'Valor de disponibilidad no estándar: {disponibilidad} (se aceptará como está)')
             
-            # Validar URLs si están presentes
-            cv_url = str(row.get('cv_url', '')).strip() if row.get('cv_url') else None
-            if cv_url and not cv_url.startswith(('http://', 'https://')):
-                row_warnings.append('CV URL no parece ser una URL válida')
+            # Validar URLs si están presentes (solo si no están vacías)
+            cv_url = clean_value(row.get('cv_url', ''))
+            if cv_url:
+                # Verificar que sea una URL válida
+                if not cv_url.startswith(('http://', 'https://', 'drive.google.com', 'docs.google.com', 'onedrive.live.com', 'dropbox.com')):
+                    row_warnings.append('CV URL no parece ser una URL válida (se aceptará como está)')
             
-            linkedin = str(row.get('linkedin', '')).strip() if row.get('linkedin') else None
-            if linkedin and not linkedin.startswith(('http://', 'https://')):
-                row_warnings.append('LinkedIn URL no parece ser una URL válida')
+            linkedin = clean_value(row.get('linkedin', ''))
+            if linkedin:
+                # LinkedIn puede ser solo el username o URL completa
+                if not (linkedin.startswith(('http://', 'https://')) or linkedin.startswith('linkedin.com/') or '/' not in linkedin):
+                    row_warnings.append('LinkedIn puede ser username o URL completa (se aceptará como está)')
             
-            portfolio = str(row.get('portfolio', '')).strip() if row.get('portfolio') else None
-            if portfolio and not portfolio.startswith(('http://', 'https://')):
-                row_warnings.append('Portfolio URL no parece ser una URL válida')
+            portfolio = clean_value(row.get('portfolio', ''))
+            if portfolio:
+                # Portfolio puede ser URL o texto descriptivo
+                if not portfolio.startswith(('http://', 'https://', 'github.com', 'gitlab.com', 'bitbucket.org')):
+                    # Solo advertencia si parece ser una URL pero no es válida
+                    if '.' in portfolio and ('www.' in portfolio or 'http' in portfolio):
+                        row_warnings.append('Portfolio URL no parece ser una URL válida (se aceptará como está)')
             
+            # Validar teléfono si está presente (solo si no está vacío)
+            telefono = clean_value(row.get('telefono', ''))
+            if telefono:
+                # Limpiar teléfono de caracteres especiales
+                telefono_limpio = re.sub(r'[^\d+]', '', telefono)
+                if len(telefono_limpio) < 7:
+                    row_warnings.append('Teléfono parece muy corto (se aceptará como está)')
+            
+            # Validar grado académico si está presente
+            grado_academico = clean_value(row.get('grado_academico', ''))
+            if grado_academico:
+                # Aceptar cualquier valor, solo advertencia si está muy largo
+                if len(grado_academico) > 100:
+                    row_warnings.append('Grado académico muy largo (se aceptará como está)')
+            
+            # Validar ciudad si está presente
+            ciudad = clean_value(row.get('ciudad', ''))
+            if ciudad:
+                # Aceptar cualquier valor, solo advertencia si está muy largo
+                if len(ciudad) > 100:
+                    row_warnings.append('Ciudad muy larga (se aceptará como está)')
+            
+            # Validar skills si está presente
+            skills = clean_value(row.get('skills', ''))
+            if skills:
+                # Aceptar cualquier valor, solo advertencia si está muy largo
+                if len(skills) > 500:
+                    row_warnings.append('Skills muy largos (se aceptará como está)')
+            
+            # Validar experiencia si está presente
+            experiencia = clean_value(row.get('experiencia', ''))
+            if experiencia:
+                # Aceptar cualquier valor, solo advertencia si está muy largo
+                if len(experiencia) > 1000:
+                    row_warnings.append('Experiencia muy larga (se aceptará como está)')
+            
+            # Validar comentarios/observaciones si están presentes
+            comentarios = clean_value(row.get('comentarios', ''))
+            observaciones = clean_value(row.get('observaciones', ''))
+            if comentarios and len(comentarios) > 1000:
+                row_warnings.append('Comentarios muy largos (se aceptará como está)')
+            if observaciones and len(observaciones) > 1000:
+                row_warnings.append('Observaciones muy largas (se aceptará como está)')
+            
+            # Solo contar como fila válida si no tiene errores críticos
             if row_errors:
                 validation_results['errors'].extend([{
                     'row': index + 2,
@@ -14340,6 +14409,7 @@ def validate_candidates_excel():
             else:
                 validation_results['valid_rows'] += 1
             
+            # Solo agregar advertencias si son significativas (no por valores vacíos)
             if row_warnings:
                 validation_results['warnings'].extend([{
                     'row': index + 2,
