@@ -4079,7 +4079,7 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         
     cursor = conn.cursor(dictionary=True)
     try:
-        # Consulta base con los campos necesarios para la interfaz
+        # Consulta base con los campos necesarios para la interfaz mejorada
         base_query = """
             SELECT 
                 a.id_afiliado as id,
@@ -4091,14 +4091,24 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                 a.estado as status,
                 a.puntuacion as score,
                 a.fecha_registro as createdAt,
-                NULL as lastContact,
-                NULL as availability,
+                a.ultimo_contacto as lastContact,
+                a.disponibilidad as availability,
                 NULL as desiredSalary,
-                NULL as education,
+                a.grado_academico as education,
                 a.habilidades as skills,
+                a.cargo_solicitado as position,
+                a.observaciones as observations,
+                a.comentarios as comments,
+                a.linkedin as linkedin,
+                a.portfolio as portfolio,
+                a.skills as additional_skills,
+                a.fuente_reclutamiento as source,
+                a.cv_url as cv_url,
+                a.disponibilidad_rotativos as shift_availability,
+                a.transporte_propio as own_transport,
                 
                 -- Campos adicionales para la vista detallada
-                NULL as birthDate,
+                a.fecha_nacimiento as birthDate,
                 NULL as address,
                 NULL as gender,
                 NULL as maritalStatus,
@@ -4108,7 +4118,15 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                 NULL as tags_json,
                 0 as documentsCount,
                 NULL as lastInteractionType,
-                NULL as lastInteractionDate
+                NULL as lastInteractionDate,
+                
+                -- Contadores útiles para la búsqueda
+                (SELECT COUNT(*) FROM Postulaciones p WHERE p.id_afiliado = a.id_afiliado) as total_aplicaciones,
+                (SELECT GROUP_CONCAT(DISTINCT c.empresa SEPARATOR ', ') 
+                 FROM Postulaciones p 
+                 JOIN Vacantes v ON p.id_vacante = v.id_vacante 
+                 JOIN Clientes c ON v.id_cliente = c.id_cliente 
+                 WHERE p.id_afiliado = a.id_afiliado) as empresas_aplicadas
                 
             FROM Afiliados a
             WHERE 1=1
@@ -4130,30 +4148,45 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                 conditions.append(f"({condition})")
                 params.extend(filter_params)
 
-        # Filtro por término de búsqueda
+        # 🔍 BÚSQUEDA INTELIGENTE: Filtro por término de búsqueda mejorado
         if term:
             if term.isdigit():
+                # Si es un número, buscar por ID, teléfono o puntuación
                 conditions.append("""
-                    (a.nombre_completo LIKE %s 
-                    OR a.experiencia LIKE %s 
-                    OR a.ciudad LIKE %s 
-                    OR a.id_afiliado = %s 
-                    OR a.email LIKE %s)
+                    (a.id_afiliado = %s 
+                    OR a.telefono LIKE %s 
+                    OR a.puntuacion = %s)
                 """)
-                params.extend([f"%{term}%", f"%{term}%", f"%{term}%", term, f"%{term}%"])
+                params.extend([term, f"%{term}%", term])
             else:
-                search_terms = term.split()
-                term_conditions = []
-                for t in search_terms:
-                    term_conditions.append("""
-                        (a.nombre_completo LIKE %s 
-                        OR a.experiencia LIKE %s 
-                        OR a.ciudad LIKE %s 
-                        OR a.cargo_solicitado LIKE %s
-                        OR a.habilidades LIKE %s)
-                    """)
-                    params.extend([f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%"])
-                conditions.append(f"({' OR '.join(term_conditions)})" if len(term_conditions) > 1 else term_conditions[0])
+                # Búsqueda inteligente por palabras clave
+                search_terms = [t.strip().lower() for t in term.split() if t.strip()]
+                if search_terms:
+                    term_conditions = []
+                    
+                    for t in search_terms:
+                        # Buscar en múltiples columnas con diferentes estrategias
+                        term_conditions.append("""
+                            (LOWER(a.nombre_completo) LIKE %s 
+                            OR LOWER(a.experiencia) LIKE %s 
+                            OR LOWER(a.ciudad) LIKE %s 
+                            OR LOWER(a.cargo_solicitado) LIKE %s
+                            OR LOWER(a.habilidades) LIKE %s
+                            OR LOWER(a.email) LIKE %s
+                            OR LOWER(a.grado_academico) LIKE %s
+                            OR LOWER(a.observaciones) LIKE %s
+                            OR LOWER(a.comentarios) LIKE %s
+                            OR LOWER(a.linkedin) LIKE %s
+                            OR LOWER(a.portfolio) LIKE %s
+                            OR LOWER(a.skills) LIKE %s
+                            OR LOWER(a.fuente_reclutamiento) LIKE %s)
+                        """)
+                        params.extend([f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", 
+                                     f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", 
+                                     f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%"])
+                    
+                    # Combinar todas las condiciones con AND (todas las palabras deben coincidir)
+                    conditions.append(f"({' AND '.join(term_conditions)})" if len(term_conditions) > 1 else term_conditions[0])
         
         # Filtros adicionales
         if experience:
