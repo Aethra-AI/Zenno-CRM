@@ -7010,6 +7010,7 @@ def handle_vacancies():
         
         if request.method == 'GET':
             estado = request.args.get('estado')
+            client_id = request.args.get('client_id')
             page = int(request.args.get('page', 1))
             limit = min(int(request.args.get('limit', 100)), 500)  # Máximo 500 por página
             offset = (page - 1) * limit
@@ -7029,6 +7030,11 @@ def handle_vacancies():
             if condition:
                 base_query += f" AND ({condition})"
                 params.extend(filter_params)
+            
+            # Filtro por cliente
+            if client_id:
+                base_query += " AND V.id_cliente = %s"
+                params.append(client_id)
             
             # Filtro de estado (debe ir antes del GROUP BY)
             if estado:
@@ -7313,6 +7319,9 @@ def handle_applications():
             if request.args.get('id_vacante'):
                 conditions.append("p.id_vacante = %s")
                 params.append(request.args.get('id_vacante'))
+            if request.args.get('client_id'):
+                conditions.append("v.id_cliente = %s")
+                params.append(request.args.get('client_id'))
             if request.args.get('estado'):
                 conditions.append("p.estado = %s")
                 params.append(request.args.get('estado'))
@@ -7964,6 +7973,12 @@ def handle_hired():
             if condition:
                 sql += f" AND ({condition})"
                 params.extend(filter_params)
+            
+            # Filtro por cliente
+            client_id = request.args.get('client_id')
+            if client_id:
+                sql += " AND c.id_cliente = %s"
+                params.append(client_id)
             
             sql += " ORDER BY saldo_pendiente DESC, co.fecha_contratacion DESC"
             
