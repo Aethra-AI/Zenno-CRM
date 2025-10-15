@@ -11377,7 +11377,7 @@ def get_client_applications(client_id):
             LEFT JOIN Vacantes v ON p.id_vacante = v.id_vacante
             WHERE v.id_cliente = %s AND v.tenant_id = %s
             ORDER BY p.fecha_aplicacion DESC
-        """, (client_id,))
+        """, (client_id, tenant_id))
         
         applications = cursor.fetchall()
         
