@@ -4150,6 +4150,9 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
 
         # 🔍 BÚSQUEDA INTELIGENTE: Filtro por término de búsqueda mejorado
         if term:
+            # Debug: Log del término de búsqueda
+            app.logger.info(f"🔍 Término de búsqueda recibido: '{term}'")
+            
             if term.isdigit():
                 # Si es un número, buscar por ID, teléfono o puntuación
                 conditions.append("""
@@ -4158,13 +4161,22 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                     OR a.puntuacion = %s)
                 """)
                 params.extend([term, f"%{term}%", term])
+                app.logger.info(f"🔍 Búsqueda numérica: {term}")
             else:
+                # Limpiar y procesar el término de búsqueda
+                # Reemplazar + por espacios (viene de URL encoding)
+                clean_term = term.replace('+', ' ').strip()
+                app.logger.info(f"🔍 Término limpio: '{clean_term}'")
+                
                 # Búsqueda inteligente por palabras clave
-                search_terms = [t.strip().lower() for t in term.split() if t.strip()]
+                search_terms = [t.strip().lower() for t in clean_term.split() if t.strip()]
+                app.logger.info(f"🔍 Palabras de búsqueda: {search_terms}")
+                
                 if search_terms:
                     term_conditions = []
                     
                     for t in search_terms:
+                        app.logger.info(f"🔍 Buscando palabra: '{t}'")
                         # Buscar en múltiples columnas con diferentes estrategias
                         term_conditions.append("""
                             (LOWER(a.nombre_completo) LIKE %s 
@@ -4186,7 +4198,9 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                                      f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%"])
                     
                     # Combinar todas las condiciones con AND (todas las palabras deben coincidir)
-                    conditions.append(f"({' AND '.join(term_conditions)})" if len(term_conditions) > 1 else term_conditions[0])
+                    final_condition = f"({' AND '.join(term_conditions)})" if len(term_conditions) > 1 else term_conditions[0]
+                    conditions.append(final_condition)
+                    app.logger.info(f"🔍 Condición final de búsqueda: {final_condition}")
         
         # Filtros adicionales
         if experience:
@@ -4223,6 +4237,10 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         # Ordenar por fecha de registro por defecto
         base_query += " ORDER BY a.fecha_registro DESC"
         
+        # Debug: Log de la consulta SQL completa
+        app.logger.info(f"🔍 Consulta SQL: {base_query}")
+        app.logger.info(f"🔍 Parámetros: {params}")
+        
         # Aplicar paginación si se especifica
         if limit is not None and offset is not None:
             base_query += " LIMIT %s OFFSET %s"
@@ -4234,6 +4252,11 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         
         cursor.execute(base_query, tuple(params))
         results = cursor.fetchall()
+        
+        # Debug: Log de resultados
+        app.logger.info(f"🔍 Resultados encontrados: {len(results)}")
+        if results:
+            app.logger.info(f"🔍 Primer resultado: {results[0]}")
         
         # Procesar resultados
         formatted_results = []
