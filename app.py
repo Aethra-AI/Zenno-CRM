@@ -7017,24 +7017,27 @@ def handle_vacancies():
             
             # 🔐 MÓDULO B6: Filtrar por usuario según rol
             base_query = """
-                SELECT V.*, C.empresa, COUNT(P.id_postulacion) as aplicaciones 
+                SELECT V.*, C.empresa, 
+                       COUNT(P.id_postulacion) as aplicaciones_count,
+                       COUNT(CASE WHEN CO.id_contratado IS NOT NULL THEN 1 END) as contratados_count
                 FROM Vacantes V 
                 JOIN Clientes C ON V.id_cliente = C.id_cliente
                 LEFT JOIN Postulaciones P ON V.id_vacante = P.id_vacante
+                LEFT JOIN Contratados CO ON V.id_vacante = CO.id_vacante
                 WHERE V.tenant_id = %s
             """
             params = [tenant_id]
+            
+            # Filtro por cliente específico
+            if client_id:
+                base_query += " AND V.id_cliente = %s"
+                params.append(client_id)
             
             # 🔐 MÓDULO B6: Aplicar filtro por usuario
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'V.created_by_user', 'vacancy', 'V.id_vacante')
             if condition:
                 base_query += f" AND ({condition})"
                 params.extend(filter_params)
-            
-            # Filtro por cliente
-            if client_id:
-                base_query += " AND V.id_cliente = %s"
-                params.append(client_id)
             
             # Filtro de estado (debe ir antes del GROUP BY)
             if estado:
@@ -7968,17 +7971,17 @@ def handle_hired():
             """
             params = [tenant_id]
             
+            # Filtro por cliente específico
+            client_id = request.args.get('client_id')
+            if client_id:
+                sql += " AND v.id_cliente = %s"
+                params.append(client_id)
+            
             # 🔐 MÓDULO B10: Filtrar por usuario según rol
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'co.created_by_user', 'hired', 'co.id_contratado')
             if condition:
                 sql += f" AND ({condition})"
                 params.extend(filter_params)
-            
-            # Filtro por cliente
-            client_id = request.args.get('client_id')
-            if client_id:
-                sql += " AND c.id_cliente = %s"
-                params.append(client_id)
             
             sql += " ORDER BY saldo_pendiente DESC, co.fecha_contratacion DESC"
             
