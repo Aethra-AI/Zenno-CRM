@@ -7293,7 +7293,7 @@ def handle_applications():
             # Consulta base
             base_sql = """
                 SELECT p.id_postulacion, p.id_afiliado, p.id_vacante, p.fecha_aplicacion, p.estado, p.comentarios,
-                       a.nombre_completo, 
+                       a.nombre_completo, a.cv_url, a.email, a.telefono,
                        v.cargo_solicitado, c.empresa, v.ciudad, v.id_cliente
                 FROM Postulaciones p
                 JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
