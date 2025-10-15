@@ -7305,9 +7305,9 @@ def handle_applications():
             conditions = []
             params = []
             
-            # 🔐 MÓDULO B7: Siempre filtrar por tenant
-            conditions.append("v.tenant_id = %s")
-            params.append(tenant_id)
+            # 🔐 MÓDULO B7: Siempre filtrar por tenant en ambas tablas
+            conditions.append("v.tenant_id = %s AND a.tenant_id = %s")
+            params.extend([tenant_id, tenant_id])
             
             # 🔐 MÓDULO B7: Filtrar por usuario según rol (a través de la vacante)
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
@@ -7337,9 +7337,20 @@ def handle_applications():
                 base_sql += " WHERE " + " AND ".join(conditions)
             
             base_sql += " ORDER BY p.fecha_aplicacion DESC"
+            
+            # Debug: Log de la consulta SQL
+            app.logger.info(f"🔍 Consulta de aplicaciones: {base_sql}")
+            app.logger.info(f"🔍 Parámetros: {params}")
+            
             cursor.execute(base_sql, tuple(params))
             # Convertir fechas para que sean compatibles con JSON
             results = cursor.fetchall()
+            
+            # Debug: Log de resultados
+            app.logger.info(f"🔍 Resultados encontrados: {len(results)}")
+            if results:
+                app.logger.info(f"🔍 Primer resultado: {results[0]}")
+            
             for row in results:
                 for key, value in row.items():
                     if isinstance(value, (datetime, date)):
@@ -11385,6 +11396,7 @@ def get_client_applications(client_id):
                 a.nombre_completo,
                 a.email,
                 a.telefono,
+                a.cv_url,
                 p.fecha_aplicacion,
                 p.estado,
                 v.cargo_solicitado,
@@ -11393,9 +11405,9 @@ def get_client_applications(client_id):
             FROM Postulaciones p
             LEFT JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
             LEFT JOIN Vacantes v ON p.id_vacante = v.id_vacante
-            WHERE v.id_cliente = %s AND v.tenant_id = %s
+            WHERE v.id_cliente = %s AND v.tenant_id = %s AND a.tenant_id = %s
             ORDER BY p.fecha_aplicacion DESC
-        """, (client_id, tenant_id))
+        """, (client_id, tenant_id, tenant_id))
         
         applications = cursor.fetchall()
         
