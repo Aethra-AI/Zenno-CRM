@@ -1375,8 +1375,36 @@ def search_candidates_multi_tenant(tenant_id: int, term: str = None, tags: str =
         
         # Filtros adicionales
         if term:
-            base_query += " AND (a.nombre_completo LIKE %s OR a.email LIKE %s OR a.ciudad LIKE %s)"
-            params.extend([f"%{term}%", f"%{term}%", f"%{term}%"])
+            # Dividir el término de búsqueda en palabras individuales
+            search_words = [word.strip() for word in term.split() if word.strip()]
+            
+            if search_words:
+                # Para cada palabra, buscar en todas las columnas relevantes
+                # Esto permite que "mese san pedro" encuentre candidatos donde:
+                # - "mese" esté en experiencia (ej: "mesero")
+                # - "san" esté en ciudad (ej: "San Pedro Sula")
+                # - "pedro" esté en nombre o ciudad
+                word_conditions = []
+                for word in search_words:
+                    word_condition = """(
+                        a.nombre_completo LIKE %s OR 
+                        a.email LIKE %s OR 
+                        a.ciudad LIKE %s OR 
+                        a.cargo_solicitado LIKE %s OR 
+                        a.experiencia LIKE %s OR 
+                        a.habilidades LIKE %s OR 
+                        a.skills LIKE %s OR 
+                        a.grado_academico LIKE %s OR 
+                        a.nacionalidad LIKE %s OR 
+                        a.comentarios LIKE %s OR 
+                        a.observaciones LIKE %s
+                    )"""
+                    word_conditions.append(word_condition)
+                    # Agregar el parámetro para cada columna (11 columnas)
+                    params.extend([f"%{word}%"] * 11)
+                
+                # Unir todas las condiciones con AND para que todas las palabras deban encontrarse
+                base_query += " AND " + " AND ".join(word_conditions)
         
         if city:
             base_query += " AND a.ciudad LIKE %s"
