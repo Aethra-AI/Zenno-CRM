@@ -1375,8 +1375,11 @@ def search_candidates_multi_tenant(tenant_id: int, term: str = None, tags: str =
         
         # Filtros adicionales
         if term:
+            # Limpiar el término de búsqueda: eliminar espacios al inicio/final y múltiples espacios
+            term_cleaned = ' '.join(term.split())
+            
             # Dividir el término de búsqueda en palabras individuales
-            search_words = [word.strip() for word in term.split() if word.strip()]
+            search_words = [word for word in term_cleaned.split() if len(word) > 0]
             
             if search_words:
                 # Para cada palabra, buscar en todas las columnas relevantes
@@ -4221,9 +4224,8 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                             OR LOWER(a.skills) LIKE %s
                             OR LOWER(a.fuente_reclutamiento) LIKE %s)
                         """)
-                        params.extend([f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", 
-                                     f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%", 
-                                     f"%{t}%", f"%{t}%", f"%{t}%", f"%{t}%"])
+                        # 13 columnas = 13 parámetros
+                        params.extend([f"%{t}%"] * 13)
                     
                     # Combinar todas las condiciones con AND (todas las palabras deben coincidir)
                     final_condition = f"({' AND '.join(term_conditions)})" if len(term_conditions) > 1 else term_conditions[0]
@@ -6700,17 +6702,31 @@ def advanced_search_candidates():
             conditions.append(f"({condition})")
             params.extend(filter_params)
         
-        # Búsqueda por término
+        # Búsqueda por término - palabra por palabra
         if search_term:
-            conditions.append("""
-                (a.nombre_completo LIKE %s 
-                OR a.experiencia LIKE %s 
-                OR a.ciudad LIKE %s 
-                OR a.habilidades LIKE %s
-                OR a.email LIKE %s)
-            """)
-            search_pattern = f"%{search_term}%"
-            params.extend([search_pattern] * 5)
+            # Dividir en palabras individuales
+            search_words = [word.strip() for word in search_term.split() if word.strip()]
+            
+            if search_words:
+                word_conditions = []
+                for word in search_words:
+                    word_conditions.append("""
+                        (LOWER(a.nombre_completo) LIKE %s 
+                        OR LOWER(a.experiencia) LIKE %s 
+                        OR LOWER(a.ciudad) LIKE %s 
+                        OR LOWER(a.cargo_solicitado) LIKE %s
+                        OR LOWER(a.habilidades) LIKE %s
+                        OR LOWER(a.email) LIKE %s
+                        OR LOWER(a.grado_academico) LIKE %s
+                        OR LOWER(a.observaciones) LIKE %s
+                        OR LOWER(a.comentarios) LIKE %s
+                        OR LOWER(a.skills) LIKE %s)
+                    """)
+                    # 10 columnas = 10 parámetros
+                    params.extend([f"%{word.lower()}%"] * 10)
+                
+                # Todas las palabras deben coincidir (AND)
+                conditions.append(" AND ".join(word_conditions))
         
         # Filtros avanzados
         if filters.get('city'):
