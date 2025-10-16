@@ -1395,12 +1395,12 @@ def search_candidates_multi_tenant(tenant_id: int, term: str = None, tags: str =
                         a.ciudad LIKE %s OR 
                         a.cargo_solicitado LIKE %s OR 
                         a.experiencia LIKE %s OR 
-                        a.habilidades LIKE %s OR 
                         a.skills LIKE %s OR 
                         a.grado_academico LIKE %s OR 
-                        a.nacionalidad LIKE %s OR 
-                        a.comentarios LIKE %s OR 
-                        a.observaciones LIKE %s
+                        a.observaciones LIKE %s OR
+                        a.linkedin LIKE %s OR
+                        a.portfolio LIKE %s OR
+                        a.fuente_reclutamiento LIKE %s
                     )"""
                     word_conditions.append(word_condition)
                     # Agregar el parámetro para cada columna (11 columnas)
@@ -4214,18 +4214,17 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                             OR LOWER(a.experiencia) LIKE %s 
                             OR LOWER(a.ciudad) LIKE %s 
                             OR LOWER(a.cargo_solicitado) LIKE %s
-                            OR LOWER(a.habilidades) LIKE %s
                             OR LOWER(a.email) LIKE %s
                             OR LOWER(a.grado_academico) LIKE %s
                             OR LOWER(a.observaciones) LIKE %s
-                            OR LOWER(a.comentarios) LIKE %s
                             OR LOWER(a.linkedin) LIKE %s
                             OR LOWER(a.portfolio) LIKE %s
                             OR LOWER(a.skills) LIKE %s
-                            OR LOWER(a.fuente_reclutamiento) LIKE %s)
+                            OR LOWER(a.fuente_reclutamiento) LIKE %s
+                            OR LOWER(a.telefono) LIKE %s)
                         """)
-                        # 13 columnas = 13 parámetros
-                        params.extend([f"%{t}%"] * 13)
+                        # 12 columnas = 12 parámetros
+                        params.extend([f"%{t}%"] * 12)
                     
                     # Combinar todas las condiciones con AND (todas las palabras deben coincidir)
                     final_condition = f"({' AND '.join(term_conditions)})" if len(term_conditions) > 1 else term_conditions[0]
@@ -5751,14 +5750,15 @@ def get_candidates():
                         LOWER(a.ciudad) LIKE %s OR
                         LOWER(a.experiencia) LIKE %s OR
                         LOWER(a.cargo_solicitado) LIKE %s OR
-                        LOWER(a.habilidades) LIKE %s OR
                         LOWER(a.skills) LIKE %s OR
                         LOWER(a.grado_academico) LIKE %s OR
                         LOWER(a.observaciones) LIKE %s OR
-                        LOWER(a.comentarios) LIKE %s
+                        LOWER(a.linkedin) LIKE %s OR
+                        LOWER(a.portfolio) LIKE %s OR
+                        LOWER(a.fuente_reclutamiento) LIKE %s
                     )""")
-                    # 11 columnas = 11 parámetros por palabra
-                    params.extend([f"%{word.lower()}%"] * 11)
+                    # 12 columnas = 12 parámetros por palabra
+                    params.extend([f"%{word.lower()}%"] * 12)
                 
                 # Todas las palabras deben coincidir (AND)
                 query += " AND " + " AND ".join(word_conditions)
@@ -6733,15 +6733,17 @@ def advanced_search_candidates():
                         OR LOWER(a.experiencia) LIKE %s 
                         OR LOWER(a.ciudad) LIKE %s 
                         OR LOWER(a.cargo_solicitado) LIKE %s
-                        OR LOWER(a.habilidades) LIKE %s
                         OR LOWER(a.email) LIKE %s
                         OR LOWER(a.grado_academico) LIKE %s
                         OR LOWER(a.observaciones) LIKE %s
-                        OR LOWER(a.comentarios) LIKE %s
-                        OR LOWER(a.skills) LIKE %s)
+                        OR LOWER(a.skills) LIKE %s
+                        OR LOWER(a.linkedin) LIKE %s
+                        OR LOWER(a.portfolio) LIKE %s
+                        OR LOWER(a.fuente_reclutamiento) LIKE %s
+                        OR LOWER(a.telefono) LIKE %s)
                     """)
-                    # 10 columnas = 10 parámetros
-                    params.extend([f"%{word.lower()}%"] * 10)
+                    # 12 columnas = 12 parámetros
+                    params.extend([f"%{word.lower()}%"] * 12)
                 
                 # Todas las palabras deben coincidir (AND)
                 conditions.append(" AND ".join(word_conditions))
