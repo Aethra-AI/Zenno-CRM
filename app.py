@@ -5733,17 +5733,35 @@ def get_candidates():
             query += f" AND ({condition})"
             params.extend(filter_params)
         
-        # Aplicar filtros
+        # Aplicar filtros - búsqueda palabra por palabra
         if search:
-            query += """ AND (
-                nombre_completo LIKE %s OR 
-                email LIKE %s OR 
-                telefono LIKE %s OR
-                ciudad LIKE %s OR
-                experiencia LIKE %s
-            )"""
-            search_param = f"%{search}%"
-            params.extend([search_param, search_param, search_param, search_param, search_param])
+            app.logger.info(f"🔍 Búsqueda recibida en get_candidates: '{search}'")
+            # Limpiar y dividir en palabras individuales
+            search_cleaned = ' '.join(search.split())
+            search_words = [word.strip() for word in search_cleaned.split() if word.strip()]
+            app.logger.info(f"🔍 Palabras de búsqueda: {search_words}")
+            
+            if search_words:
+                word_conditions = []
+                for word in search_words:
+                    word_conditions.append("""(
+                        LOWER(a.nombre_completo) LIKE %s OR 
+                        LOWER(a.email) LIKE %s OR 
+                        LOWER(a.telefono) LIKE %s OR
+                        LOWER(a.ciudad) LIKE %s OR
+                        LOWER(a.experiencia) LIKE %s OR
+                        LOWER(a.cargo_solicitado) LIKE %s OR
+                        LOWER(a.habilidades) LIKE %s OR
+                        LOWER(a.skills) LIKE %s OR
+                        LOWER(a.grado_academico) LIKE %s OR
+                        LOWER(a.observaciones) LIKE %s OR
+                        LOWER(a.comentarios) LIKE %s
+                    )""")
+                    # 11 columnas = 11 parámetros por palabra
+                    params.extend([f"%{word.lower()}%"] * 11)
+                
+                # Todas las palabras deben coincidir (AND)
+                query += " AND " + " AND ".join(word_conditions)
         
         if status:
             query += " AND estado = %s"
