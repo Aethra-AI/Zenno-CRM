@@ -107,6 +107,13 @@ from whatsapp_config_manager import config_manager, get_tenant_whatsapp_config, 
 from whatsapp_webhook_handler import handle_whatsapp_webhook_get, handle_whatsapp_webhook_post
 from whatsapp_business_api_manager import send_whatsapp_message, get_whatsapp_message_status, api_manager
 from whatsapp_web_manager import get_tenant_whatsapp_mode, initialize_whatsapp_web_session, send_whatsapp_web_message, get_whatsapp_web_status, web_manager
+
+# --- PUBLIC API SERVICE ---
+from public_api_service import public_api_service
+
+# --- DATABASE MIGRATIONS ---
+from database_migrations import run_database_migrations
+
 import logging
 from logging.handlers import RotatingFileHandler
 import traceback
@@ -138,6 +145,26 @@ if not app.debug:
     app.logger.info('CRM Backend startup')
 
 github_pages_url = "https://henmir-hn.github.io/portal-empleo-henmir"
+
+# --- EJECUTAR MIGRACIONES DE BASE DE DATOS ---
+# Esto se ejecuta automáticamente al iniciar el servidor
+try:
+    app.logger.info("🔄 Verificando migraciones de base de datos...")
+    db_config = {
+        'host': os.getenv('DB_HOST'),
+        'user': os.getenv('DB_USER'),
+        'password': os.getenv('DB_PASSWORD'),
+        'port': int(os.getenv('DB_PORT', 3306)),
+        'database': os.getenv('DB_NAME')
+    }
+    
+    if run_database_migrations(db_config):
+        app.logger.info("✅ Migraciones de base de datos completadas")
+    else:
+        app.logger.warning("⚠️  Algunas migraciones fallaron, revisa los logs")
+except Exception as e:
+    app.logger.error(f"❌ Error ejecutando migraciones: {str(e)}")
+    # No detener el servidor, solo registrar el error
 
 # Reemplaza la línea CORS(app) con este bloque
 CORS(app, 
@@ -465,6 +492,127 @@ def require_api_key(f):
             app.logger.warning(f"Acceso no autorizado al API interno. Clave recibida: {api_key}")
             return jsonify({"error": "Acceso no autorizado"}), 401
     return decorated_function
+
+
+def public_api_key_required(f):
+    """
+    Decorador para validar API Keys públicas en endpoints externos.
+    Valida la API Key, verifica rate limits y registra el uso.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        import time
+        start_time = time.time()
+        
+        # Obtener API Key del header
+        api_key = request.headers.get('X-API-Key')
+        
+        if not api_key:
+            app.logger.warning("Petición sin API Key")
+            return jsonify({
+                'success': False,
+                'error': 'API Key requerida',
+                'message': 'Debes incluir el header X-API-Key con tu clave de API'
+            }), 401
+        
+        # Validar API Key
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({
+                'success': False,
+                'error': 'Error de conexión al servidor'
+            }), 500
+        
+        try:
+            is_valid, api_key_data = public_api_service.validate_api_key(conn, api_key)
+            
+            if not is_valid:
+                error_msg = api_key_data.get('error', 'API Key inválida') if api_key_data else 'API Key inválida'
+                
+                # Registrar intento fallido
+                if api_key_data and 'id' in api_key_data:
+                    public_api_service.log_api_request(
+                        conn=conn,
+                        api_key_id=api_key_data['id'],
+                        tenant_id=api_key_data.get('tenant_id', 0),
+                        endpoint=request.path,
+                        metodo=request.method,
+                        status_code=401,
+                        ip_origen=request.remote_addr,
+                        user_agent=request.user_agent.string if request.user_agent else None,
+                        error_message=error_msg
+                    )
+                
+                return jsonify({
+                    'success': False,
+                    'error': error_msg
+                }), 401
+            
+            # Verificar rate limit
+            rate_limit_ok, requests_remaining = public_api_service.check_rate_limit(
+                conn=conn,
+                api_key_id=api_key_data['id'],
+                rate_limit_per_minute=api_key_data['rate_limit_per_minute']
+            )
+            
+            if not rate_limit_ok:
+                public_api_service.log_api_request(
+                    conn=conn,
+                    api_key_id=api_key_data['id'],
+                    tenant_id=api_key_data['tenant_id'],
+                    endpoint=request.path,
+                    metodo=request.method,
+                    status_code=429,
+                    ip_origen=request.remote_addr,
+                    user_agent=request.user_agent.string if request.user_agent else None,
+                    error_message='Rate limit excedido'
+                )
+                
+                return jsonify({
+                    'success': False,
+                    'error': 'Rate limit excedido',
+                    'message': f'Has excedido el límite de {api_key_data["rate_limit_per_minute"]} peticiones por minuto'
+                }), 429
+            
+            # Almacenar datos de la API Key en el contexto
+            g.api_key_data = api_key_data
+            g.tenant_id = api_key_data['tenant_id']
+            
+            # Ejecutar la función
+            response = f(*args, **kwargs)
+            
+            # Calcular tiempo de respuesta
+            response_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Registrar uso exitoso
+            status_code = response[1] if isinstance(response, tuple) else 200
+            
+            public_api_service.log_api_request(
+                conn=conn,
+                api_key_id=api_key_data['id'],
+                tenant_id=api_key_data['tenant_id'],
+                endpoint=request.path,
+                metodo=request.method,
+                status_code=status_code,
+                ip_origen=request.remote_addr,
+                user_agent=request.user_agent.string if request.user_agent else None,
+                query_params=dict(request.args),
+                response_time_ms=response_time_ms
+            )
+            
+            return response
+            
+        except Exception as e:
+            app.logger.error(f"Error en validación de API Key pública: {str(e)}")
+            return jsonify({
+                'success': False,
+                'error': 'Error interno del servidor'
+            }), 500
+        finally:
+            if conn:
+                conn.close()
+    
+    return decorated
 
 
 # --- FUNCIÓN DE CONEXIÓN A LA BD ---
@@ -14946,6 +15094,523 @@ def delete_cv_from_oci(cv_identifier):
             'success': False,
             'error': error_msg
         }), 500
+
+# ===============================================================
+# MÓDULO: GESTIÓN DE API KEYS PÚBLICAS POR TENANT
+# ===============================================================
+
+@app.route('/api/public-api-keys', methods=['GET'])
+@token_required
+def get_tenant_api_keys():
+    """
+    Obtener todas las API Keys del tenant actual
+    Solo muestra información segura (no los secretos)
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        conn = get_db_connection()
+        
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
+        
+        api_keys = public_api_service.get_api_keys_by_tenant(conn, tenant_id)
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': api_keys,
+            'total': len(api_keys)
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo API Keys: {str(e)}")
+        return jsonify({'error': 'Error obteniendo API Keys'}), 500
+
+
+@app.route('/api/public-api-keys', methods=['POST'])
+@token_required
+def create_tenant_api_key():
+    """
+    Crear una nueva API Key para el tenant actual
+    
+    Body:
+    {
+        "nombre": "API Key para sitio web",
+        "descripcion": "Usada en henmir-connect-hub.com",
+        "dias_expiracion": 365,  // opcional
+        "permisos": {
+            "vacancies": true,
+            "candidates": true
+        }
+    }
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+        
+        data = request.get_json()
+        
+        # Validar datos requeridos
+        if not data.get('nombre'):
+            return jsonify({'error': 'El nombre es requerido'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
+        
+        # Crear API Key
+        result = public_api_service.create_api_key(
+            conn=conn,
+            tenant_id=tenant_id,
+            nombre=data['nombre'],
+            descripcion=data.get('descripcion'),
+            created_by_user=user_id,
+            permisos=data.get('permisos'),
+            dias_expiracion=data.get('dias_expiracion')
+        )
+        
+        conn.close()
+        
+        if result['success']:
+            app.logger.info(f"API Key creada para tenant {tenant_id} por usuario {user_id}")
+            return jsonify(result), 201
+        else:
+            return jsonify(result), 500
+        
+    except Exception as e:
+        app.logger.error(f"Error creando API Key: {str(e)}")
+        return jsonify({'error': 'Error creando API Key'}), 500
+
+
+@app.route('/api/public-api-keys/<int:api_key_id>', methods=['DELETE'])
+@token_required
+def delete_tenant_api_key(api_key_id):
+    """
+    Eliminar una API Key del tenant actual
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        conn = get_db_connection()
+        
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
+        
+        success = public_api_service.delete_api_key(conn, api_key_id, tenant_id)
+        
+        conn.close()
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'API Key eliminada exitosamente'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'API Key no encontrada o no pertenece a tu organización'
+            }), 404
+        
+    except Exception as e:
+        app.logger.error(f"Error eliminando API Key: {str(e)}")
+        return jsonify({'error': 'Error eliminando API Key'}), 500
+
+
+@app.route('/api/public-api-keys/<int:api_key_id>/deactivate', methods=['POST'])
+@token_required
+def deactivate_tenant_api_key(api_key_id):
+    """
+    Desactivar una API Key del tenant actual
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        conn = get_db_connection()
+        
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
+        
+        success = public_api_service.deactivate_api_key(conn, api_key_id, tenant_id)
+        
+        conn.close()
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'API Key desactivada exitosamente'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'API Key no encontrada o no pertenece a tu organización'
+            }), 404
+        
+    except Exception as e:
+        app.logger.error(f"Error desactivando API Key: {str(e)}")
+        return jsonify({'error': 'Error desactivando API Key'}), 500
+
+
+@app.route('/api/public-api-keys/<int:api_key_id>/stats', methods=['GET'])
+@token_required
+def get_api_key_stats(api_key_id):
+    """
+    Obtener estadísticas de uso de una API Key
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        conn = get_db_connection()
+        
+        if not conn:
+            return jsonify({'error': 'Error de conexión'}), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Verificar que la API Key pertenece al tenant
+        cursor.execute("""
+            SELECT id FROM Tenant_API_Keys 
+            WHERE id = %s AND tenant_id = %s
+        """, (api_key_id, tenant_id))
+        
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({'error': 'API Key no encontrada'}), 404
+        
+        # Obtener estadísticas generales
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_requests,
+                SUM(CASE WHEN exitoso = 1 THEN 1 ELSE 0 END) as requests_exitosos,
+                SUM(CASE WHEN exitoso = 0 THEN 1 ELSE 0 END) as requests_fallidos,
+                AVG(response_time_ms) as avg_response_time,
+                MAX(timestamp) as ultimo_uso
+            FROM API_Key_Logs
+            WHERE api_key_id = %s
+        """, (api_key_id,))
+        
+        stats = cursor.fetchone()
+        
+        # Obtener logs recientes
+        cursor.execute("""
+            SELECT 
+                endpoint, metodo, status_code, exitoso, 
+                ip_origen, timestamp, response_time_ms
+            FROM API_Key_Logs
+            WHERE api_key_id = %s
+            ORDER BY timestamp DESC
+            LIMIT 50
+        """, (api_key_id,))
+        
+        recent_logs = cursor.fetchall()
+        
+        # Obtener uso por endpoint
+        cursor.execute("""
+            SELECT 
+                endpoint,
+                COUNT(*) as total,
+                SUM(CASE WHEN exitoso = 1 THEN 1 ELSE 0 END) as exitosos
+            FROM API_Key_Logs
+            WHERE api_key_id = %s
+            GROUP BY endpoint
+        """, (api_key_id,))
+        
+        usage_by_endpoint = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'stats': stats,
+            'recent_logs': recent_logs,
+            'usage_by_endpoint': usage_by_endpoint
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo estadísticas: {str(e)}")
+        return jsonify({'error': 'Error obteniendo estadísticas'}), 500
+
+
+# ===============================================================
+# ENDPOINTS PÚBLICOS - COMPARTIR DATOS CON SITIOS WEB EXTERNOS
+# ===============================================================
+
+@app.route('/public-api/v1/test', methods=['GET'])
+@public_api_key_required
+def test_public_api():
+    """
+    Endpoint de prueba para validar que la API Key funciona correctamente
+    """
+    api_key_data = g.api_key_data
+    
+    return jsonify({
+        'success': True,
+        'message': '¡Tu API Key funciona correctamente!',
+        'tenant_id': api_key_data['tenant_id'],
+        'api_key_name': api_key_data['nombre_descriptivo'],
+        'permissions': api_key_data['permisos'],
+        'timestamp': datetime.now().isoformat()
+    })
+
+
+@app.route('/public-api/v1/vacancies', methods=['GET'])
+@public_api_key_required
+def get_public_vacancies():
+    """
+    Endpoint público para obtener vacantes activas del tenant
+    
+    ⚠️ IMPORTANTE: NO expone información sensible como nombres de empresas
+    
+    Query Parameters:
+        - estado: Filtrar por estado (default: 'Abierta')
+        - ciudad: Filtrar por ciudad
+        - limit: Número de resultados (default: 50, max: 100)
+        - offset: Offset para paginación (default: 0)
+    
+    Headers:
+        - X-API-Key: API Key del tenant
+    
+    Respuesta:
+        {
+            "success": true,
+            "data": [...],
+            "pagination": {...}
+        }
+    """
+    try:
+        # Obtener tenant_id desde el contexto (ya validado por el decorador)
+        tenant_id = g.tenant_id
+        api_key_data = g.api_key_data
+        
+        # Verificar permisos
+        permisos = api_key_data.get('permisos', {})
+        if not permisos.get('vacancies', False):
+            return jsonify({
+                'success': False,
+                'error': 'Esta API Key no tiene permisos para acceder a vacantes',
+                'code': 'PERMISSION_DENIED'
+            }), 403
+        
+        # Obtener parámetros de consulta
+        estado = request.args.get('estado', 'Abierta')
+        ciudad = request.args.get('ciudad')
+        limit = min(int(request.args.get('limit', 50)), 100)  # Máximo 100
+        offset = int(request.args.get('offset', 0))
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({
+                'success': False,
+                'error': 'Error de conexión al servidor'
+            }), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Construir consulta - SIN información sensible de clientes
+        query = """
+            SELECT 
+                v.id_vacante,
+                v.cargo_solicitado,
+                v.descripcion,
+                v.requisitos,
+                v.salario_min,
+                v.salario_max,
+                v.salario,
+                v.ciudad,
+                v.estado,
+                v.fecha_apertura,
+                v.fecha_cierre,
+                DATEDIFF(v.fecha_cierre, CURDATE()) as dias_restantes
+            FROM Vacantes v
+            WHERE v.tenant_id = %s
+            AND v.estado = %s
+        """
+        
+        params = [tenant_id, estado]
+        
+        # Filtro por ciudad (opcional)
+        if ciudad:
+            query += " AND v.ciudad = %s"
+            params.append(ciudad)
+        
+        # Solo vacantes que no hayan cerrado
+        query += " AND (v.fecha_cierre IS NULL OR v.fecha_cierre >= CURDATE())"
+        
+        # Contar total de resultados
+        count_query = query.replace(
+            """SELECT 
+                v.id_vacante,
+                v.cargo_solicitado,
+                v.descripcion,
+                v.requisitos,
+                v.salario_min,
+                v.salario_max,
+                v.salario,
+                v.ciudad,
+                v.estado,
+                v.fecha_apertura,
+                v.fecha_cierre,
+                DATEDIFF(v.fecha_cierre, CURDATE()) as dias_restantes""",
+            "SELECT COUNT(*) as total"
+        )
+        
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()['total']
+        
+        # Ordenar por fecha de apertura (más recientes primero)
+        query += " ORDER BY v.fecha_apertura DESC"
+        
+        # Aplicar paginación
+        query += f" LIMIT {limit} OFFSET {offset}"
+        
+        cursor.execute(query, params)
+        vacancies = cursor.fetchall()
+        
+        # Procesar datos para respuesta
+        vacancies_formatted = []
+        for vacancy in vacancies:
+            # Formatear requisitos (si es texto, convertir a lista)
+            requisitos = []
+            if vacancy['requisitos']:
+                # Si los requisitos están separados por saltos de línea o comas
+                requisitos_text = vacancy['requisitos']
+                if '\n' in requisitos_text:
+                    requisitos = [r.strip() for r in requisitos_text.split('\n') if r.strip()]
+                elif ',' in requisitos_text:
+                    requisitos = [r.strip() for r in requisitos_text.split(',') if r.strip()]
+                else:
+                    requisitos = [requisitos_text]
+            
+            # Determinar salario a mostrar
+            salario_info = None
+            if vacancy['salario_min'] and vacancy['salario_max']:
+                salario_info = {
+                    'min': float(vacancy['salario_min']),
+                    'max': float(vacancy['salario_max']),
+                    'moneda': 'HNL'
+                }
+            elif vacancy['salario']:
+                salario_info = {
+                    'monto': float(vacancy['salario']),
+                    'moneda': 'HNL'
+                }
+            
+            vacancy_data = {
+                'id': f"vac_{vacancy['id_vacante']}",  # ID ofuscado para seguridad
+                'cargo': vacancy['cargo_solicitado'],
+                'descripcion': vacancy['descripcion'],
+                'requisitos': requisitos,
+                'salario': salario_info,
+                'ciudad': vacancy['ciudad'],
+                'estado': vacancy['estado'],
+                'fecha_publicacion': vacancy['fecha_apertura'].isoformat() if vacancy['fecha_apertura'] else None,
+                'fecha_cierre': vacancy['fecha_cierre'].isoformat() if vacancy['fecha_cierre'] else None,
+                'dias_restantes': vacancy['dias_restantes'] if vacancy['dias_restantes'] else None
+            }
+            
+            vacancies_formatted.append(vacancy_data)
+        
+        cursor.close()
+        conn.close()
+        
+        # Calcular paginación
+        total_pages = (total + limit - 1) // limit if limit > 0 else 0
+        current_page = (offset // limit) + 1 if limit > 0 else 1
+        
+        app.logger.info(f"API pública: {len(vacancies_formatted)} vacantes compartidas para tenant {tenant_id}")
+        
+        return jsonify({
+            'success': True,
+            'data': vacancies_formatted,
+            'pagination': {
+                'total': total,
+                'limit': limit,
+                'offset': offset,
+                'current_page': current_page,
+                'total_pages': total_pages,
+                'has_more': offset + limit < total
+            },
+            'filters_applied': {
+                'estado': estado,
+                'ciudad': ciudad
+            }
+        })
+        
+    except ValueError as e:
+        app.logger.error(f"Error en parámetros de consulta: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Parámetros inválidos',
+            'message': 'Los parámetros limit y offset deben ser números enteros'
+        }), 400
+        
+    except Exception as e:
+        app.logger.error(f"Error en endpoint público de vacantes: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Error interno del servidor'
+        }), 500
+        
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
+
+@app.route('/public-api/v1/vacancies/cities', methods=['GET'])
+@public_api_key_required
+def get_public_cities():
+    """
+    Obtener lista de ciudades disponibles en las vacantes del tenant
+    Útil para filtros en el sitio web
+    """
+    try:
+        tenant_id = g.tenant_id
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({
+                'success': False,
+                'error': 'Error de conexión'
+            }), 500
+        
+        cursor = conn.cursor(dictionary=True)
+        
+        # Obtener ciudades únicas con conteo de vacantes
+        cursor.execute("""
+            SELECT 
+                ciudad,
+                COUNT(*) as total_vacantes
+            FROM Vacantes
+            WHERE tenant_id = %s
+            AND estado = 'Abierta'
+            AND (fecha_cierre IS NULL OR fecha_cierre >= CURDATE())
+            AND ciudad IS NOT NULL
+            AND ciudad != ''
+            GROUP BY ciudad
+            ORDER BY total_vacantes DESC, ciudad ASC
+        """, (tenant_id,))
+        
+        cities = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': cities
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo ciudades: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': 'Error interno del servidor'
+        }), 500
+        
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
 
 # --- PUNTO DE ENTRADA PARA EJECUTAR EL SERVIDOR (SIN CAMBIOS) ---
 if __name__ == '__main__':

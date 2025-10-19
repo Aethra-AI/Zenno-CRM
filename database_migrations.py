@@ -1,0 +1,378 @@
+"""
+Sistema de Migraciones Automáticas para el CRM
+Ejecuta migraciones pendientes al iniciar el servidor
+"""
+
+import mysql.connector
+import logging
+import os
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+class DatabaseMigrations:
+    def __init__(self, db_config):
+        """
+        Inicializar el sistema de migraciones
+        
+        Args:
+            db_config: Diccionario con configuración de la base de datos
+                      {'host', 'user', 'password', 'database'}
+        """
+        self.db_config = db_config
+        self.migrations = []
+        self._register_migrations()
+    
+    def _register_migrations(self):
+        """Registrar todas las migraciones disponibles"""
+        
+        # Migración 1: Sistema de API Keys Públicas
+        self.migrations.append({
+            'id': 1,
+            'name': 'create_public_api_keys_system',
+            'description': 'Crear sistema de API Keys públicas para multi-tenant',
+            'execute': self._migration_001_api_keys
+        })
+        
+        # Aquí puedes agregar más migraciones en el futuro
+        # self.migrations.append({
+        #     'id': 2,
+        #     'name': 'add_new_feature',
+        #     'description': 'Descripción de la nueva feature',
+        #     'execute': self._migration_002_new_feature
+        # })
+    
+    def _create_migrations_table(self, conn):
+        """Crear tabla para trackear migraciones ejecutadas"""
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Database_Migrations (
+                id INT PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                description TEXT,
+                executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                execution_time_ms INT,
+                status ENUM('success', 'failed') DEFAULT 'success',
+                error_message TEXT,
+                
+                INDEX idx_name (name),
+                INDEX idx_executed_at (executed_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='Control de migraciones ejecutadas en la base de datos'
+        """)
+        
+        conn.commit()
+        cursor.close()
+        logger.info("✅ Tabla Database_Migrations creada/verificada")
+    
+    def _is_migration_executed(self, conn, migration_id):
+        """Verificar si una migración ya fue ejecutada"""
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("""
+            SELECT id, status FROM Database_Migrations 
+            WHERE id = %s
+        """, (migration_id,))
+        
+        result = cursor.fetchone()
+        cursor.close()
+        
+        return result is not None and result['status'] == 'success'
+    
+    def _mark_migration_executed(self, conn, migration_id, name, description, 
+                                 execution_time_ms, status='success', error_message=None):
+        """Marcar una migración como ejecutada"""
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO Database_Migrations 
+            (id, name, description, execution_time_ms, status, error_message)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                executed_at = CURRENT_TIMESTAMP,
+                execution_time_ms = VALUES(execution_time_ms),
+                status = VALUES(status),
+                error_message = VALUES(error_message)
+        """, (migration_id, name, description, execution_time_ms, status, error_message))
+        
+        conn.commit()
+        cursor.close()
+    
+    def run_pending_migrations(self):
+        """Ejecutar todas las migraciones pendientes"""
+        try:
+            conn = mysql.connector.connect(**self.db_config)
+            
+            # Crear tabla de control de migraciones
+            self._create_migrations_table(conn)
+            
+            # Ejecutar migraciones pendientes
+            for migration in self.migrations:
+                migration_id = migration['id']
+                migration_name = migration['name']
+                migration_desc = migration['description']
+                
+                if self._is_migration_executed(conn, migration_id):
+                    logger.info(f"⏭️  Migración {migration_id} ({migration_name}) ya ejecutada, omitiendo...")
+                    continue
+                
+                logger.info(f"🚀 Ejecutando migración {migration_id}: {migration_name}")
+                logger.info(f"   📝 {migration_desc}")
+                
+                start_time = datetime.now()
+                
+                try:
+                    # Ejecutar la migración
+                    migration['execute'](conn)
+                    
+                    # Calcular tiempo de ejecución
+                    execution_time = (datetime.now() - start_time).total_seconds() * 1000
+                    
+                    # Marcar como ejecutada
+                    self._mark_migration_executed(
+                        conn, migration_id, migration_name, migration_desc,
+                        int(execution_time), 'success'
+                    )
+                    
+                    logger.info(f"✅ Migración {migration_id} completada en {execution_time:.0f}ms")
+                    
+                except Exception as e:
+                    execution_time = (datetime.now() - start_time).total_seconds() * 1000
+                    error_msg = str(e)
+                    
+                    logger.error(f"❌ Error en migración {migration_id}: {error_msg}")
+                    
+                    # Marcar como fallida
+                    self._mark_migration_executed(
+                        conn, migration_id, migration_name, migration_desc,
+                        int(execution_time), 'failed', error_msg
+                    )
+                    
+                    # Hacer rollback de esta migración
+                    conn.rollback()
+                    
+                    # No continuar con las siguientes migraciones
+                    raise
+            
+            conn.close()
+            logger.info("✅ Todas las migraciones completadas exitosamente")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error ejecutando migraciones: {str(e)}")
+            return False
+    
+    # =========================================================================
+    # MIGRACIONES INDIVIDUALES
+    # =========================================================================
+    
+    def _migration_001_api_keys(self, conn):
+        """
+        Migración 001: Sistema de API Keys Públicas
+        Crea las tablas necesarias para el sistema de API Keys
+        """
+        cursor = conn.cursor()
+        
+        # 1. Tabla principal de API Keys
+        logger.info("   📦 Creando tabla Tenant_API_Keys...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Tenant_API_Keys (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                tenant_id INT NOT NULL,
+                
+                api_key VARCHAR(64) NOT NULL UNIQUE COMMENT 'Clave pública (ej: hnm_live_abc123...)',
+                api_secret_hash VARCHAR(255) NOT NULL COMMENT 'Hash del secreto (bcrypt)',
+                
+                nombre_descriptivo VARCHAR(255) DEFAULT NULL COMMENT 'Nombre para identificar el uso de esta key',
+                descripcion TEXT DEFAULT NULL COMMENT 'Descripción del propósito de esta API key',
+                
+                activa BOOLEAN DEFAULT TRUE COMMENT 'Si la key está activa o desactivada',
+                
+                fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+                fecha_expiracion DATETIME DEFAULT NULL COMMENT 'Fecha de expiración (NULL = sin expiración)',
+                ultimo_uso DATETIME DEFAULT NULL COMMENT 'Última vez que se usó esta key',
+                
+                total_requests INT DEFAULT 0 COMMENT 'Total de peticiones realizadas con esta key',
+                requests_exitosos INT DEFAULT 0 COMMENT 'Peticiones exitosas',
+                requests_fallidos INT DEFAULT 0 COMMENT 'Peticiones fallidas',
+                
+                rate_limit_per_minute INT DEFAULT 100 COMMENT 'Máximo de requests por minuto',
+                rate_limit_per_day INT DEFAULT 10000 COMMENT 'Máximo de requests por día',
+                
+                permisos JSON DEFAULT NULL COMMENT 'Permisos específicos: {"vacancies": true, "candidates": true}',
+                
+                ip_whitelist JSON DEFAULT NULL COMMENT 'Lista de IPs permitidas (NULL = todas)',
+                dominios_permitidos JSON DEFAULT NULL COMMENT 'Dominios permitidos para CORS',
+                
+                created_by_user INT DEFAULT NULL COMMENT 'Usuario que creó esta API key',
+                ultima_modificacion DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_tenant_id (tenant_id),
+                INDEX idx_api_key (api_key),
+                INDEX idx_tenant_activa (tenant_id, activa),
+                INDEX idx_activa_expiracion (activa, fecha_expiracion),
+                
+                FOREIGN KEY (tenant_id) REFERENCES Users(tenant_id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by_user) REFERENCES Users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='API Keys públicas para que cada tenant comparta datos de forma segura'
+        """)
+        
+        # 2. Tabla de logs
+        logger.info("   📦 Creando tabla API_Key_Logs...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS API_Key_Logs (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                api_key_id INT NOT NULL,
+                tenant_id INT NOT NULL,
+                
+                endpoint VARCHAR(255) NOT NULL COMMENT 'Endpoint accedido',
+                metodo VARCHAR(10) NOT NULL COMMENT 'GET, POST, etc.',
+                
+                status_code INT NOT NULL COMMENT 'Código HTTP de respuesta',
+                exitoso BOOLEAN NOT NULL COMMENT 'Si la petición fue exitosa',
+                
+                ip_origen VARCHAR(45) NOT NULL COMMENT 'IP desde donde se hizo la petición',
+                user_agent TEXT DEFAULT NULL COMMENT 'User agent del cliente',
+                
+                query_params JSON DEFAULT NULL COMMENT 'Parámetros de la petición',
+                error_message TEXT DEFAULT NULL COMMENT 'Mensaje de error si falló',
+                
+                response_time_ms INT DEFAULT NULL COMMENT 'Tiempo de respuesta en milisegundos',
+                
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                
+                INDEX idx_api_key_id (api_key_id),
+                INDEX idx_tenant_id (tenant_id),
+                INDEX idx_timestamp (timestamp),
+                INDEX idx_exitoso (exitoso),
+                INDEX idx_endpoint (endpoint),
+                
+                FOREIGN KEY (api_key_id) REFERENCES Tenant_API_Keys(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES Users(tenant_id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='Logs de uso de las API Keys para auditoría y monitoreo'
+        """)
+        
+        # 3. Tabla de rate limiting
+        logger.info("   📦 Creando tabla API_Key_Rate_Limits...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS API_Key_Rate_Limits (
+                id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                api_key_id INT NOT NULL,
+                
+                ventana_inicio DATETIME NOT NULL COMMENT 'Inicio de la ventana de tiempo',
+                ventana_tipo ENUM('minute', 'hour', 'day') NOT NULL DEFAULT 'minute',
+                
+                request_count INT NOT NULL DEFAULT 1,
+                
+                INDEX idx_api_key_ventana (api_key_id, ventana_inicio, ventana_tipo),
+                
+                FOREIGN KEY (api_key_id) REFERENCES Tenant_API_Keys(id) ON DELETE CASCADE,
+                
+                UNIQUE KEY uk_api_key_ventana (api_key_id, ventana_inicio, ventana_tipo)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='Control de rate limiting para API Keys'
+        """)
+        
+        # 4. Tabla de endpoints disponibles
+        logger.info("   📦 Creando tabla API_Endpoints_Disponibles...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS API_Endpoints_Disponibles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                endpoint_key VARCHAR(50) NOT NULL UNIQUE COMMENT 'Identificador del endpoint',
+                endpoint_path VARCHAR(255) NOT NULL COMMENT 'Ruta del endpoint',
+                descripcion TEXT NOT NULL COMMENT 'Descripción de qué hace este endpoint',
+                activo BOOLEAN DEFAULT TRUE,
+                
+                INDEX idx_endpoint_key (endpoint_key),
+                INDEX idx_activo (activo)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='Catálogo de endpoints disponibles para las API Keys'
+        """)
+        
+        # 5. Insertar endpoints disponibles
+        logger.info("   📝 Insertando endpoints disponibles...")
+        cursor.execute("""
+            INSERT INTO API_Endpoints_Disponibles (endpoint_key, endpoint_path, descripcion) VALUES
+            ('get_vacancies', '/public-api/v1/vacancies', 'Obtener lista de vacantes activas del tenant'),
+            ('create_candidate', '/public-api/v1/candidates', 'Registrar nuevo candidato con CV en el sistema')
+            ON DUPLICATE KEY UPDATE descripcion = VALUES(descripcion)
+        """)
+        
+        # 6. Crear procedimientos almacenados
+        logger.info("   🔧 Creando procedimientos almacenados...")
+        
+        # Procedimiento para limpiar logs antiguos
+        cursor.execute("DROP PROCEDURE IF EXISTS cleanup_api_logs")
+        cursor.execute("""
+            CREATE PROCEDURE cleanup_api_logs(IN dias_antiguedad INT)
+            BEGIN
+                DELETE FROM API_Key_Logs 
+                WHERE timestamp < DATE_SUB(NOW(), INTERVAL dias_antiguedad DAY);
+                
+                DELETE FROM API_Key_Rate_Limits 
+                WHERE ventana_inicio < DATE_SUB(NOW(), INTERVAL 7 DAY);
+            END
+        """)
+        
+        # Procedimiento para obtener estadísticas
+        cursor.execute("DROP PROCEDURE IF EXISTS get_api_key_stats")
+        cursor.execute("""
+            CREATE PROCEDURE get_api_key_stats(IN p_api_key_id INT)
+            BEGIN
+                SELECT 
+                    COUNT(*) as total_requests,
+                    SUM(CASE WHEN exitoso = 1 THEN 1 ELSE 0 END) as requests_exitosos,
+                    SUM(CASE WHEN exitoso = 0 THEN 1 ELSE 0 END) as requests_fallidos,
+                    AVG(response_time_ms) as avg_response_time,
+                    MAX(timestamp) as ultimo_uso
+                FROM API_Key_Logs
+                WHERE api_key_id = p_api_key_id;
+            END
+        """)
+        
+        # 7. Crear índices adicionales
+        logger.info("   🔍 Creando índices adicionales...")
+        try:
+            cursor.execute("""
+                CREATE INDEX idx_tenant_activa_expiracion 
+                ON Tenant_API_Keys(tenant_id, activa, fecha_expiracion)
+            """)
+        except mysql.connector.Error as e:
+            if e.errno != 1061:  # Error 1061 = índice duplicado
+                raise
+        
+        try:
+            cursor.execute("""
+                CREATE INDEX idx_logs_fecha_tenant 
+                ON API_Key_Logs(tenant_id, timestamp DESC)
+            """)
+        except mysql.connector.Error as e:
+            if e.errno != 1061:
+                raise
+        
+        conn.commit()
+        cursor.close()
+        
+        logger.info("   ✅ Sistema de API Keys creado exitosamente")
+
+
+# Función helper para ejecutar migraciones desde app.py
+def run_database_migrations(db_config):
+    """
+    Ejecutar migraciones de base de datos
+    
+    Args:
+        db_config: Diccionario con configuración de la BD
+        
+    Returns:
+        bool: True si las migraciones fueron exitosas
+    """
+    try:
+        migrations = DatabaseMigrations(db_config)
+        return migrations.run_pending_migrations()
+    except Exception as e:
+        logger.error(f"Error ejecutando migraciones: {str(e)}")
+        return False
