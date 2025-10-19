@@ -36,9 +36,9 @@ class DatabaseMigrations:
         
         # Migración 2: Aumentar tamaño de columna api_key
         self.migrations.append({
-            'id': 2,
-            'name': 'fix_api_key_column_size',
-            'description': 'Aumentar tamaño de columna api_key de VARCHAR(100) a VARCHAR(255)',
+            'id': 3,
+            'name': 'fix_tenant_api_key_column_size',
+            'description': 'Aumentar tamaño de columna api_key en Tenant_API_Keys de VARCHAR(64) a VARCHAR(255)',
             'execute': self._migration_002_fix_api_key_size
         })
     
@@ -374,7 +374,7 @@ class DatabaseMigrations:
     def _migration_002_fix_api_key_size(self, conn):
         """
         Migración 002: Aumentar tamaño de columna api_key
-        La columna api_key era VARCHAR(100) pero las keys generadas son de 64+ caracteres
+        La columna api_key era VARCHAR(64) pero las keys generadas necesitan más espacio
         """
         cursor = conn.cursor()
         
@@ -385,17 +385,17 @@ class DatabaseMigrations:
             SELECT TABLE_NAME 
             FROM INFORMATION_SCHEMA.TABLES 
             WHERE TABLE_SCHEMA = DATABASE() 
-              AND TABLE_NAME = 'Public_API_Keys'
+              AND TABLE_NAME = 'Tenant_API_Keys'
         """)
         
         if cursor.fetchone() is None:
-            logger.warning("   ⚠️  Tabla Public_API_Keys no existe, omitiendo migración")
+            logger.warning("   ⚠️  Tabla Tenant_API_Keys no existe, omitiendo migración")
             cursor.close()
             return
         
-        # Aumentar el tamaño de la columna
+        # Aumentar el tamaño de la columna api_key
         cursor.execute("""
-            ALTER TABLE Public_API_Keys 
+            ALTER TABLE Tenant_API_Keys 
             MODIFY COLUMN api_key VARCHAR(255) NOT NULL
         """)
         
@@ -403,7 +403,7 @@ class DatabaseMigrations:
         cursor.execute("""
             SELECT CHARACTER_MAXIMUM_LENGTH
             FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'Public_API_Keys' 
+            WHERE TABLE_NAME = 'Tenant_API_Keys' 
               AND COLUMN_NAME = 'api_key'
               AND TABLE_SCHEMA = DATABASE()
         """)
