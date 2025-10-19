@@ -34,13 +34,13 @@ class DatabaseMigrations:
             'execute': self._migration_001_api_keys
         })
         
-        # Aquí puedes agregar más migraciones en el futuro
-        # self.migrations.append({
-        #     'id': 2,
-        #     'name': 'add_new_feature',
-        #     'description': 'Descripción de la nueva feature',
-        #     'execute': self._migration_002_new_feature
-        # })
+        # Migración 2: Aumentar tamaño de columna api_key
+        self.migrations.append({
+            'id': 2,
+            'name': 'fix_api_key_column_size',
+            'description': 'Aumentar tamaño de columna api_key de VARCHAR(100) a VARCHAR(255)',
+            'execute': self._migration_002_fix_api_key_size
+        })
     
     def _create_migrations_table(self, conn):
         """Crear tabla para trackear migraciones ejecutadas"""
@@ -370,6 +370,51 @@ class DatabaseMigrations:
         cursor.close()
         
         logger.info("   ✅ Sistema de API Keys creado exitosamente")
+    
+    def _migration_002_fix_api_key_size(self, conn):
+        """
+        Migración 002: Aumentar tamaño de columna api_key
+        La columna api_key era VARCHAR(100) pero las keys generadas son de 64+ caracteres
+        """
+        cursor = conn.cursor()
+        
+        logger.info("   📏 Aumentando tamaño de columna api_key...")
+        
+        # Verificar si la tabla existe
+        cursor.execute("""
+            SELECT TABLE_NAME 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = DATABASE() 
+              AND TABLE_NAME = 'Public_API_Keys'
+        """)
+        
+        if cursor.fetchone() is None:
+            logger.warning("   ⚠️  Tabla Public_API_Keys no existe, omitiendo migración")
+            cursor.close()
+            return
+        
+        # Aumentar el tamaño de la columna
+        cursor.execute("""
+            ALTER TABLE Public_API_Keys 
+            MODIFY COLUMN api_key VARCHAR(255) NOT NULL
+        """)
+        
+        # Verificar el cambio
+        cursor.execute("""
+            SELECT CHARACTER_MAXIMUM_LENGTH
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'Public_API_Keys' 
+              AND COLUMN_NAME = 'api_key'
+              AND TABLE_SCHEMA = DATABASE()
+        """)
+        
+        result = cursor.fetchone()
+        new_size = result[0] if result else 0
+        
+        logger.info(f"   ✅ Columna api_key actualizada a VARCHAR({new_size})")
+        
+        conn.commit()
+        cursor.close()
 
 
 # Función helper para ejecutar migraciones desde app.py
