@@ -174,6 +174,19 @@ class DatabaseMigrations:
         """
         cursor = conn.cursor()
         
+        # 0. Crear índice en Users.tenant_id si no existe (necesario para foreign key)
+        logger.info("   🔍 Verificando índice en Users.tenant_id...")
+        try:
+            cursor.execute("""
+                CREATE INDEX idx_users_tenant_id ON Users(tenant_id)
+            """)
+            logger.info("   ✅ Índice en Users.tenant_id creado")
+        except mysql.connector.Error as e:
+            if e.errno == 1061:  # Error 1061 = índice duplicado
+                logger.info("   ⏭️  Índice en Users.tenant_id ya existe")
+            else:
+                raise
+        
         # 1. Tabla principal de API Keys
         logger.info("   📦 Creando tabla Tenant_API_Keys...")
         cursor.execute("""
