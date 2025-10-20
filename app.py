@@ -172,8 +172,8 @@ CORS(app,
      resources={r"/*": {"origins": "*"}},
      # Permite explícitamente los métodos que usamos, incluyendo OPTIONS
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     # LA LÍNEA MÁS IMPORTANTE: Permite explícitamente la cabecera de autorización
-     allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+     # LA LÍNEA MÁS IMPORTANTE: Permite explícitamente la cabecera de autorización y X-API-Key
+     allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-API-Key"],
      # Permite que el navegador envíe credenciales (cookies, tokens)
      supports_credentials=True
 )
