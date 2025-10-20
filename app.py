@@ -15693,7 +15693,10 @@ def format_skills_from_ai(habilidades):
 
 def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url):
     """
-    Crear candidato desde formulario web combinando datos manuales + IA
+    Crear o actualizar candidato desde formulario web combinando datos manuales + IA
+    
+    Si el candidato ya existe (mismo identidad + tenant_id), actualiza sus datos.
+    Si no existe, crea uno nuevo.
     
     Args:
         manual_data: Datos del formulario (nombre, identidad, email, etc.)
@@ -15702,7 +15705,10 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url):
         cv_url: URL del CV subido a OCI
         
     Returns:
-        candidate_id: ID del candidato creado
+        dict: {
+            'candidate_id': int,
+            'action': 'created' | 'updated'
+        }
     """
     try:
         conn = get_db_connection()
@@ -15731,38 +15737,89 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url):
         linkedin = personal_info.get('linkedin', '')
         portfolio = personal_info.get('portfolio', '')
         
-        # ===== INSERTAR EN BASE DE DATOS =====
+        # ===== VERIFICAR SI YA EXISTE (POR IDENTIDAD + TENANT) =====
         cursor.execute("""
-            INSERT INTO Afiliados (
-                tenant_id, nombre_completo, identidad, email, telefono, 
+            SELECT id_afiliado, nombre_completo 
+            FROM Afiliados 
+            WHERE identidad = %s AND tenant_id = %s
+        """, (identidad, tenant_id))
+        
+        existing_candidate = cursor.fetchone()
+        
+        if existing_candidate:
+            # ===== ACTUALIZAR CANDIDATO EXISTENTE =====
+            candidate_id = existing_candidate['id_afiliado']
+            old_name = existing_candidate['nombre_completo']
+            
+            cursor.execute("""
+                UPDATE Afiliados SET
+                    nombre_completo = %s,
+                    email = %s,
+                    telefono = %s,
+                    ciudad = %s,
+                    grado_academico = %s,
+                    cargo_solicitado = %s,
+                    experiencia = %s,
+                    skills = %s,
+                    cv_url = %s,
+                    linkedin = %s,
+                    portfolio = %s,
+                    fuente_reclutamiento = %s,
+                    updated_at = NOW()
+                WHERE id_afiliado = %s
+            """, (
+                nombre_completo, email, telefono, ciudad,
+                grado_academico, cargo_solicitado,
+                experiencia_texto, skills_texto, cv_url,
+                linkedin, portfolio, "Sitio Web",
+                candidate_id
+            ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            app.logger.info(f"✅ Candidato ACTUALIZADO desde web: ID {candidate_id} ('{old_name}' → '{nombre_completo}') para tenant {tenant_id}")
+            return {
+                'candidate_id': candidate_id,
+                'action': 'updated'
+            }
+        else:
+            # ===== CREAR NUEVO CANDIDATO =====
+            cursor.execute("""
+                INSERT INTO Afiliados (
+                    tenant_id, nombre_completo, identidad, email, telefono, 
+                    ciudad, grado_academico, cargo_solicitado,
+                    experiencia, skills, cv_url,
+                    linkedin, portfolio, fuente_reclutamiento,
+                    estado, fecha_registro, created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, 
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    'Activo', NOW(), NOW()
+                )
+            """, (
+                tenant_id, nombre_completo, identidad, email, telefono,
                 ciudad, grado_academico, cargo_solicitado,
-                experiencia, skills, cv_url,
-                linkedin, portfolio, fuente_reclutamiento,
-                estado, fecha_registro, created_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, 
-                %s, %s, %s,
-                %s, %s, %s,
-                %s, %s, %s,
-                'Activo', NOW(), NOW()
-            )
-        """, (
-            tenant_id, nombre_completo, identidad, email, telefono,
-            ciudad, grado_academico, cargo_solicitado,
-            experiencia_texto, skills_texto, cv_url,
-            linkedin, portfolio, "Sitio Web"
-        ))
-        
-        candidate_id = cursor.lastrowid
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        app.logger.info(f"Candidato creado desde web: ID {candidate_id} para tenant {tenant_id}")
-        return candidate_id
+                experiencia_texto, skills_texto, cv_url,
+                linkedin, portfolio, "Sitio Web"
+            ))
+            
+            candidate_id = cursor.lastrowid
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            app.logger.info(f"✅ Candidato CREADO desde web: ID {candidate_id} ('{nombre_completo}') para tenant {tenant_id}")
+            return {
+                'candidate_id': candidate_id,
+                'action': 'created'
+            }
         
     except Exception as e:
-        app.logger.error(f"Error creando candidato desde web: {str(e)}")
+        app.logger.error(f"Error creando/actualizando candidato desde web: {str(e)}")
         raise
 
 
@@ -15914,31 +15971,39 @@ def register_candidate_from_web():
             'education': request.form.get('education', '')
         }
         
-        # 10. Crear candidato combinando datos manuales + IA
-        app.logger.info(f"Creando candidato: {manual_data['firstName']} {manual_data['lastName']}")
-        candidate_id = create_candidate_from_web_form(
+        # 10. Crear o actualizar candidato combinando datos manuales + IA
+        app.logger.info(f"Procesando candidato: {manual_data['firstName']} {manual_data['lastName']}")
+        result = create_candidate_from_web_form(
             manual_data=manual_data,
             cv_data=cv_data,
             tenant_id=tenant_id,
             cv_url=cv_url
         )
         
+        candidate_id = result['candidate_id']
+        action = result['action']  # 'created' o 'updated'
+        
         # 11. Registrar en log de procesamiento
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        log_message = 'Candidato creado desde sitio web' if action == 'created' else 'Candidato actualizado desde sitio web'
+        
         cursor.execute("""
             INSERT INTO CV_Processing_Logs (
                 tenant_id, cv_identifier, processing_step, status, 
                 message, details, created_at
             ) VALUES (
                 %s, %s, 'web_registration', 'success', 
-                'Candidato registrado desde sitio web', %s, NOW()
+                %s, %s, NOW()
             )
         """, (
             tenant_id, 
             cv_identifier, 
+            log_message,
             json.dumps({
                 'candidate_id': candidate_id,
+                'action': action,
                 'original_filename': cv_file.filename,
                 'object_key': upload_result['object_key'],
                 'file_url': cv_url,
@@ -15950,13 +16015,20 @@ def register_candidate_from_web():
         conn.close()
         
         # 12. Responder con éxito
-        app.logger.info(f"✅ Candidato registrado exitosamente: ID {candidate_id}")
+        if action == 'created':
+            message = 'Candidato registrado exitosamente'
+            app.logger.info(f"✅ Candidato CREADO exitosamente: ID {candidate_id}")
+        else:
+            message = 'Tus datos han sido actualizados exitosamente'
+            app.logger.info(f"✅ Candidato ACTUALIZADO exitosamente: ID {candidate_id}")
+        
         return jsonify({
             'success': True,
-            'message': 'Candidato registrado exitosamente',
+            'message': message,
             'candidate_id': candidate_id,
-            'cv_identifier': cv_identifier
-        }), 201
+            'cv_identifier': cv_identifier,
+            'action': action
+        }), 201 if action == 'created' else 200
         
     except Exception as e:
         app.logger.error(f"Error registrando candidato desde web: {str(e)}", exc_info=True)
