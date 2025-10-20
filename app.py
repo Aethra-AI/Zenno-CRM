@@ -15612,6 +15612,360 @@ def get_public_cities():
             conn.close()
 
 
+# ===============================================================
+# FUNCIONES AUXILIARES PARA REGISTRO DE CANDIDATOS DESDE WEB
+# ===============================================================
+
+def format_experience_from_ai(experiencia_list):
+    """
+    Formatear experiencia extraída por IA en texto legible
+    Reutiliza la lógica de save_cv_to_database
+    """
+    if not experiencia_list or not isinstance(experiencia_list, list):
+        return ""
+    
+    def format_experience(exp):
+        parts = []
+        
+        # Agregar puesto si existe
+        puesto = exp.get('puesto')
+        if puesto:
+            parts.append(puesto)
+        
+        # Agregar empresa si existe
+        empresa = exp.get('empresa')
+        if empresa:
+            if parts:  # Si ya hay un puesto, agregar "en"
+                parts[-1] = f"{parts[-1]} en {empresa}"
+            else:
+                parts.append(empresa)
+        
+        # Agregar fechas si hay al menos una
+        fecha_inicio = exp.get('fecha_inicio')
+        fecha_fin = exp.get('fecha_fin', 'actual')
+        
+        if fecha_inicio or fecha_fin:
+            fechas = []
+            if fecha_inicio:
+                fechas.append(fecha_inicio)
+            fechas.append(fecha_fin)
+            parts.append(f"({fechas[0]} - {fechas[-1]})")
+        
+        # Agregar descripción si existe
+        descripcion = exp.get('descripcion')
+        if descripcion and descripcion.lower() != 'none':
+            if not parts:  # Si no hay nada más, solo poner la descripción
+                return f"- {descripcion}"
+            parts.append(f"\n- {descripcion}")
+        
+        return " ".join(parts)
+    
+    # Aplicar formato a cada experiencia
+    experiencias_formateadas = [format_experience(exp) for exp in experiencia_list]
+    
+    # Filtrar experiencias vacías y unir con doble salto de línea
+    experiencia_texto = "\n\n".join(filter(None, experiencias_formateadas))
+    
+    return experiencia_texto
+
+
+def format_skills_from_ai(habilidades):
+    """
+    Formatear habilidades extraídas por IA en texto legible
+    Reutiliza la lógica de save_cv_to_database
+    """
+    if not habilidades or not isinstance(habilidades, dict):
+        return ""
+    
+    # Combinar todas las habilidades en un solo texto
+    habilidades_tecnicas = habilidades.get('tecnicas', [])
+    habilidades_blandas = habilidades.get('blandas', [])
+    idiomas = [f"{i.get('idioma', '')} ({i.get('nivel', '')})" 
+              for i in habilidades.get('idiomas', [])]
+    
+    # Combinar todas las habilidades en un solo campo
+    todas_las_habilidades = ", ".join(
+        habilidades_tecnicas + habilidades_blandas + idiomas
+    )
+    
+    return todas_las_habilidades
+
+
+def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url):
+    """
+    Crear candidato desde formulario web combinando datos manuales + IA
+    
+    Args:
+        manual_data: Datos del formulario (nombre, identidad, email, etc.)
+        cv_data: Datos extraídos por Gemini del CV
+        tenant_id: ID del tenant (de la API Key)
+        cv_url: URL del CV subido a OCI
+        
+    Returns:
+        candidate_id: ID del candidato creado
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # ===== DATOS MANUALES (PRIORITARIOS) =====
+        nombre_completo = f"{manual_data['firstName']} {manual_data['lastName']}"
+        identidad = manual_data.get('identidad', '')
+        email = manual_data['email']
+        telefono = manual_data['phone']
+        ciudad = manual_data['city']
+        grado_academico = manual_data.get('education', '')
+        cargo_solicitado = manual_data.get('profession', '')
+        
+        # ===== DATOS DE IA (COMPLEMENTARIOS) =====
+        # Extraer experiencia del CV procesado por Gemini
+        experiencia_list = cv_data.get('experiencia', [])
+        experiencia_texto = format_experience_from_ai(experiencia_list)
+        
+        # Extraer habilidades del CV
+        habilidades = cv_data.get('habilidades', {})
+        skills_texto = format_skills_from_ai(habilidades)
+        
+        # LinkedIn y portfolio si Gemini los encontró
+        personal_info = cv_data.get('personal_info', {})
+        linkedin = personal_info.get('linkedin', '')
+        portfolio = personal_info.get('portfolio', '')
+        
+        # ===== INSERTAR EN BASE DE DATOS =====
+        cursor.execute("""
+            INSERT INTO Afiliados (
+                tenant_id, nombre_completo, identidad, email, telefono, 
+                ciudad, grado_academico, cargo_solicitado,
+                experiencia, skills, cv_url,
+                linkedin, portfolio, fuente_reclutamiento,
+                estado, fecha_registro, created_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, 
+                %s, %s, %s,
+                %s, %s, %s,
+                %s, %s, %s,
+                'Activo', NOW(), NOW()
+            )
+        """, (
+            tenant_id, nombre_completo, identidad, email, telefono,
+            ciudad, grado_academico, cargo_solicitado,
+            experiencia_texto, skills_texto, cv_url,
+            linkedin, portfolio, "Sitio Web"
+        ))
+        
+        candidate_id = cursor.lastrowid
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"Candidato creado desde web: ID {candidate_id} para tenant {tenant_id}")
+        return candidate_id
+        
+    except Exception as e:
+        app.logger.error(f"Error creando candidato desde web: {str(e)}")
+        raise
+
+
+@app.route('/public-api/v1/candidates', methods=['POST'])
+@public_api_key_required
+def register_candidate_from_web():
+    """
+    Registrar candidato desde sitio web externo
+    
+    Multipart form-data:
+    - firstName: string (requerido)
+    - lastName: string (requerido)
+    - identidad: string (requerido)
+    - email: string (requerido)
+    - phone: string (requerido)
+    - city: string (requerido)
+    - profession: string (opcional)
+    - education: string (opcional)
+    - cv: file PDF (requerido)
+    
+    Returns:
+        JSON con success, candidate_id y cv_identifier
+    """
+    if not OCI_SERVICES_AVAILABLE:
+        return jsonify({
+            'success': False,
+            'error': 'Servicio de almacenamiento no disponible'
+        }), 503
+    
+    try:
+        # Obtener tenant_id de la API Key validada
+        tenant_id = g.api_key_data['tenant_id']
+        
+        app.logger.info(f"Registro de candidato desde web para tenant {tenant_id}")
+        
+        # 1. Validar datos del formulario
+        required_fields = ['firstName', 'lastName', 'identidad', 'email', 'phone', 'city']
+        for field in required_fields:
+            if not request.form.get(field):
+                return jsonify({
+                    'success': False,
+                    'error': f'Campo requerido: {field}'
+                }), 400
+        
+        # 2. Validar archivo CV
+        if 'cv' not in request.files:
+            return jsonify({
+                'success': False,
+                'error': 'CV es requerido'
+            }), 400
+        
+        cv_file = request.files['cv']
+        if cv_file.filename == '':
+            return jsonify({
+                'success': False,
+                'error': 'No se seleccionó archivo'
+            }), 400
+        
+        # Validar extensión
+        allowed_extensions = {'.pdf', '.docx', '.doc'}
+        file_ext = os.path.splitext(cv_file.filename.lower())[1]
+        
+        if file_ext not in allowed_extensions:
+            return jsonify({
+                'success': False,
+                'error': f'Tipo de archivo no soportado: {file_ext}. Solo se permiten PDF, DOCX y DOC.'
+            }), 400
+        
+        # 3. Leer contenido del archivo
+        file_content = cv_file.read()
+        
+        # 4. Generar identificador único para el CV
+        cv_identifier = oci_storage_service.generate_cv_identifier(
+            tenant_id=tenant_id,
+            candidate_id=None
+        )
+        
+        # 5. Subir CV a OCI Storage
+        app.logger.info(f"Subiendo CV a OCI: {cv_file.filename}")
+        upload_result = oci_storage_service.upload_cv(
+            file_content=file_content,
+            tenant_id=tenant_id,
+            cv_identifier=cv_identifier,
+            original_filename=cv_file.filename,
+            candidate_id=None
+        )
+        
+        if not upload_result['success']:
+            app.logger.error(f"Error subiendo CV: {upload_result.get('error')}")
+            return jsonify({
+                'success': False,
+                'error': 'Error subiendo CV al almacenamiento'
+            }), 500
+        
+        # 6. Crear PAR para acceso al archivo
+        par_result = oci_storage_service.create_par(
+            object_key=upload_result['object_key'],
+            cv_identifier=cv_identifier
+        )
+        
+        if not par_result['success']:
+            app.logger.error(f"Error creando PAR: {par_result.get('error')}")
+            return jsonify({
+                'success': False,
+                'error': 'Error generando URL de acceso al CV'
+            }), 500
+        
+        cv_url = par_result['access_uri']
+        
+        # 7. Extraer texto del CV
+        app.logger.info(f"Extrayendo texto del CV: {cv_file.filename}")
+        try:
+            cv_text = cv_processing_service.extract_text_from_file(
+                file_content=file_content,
+                filename=cv_file.filename
+            )
+        except Exception as e:
+            app.logger.error(f"Error extrayendo texto del CV: {str(e)}")
+            # Continuar sin procesamiento de IA
+            cv_text = ""
+        
+        # 8. Procesar con Gemini AI (solo para experiencia y habilidades)
+        cv_data = {}
+        if cv_text:
+            app.logger.info(f"Procesando CV con Gemini AI")
+            try:
+                gemini_result = cv_processing_service.process_cv_with_gemini(
+                    cv_text=cv_text,
+                    tenant_id=tenant_id
+                )
+                
+                if gemini_result['success']:
+                    cv_data = gemini_result['data']
+                    app.logger.info(f"CV procesado exitosamente por Gemini")
+                else:
+                    app.logger.warning(f"Gemini no pudo procesar el CV: {gemini_result.get('error')}")
+            except Exception as e:
+                app.logger.error(f"Error procesando CV con Gemini: {str(e)}")
+        
+        # 9. Preparar datos manuales del formulario
+        manual_data = {
+            'firstName': request.form.get('firstName'),
+            'lastName': request.form.get('lastName'),
+            'identidad': request.form.get('identidad'),
+            'email': request.form.get('email'),
+            'phone': request.form.get('phone'),
+            'city': request.form.get('city'),
+            'profession': request.form.get('profession', ''),
+            'education': request.form.get('education', '')
+        }
+        
+        # 10. Crear candidato combinando datos manuales + IA
+        app.logger.info(f"Creando candidato: {manual_data['firstName']} {manual_data['lastName']}")
+        candidate_id = create_candidate_from_web_form(
+            manual_data=manual_data,
+            cv_data=cv_data,
+            tenant_id=tenant_id,
+            cv_url=cv_url
+        )
+        
+        # 11. Registrar en log de procesamiento
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO CV_Processing_Logs (
+                tenant_id, cv_identifier, processing_step, status, 
+                message, details, created_at
+            ) VALUES (
+                %s, %s, 'web_registration', 'success', 
+                'Candidato registrado desde sitio web', %s, NOW()
+            )
+        """, (
+            tenant_id, 
+            cv_identifier, 
+            json.dumps({
+                'candidate_id': candidate_id,
+                'original_filename': cv_file.filename,
+                'object_key': upload_result['object_key'],
+                'file_url': cv_url,
+                'source': 'web_form'
+            })
+        ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # 12. Responder con éxito
+        app.logger.info(f"✅ Candidato registrado exitosamente: ID {candidate_id}")
+        return jsonify({
+            'success': True,
+            'message': 'Candidato registrado exitosamente',
+            'candidate_id': candidate_id,
+            'cv_identifier': cv_identifier
+        }), 201
+        
+    except Exception as e:
+        app.logger.error(f"Error registrando candidato desde web: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'Error al registrar candidato. Por favor intenta de nuevo.'
+        }), 500
+
+
 # --- PUNTO DE ENTRADA PARA EJECUTAR EL SERVIDOR (SIN CAMBIOS) ---
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
