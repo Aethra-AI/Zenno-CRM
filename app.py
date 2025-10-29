@@ -5880,6 +5880,12 @@ def get_candidates():
             query += f" AND ({condition})"
             params.extend(filter_params)
         
+        # 🚀 NUEVO: Filtro especial para reclutadores freelancers
+        user_role = get_current_user_role()
+        if user_role == 'reclutador_freelancer':
+            query += " AND a.reclutador_user_id = %s"
+            params.append(user_id)
+        
         # Aplicar filtros - búsqueda palabra por palabra
         if search:
             app.logger.info(f"🔍 Búsqueda recibida en get_candidates: '{search}'")
@@ -15691,7 +15697,7 @@ def format_skills_from_ai(habilidades):
     return todas_las_habilidades
 
 
-def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url):
+def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url, reclutador_user_id=None, tracking_id=None):
     """
     Crear o actualizar candidato desde formulario web combinando datos manuales + IA
     
@@ -15703,6 +15709,8 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url):
         cv_data: Datos extraídos por Gemini del CV
         tenant_id: ID del tenant (de la API Key)
         cv_url: URL del CV subido a OCI
+        reclutador_user_id: ID del reclutador freelancer (opcional)
+        tracking_id: ID del tracking de afiliado (opcional)
         
     Returns:
         dict: {
@@ -15792,22 +15800,40 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url):
                     ciudad, grado_academico, cargo_solicitado,
                     experiencia, skills, cv_url,
                     linkedin, portfolio, fuente_reclutamiento,
-                    estado, fecha_registro, created_at
+                    estado, fecha_registro, created_at, reclutador_user_id
                 ) VALUES (
                     %s, %s, %s, %s, %s, 
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
-                    'Activo', NOW(), NOW()
+                    'Activo', NOW(), NOW(), %s
                 )
             """, (
                 tenant_id, nombre_completo, identidad, email, telefono,
                 ciudad, grado_academico, cargo_solicitado,
                 experiencia_texto, skills_texto, cv_url,
-                linkedin, portfolio, "Sitio Web"
+                linkedin, portfolio, "Sitio Web", reclutador_user_id
             ))
             
             candidate_id = cursor.lastrowid
+            
+            # 🚀 NUEVO: Actualizar tracking si viene de enlace de afiliado
+            if tracking_id and reclutador_user_id:
+                cursor.execute("""
+                    UPDATE TrackingEnlaces 
+                    SET candidato_id = %s, estado = 'registrado', fecha_registro = NOW()
+                    WHERE id = %s AND tenant_id = %s
+                """, (candidate_id, tracking_id, tenant_id))
+                
+                # Actualizar contador del reclutador
+                cursor.execute("""
+                    UPDATE Users 
+                    SET total_candidatos = total_candidatos + 1
+                    WHERE id = %s AND tenant_id = %s
+                """, (reclutador_user_id, tenant_id))
+                
+                app.logger.info(f"✅ Tracking actualizado: candidato {candidate_id} vinculado a reclutador {reclutador_user_id}")
+            
             conn.commit()
             cursor.close()
             conn.close()
@@ -15853,7 +15879,42 @@ def register_candidate_from_web():
         # Obtener tenant_id de la API Key validada
         tenant_id = g.api_key_data['tenant_id']
         
-        app.logger.info(f"Registro de candidato desde web para tenant {tenant_id}")
+        # 🚀 NUEVO: Detectar parámetro ref para tracking de afiliados
+        ref_code = request.args.get('ref')
+        tracking_id = None
+        reclutador_user_id = None
+        
+        if ref_code:
+            app.logger.info(f"Registro con código de referencia: {ref_code} para tenant {tenant_id}")
+            
+            # Buscar reclutador por código de referencia
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT id FROM Users 
+                WHERE codigo_referencia = %s AND tenant_id = %s AND activo = 1
+            """, (ref_code, tenant_id))
+            
+            user = cursor.fetchone()
+            if user:
+                reclutador_user_id = user['id']
+                
+                # Registrar click en tracking
+                cursor.execute("""
+                    INSERT INTO TrackingEnlaces 
+                    (tenant_id, user_id, codigo_referencia, enlace_usado, ip_address, user_agent, estado)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'click')
+                """, (tenant_id, user['id'], ref_code, request.url, request.remote_addr, request.user_agent.string))
+                
+                tracking_id = cursor.lastrowid
+                conn.commit()
+                app.logger.info(f"Tracking iniciado: ID {tracking_id} para reclutador {ref_code}")
+            
+            cursor.close()
+            conn.close()
+        else:
+            app.logger.info(f"Registro de candidato desde web para tenant {tenant_id} (sin código de referencia)")
         
         # 1. Validar datos del formulario
         required_fields = ['firstName', 'lastName', 'identidad', 'email', 'phone', 'city']
@@ -15977,7 +16038,9 @@ def register_candidate_from_web():
             manual_data=manual_data,
             cv_data=cv_data,
             tenant_id=tenant_id,
-            cv_url=cv_url
+            cv_url=cv_url,
+            reclutador_user_id=reclutador_user_id,
+            tracking_id=tracking_id
         )
         
         candidate_id = result['candidate_id']
@@ -16035,6 +16098,380 @@ def register_candidate_from_web():
         return jsonify({
             'success': False,
             'error': 'Error al registrar candidato. Por favor intenta de nuevo.'
+        }), 500
+
+
+# =============================================================================
+# 🚀 SISTEMA DE RECLUTADORES FREELANCERS CON ENLACES DE AFILIADO
+# =============================================================================
+
+@app.route('/api/tracking/register-click', methods=['POST'])
+@token_required
+def register_affiliate_click():
+    """
+    Registrar click en enlace de afiliado de reclutador freelancer
+    
+    Body JSON:
+    - codigo_referencia: string (requerido) - Código del reclutador (ej: "RF001")
+    - enlace_usado: string (requerido) - URL completa que se usó
+    - ip_address: string (opcional) - IP del usuario
+    - user_agent: string (opcional) - User agent del navegador
+    
+    Returns:
+        JSON con success y tracking_id
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        data = request.get_json()
+        
+        if not data or not data.get('codigo_referencia'):
+            return jsonify({
+                'success': False,
+                'error': 'Código de referencia requerido'
+            }), 400
+        
+        codigo_ref = data.get('codigo_referencia')
+        enlace_usado = data.get('enlace_usado', '')
+        ip_address = data.get('ip_address', request.remote_addr)
+        user_agent = data.get('user_agent', request.user_agent.string)
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Buscar user_id por código de referencia
+        cursor.execute("""
+            SELECT id FROM Users 
+            WHERE codigo_referencia = %s AND tenant_id = %s AND activo = 1
+        """, (codigo_ref, tenant_id))
+        
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': 'Código de referencia inválido o inactivo'
+            }), 400
+        
+        # Registrar click en tabla de tracking
+        cursor.execute("""
+            INSERT INTO TrackingEnlaces 
+            (tenant_id, user_id, codigo_referencia, enlace_usado, ip_address, user_agent, estado)
+            VALUES (%s, %s, %s, %s, %s, %s, 'click')
+        """, (tenant_id, user['id'], codigo_ref, enlace_usado, ip_address, user_agent))
+        
+        tracking_id = cursor.lastrowid
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"Click registrado para reclutador {codigo_ref} en tenant {tenant_id}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Click registrado exitosamente',
+            'tracking_id': tracking_id,
+            'reclutador_id': user['id']
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error registrando click de afiliado: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error interno: {str(e)}'
+        }), 500
+
+
+@app.route('/api/tracking/update-registration', methods=['POST'])
+@token_required
+def update_tracking_registration():
+    """
+    Actualizar tracking cuando un candidato se registra desde enlace de afiliado
+    
+    Body JSON:
+    - tracking_id: int (requerido) - ID del tracking
+    - candidato_id: int (requerido) - ID del candidato registrado
+    
+    Returns:
+        JSON con success
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        data = request.get_json()
+        
+        if not data or not data.get('tracking_id') or not data.get('candidato_id'):
+            return jsonify({
+                'success': False,
+                'error': 'tracking_id y candidato_id requeridos'
+            }), 400
+        
+        tracking_id = data.get('tracking_id')
+        candidato_id = data.get('candidato_id')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Actualizar tracking con candidato_id y estado
+        cursor.execute("""
+            UPDATE TrackingEnlaces 
+            SET candidato_id = %s, estado = 'registrado', fecha_registro = NOW()
+            WHERE id = %s AND tenant_id = %s
+        """, (candidato_id, tracking_id, tenant_id))
+        
+        if cursor.rowcount == 0:
+            return jsonify({
+                'success': False,
+                'error': 'Tracking no encontrado'
+            }), 404
+        
+        # Obtener datos del tracking para actualizar candidato
+        cursor.execute("""
+            SELECT user_id FROM TrackingEnlaces 
+            WHERE id = %s AND tenant_id = %s
+        """, (tracking_id, tenant_id))
+        
+        tracking_data = cursor.fetchone()
+        if tracking_data:
+            # Actualizar candidato con reclutador_user_id
+            cursor.execute("""
+                UPDATE Afiliados 
+                SET reclutador_user_id = %s
+                WHERE id_afiliado = %s AND tenant_id = %s
+            """, (tracking_data['user_id'], candidato_id, tenant_id))
+            
+            # Actualizar contador del reclutador
+            cursor.execute("""
+                UPDATE Users 
+                SET total_candidatos = total_candidatos + 1
+                WHERE id = %s AND tenant_id = %s
+            """, (tracking_data['user_id'], tenant_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        app.logger.info(f"Tracking actualizado para candidato {candidato_id} en tenant {tenant_id}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Tracking actualizado exitosamente'
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error actualizando tracking de registro: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error interno: {str(e)}'
+        }), 500
+
+
+@app.route('/api/freelancers/dashboard', methods=['GET'])
+@token_required
+def get_freelancer_dashboard():
+    """
+    Dashboard específico para reclutadores freelancers
+    Muestra solo sus candidatos y estadísticas
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_id = get_current_user_id()
+        user_role = get_current_user_role()
+        
+        # Verificar que es reclutador freelancer
+        if user_role != 'reclutador_freelancer':
+            return jsonify({
+                'success': False,
+                'error': 'Acceso denegado. Solo para reclutadores freelancers.'
+            }), 403
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Obtener estadísticas del reclutador
+        cursor.execute("""
+            SELECT 
+                total_candidatos,
+                total_contratados,
+                total_comisiones
+            FROM Users 
+            WHERE id = %s AND tenant_id = %s
+        """, (user_id, tenant_id))
+        
+        stats = cursor.fetchone()
+        
+        # Obtener candidatos del reclutador
+        cursor.execute("""
+            SELECT 
+                a.id_afiliado,
+                a.nombre_completo,
+                a.email,
+                a.telefono,
+                a.ciudad,
+                a.cargo_solicitado,
+                a.estado,
+                a.fecha_registro,
+                a.puntuacion
+            FROM Afiliados a
+            WHERE a.tenant_id = %s AND a.reclutador_user_id = %s
+            ORDER BY a.fecha_registro DESC
+            LIMIT 50
+        """, (tenant_id, user_id))
+        
+        candidatos = cursor.fetchall()
+        
+        # Obtener vacantes (sin datos de contacto de empresa)
+        cursor.execute("""
+            SELECT 
+                v.id,
+                v.cargo,
+                v.descripcion,
+                v.requisitos,
+                v.salario_min,
+                v.salario_max,
+                v.ciudad,
+                v.estado,
+                v.fecha_publicacion,
+                v.fecha_cierre
+            FROM Vacantes v
+            WHERE v.tenant_id = %s AND v.estado = 'abierta'
+            ORDER BY v.fecha_publicacion DESC
+            LIMIT 20
+        """, (tenant_id,))
+        
+        vacantes = cursor.fetchall()
+        
+        # Obtener enlace de afiliado del reclutador
+        cursor.execute("""
+            SELECT codigo_referencia FROM Users 
+            WHERE id = %s AND tenant_id = %s
+        """, (user_id, tenant_id))
+        
+        user_data = cursor.fetchone()
+        codigo_ref = user_data.get('codigo_referencia', '') if user_data else ''
+        
+        # Construir enlace de afiliado
+        base_url = request.host_url.rstrip('/')
+        enlace_afiliado = f"{base_url}/registro?ref={codigo_ref}" if codigo_ref else ""
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'estadisticas': {
+                    'total_candidatos': stats.get('total_candidatos', 0) if stats else 0,
+                    'total_contratados': stats.get('total_contratados', 0) if stats else 0,
+                    'total_comisiones': float(stats.get('total_comisiones', 0)) if stats else 0.0
+                },
+                'candidatos': candidatos,
+                'vacantes': vacantes,
+                'enlace_afiliado': enlace_afiliado,
+                'codigo_referencia': codigo_ref
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error obteniendo dashboard freelancer: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error interno: {str(e)}'
+        }), 500
+
+
+@app.route('/api/freelancers/generate-code', methods=['POST'])
+@token_required
+def generate_freelancer_code():
+    """
+    Generar código de referencia para reclutador freelancer
+    Solo para administradores
+    """
+    try:
+        tenant_id = get_current_tenant_id()
+        user_id = get_current_user_id()
+        user_role = get_current_user_role()
+        
+        # Solo administradores pueden generar códigos
+        if not is_admin(user_id, tenant_id):
+            return jsonify({
+                'success': False,
+                'error': 'Solo administradores pueden generar códigos de referencia'
+            }), 403
+        
+        data = request.get_json()
+        target_user_id = data.get('user_id')
+        
+        if not target_user_id:
+            return jsonify({
+                'success': False,
+                'error': 'user_id requerido'
+            }), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Verificar que el usuario existe y es del tenant
+        cursor.execute("""
+            SELECT id, nombre FROM Users 
+            WHERE id = %s AND tenant_id = %s
+        """, (target_user_id, tenant_id))
+        
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': 'Usuario no encontrado'
+            }), 404
+        
+        # Generar código único
+        import random
+        import string
+        
+        def generate_code():
+            return 'RF' + ''.join(random.choices(string.digits, k=6))
+        
+        # Asegurar que el código sea único
+        codigo_ref = generate_code()
+        while True:
+            cursor.execute("""
+                SELECT id FROM Users 
+                WHERE codigo_referencia = %s AND tenant_id = %s
+            """, (codigo_ref, tenant_id))
+            
+            if not cursor.fetchone():
+                break
+            codigo_ref = generate_code()
+        
+        # Actualizar usuario con código de referencia
+        cursor.execute("""
+            UPDATE Users 
+            SET codigo_referencia = %s
+            WHERE id = %s AND tenant_id = %s
+        """, (codigo_ref, target_user_id, tenant_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        # Construir enlace de afiliado
+        base_url = request.host_url.rstrip('/')
+        enlace_afiliado = f"{base_url}/registro?ref={codigo_ref}"
+        
+        app.logger.info(f"Código de referencia generado para usuario {target_user_id}: {codigo_ref}")
+        
+        return jsonify({
+            'success': True,
+            'message': 'Código de referencia generado exitosamente',
+            'data': {
+                'codigo_referencia': codigo_ref,
+                'enlace_afiliado': enlace_afiliado,
+                'usuario': user['nombre']
+            }
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error generando código freelancer: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error interno: {str(e)}'
         }), 500
 
 
