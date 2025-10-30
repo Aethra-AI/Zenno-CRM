@@ -168,21 +168,29 @@ except Exception as e:
     app.logger.error(f"❌ Error ejecutando migraciones: {str(e)}")
     # No detener el servidor, solo registrar el error
 
-# Reemplaza la línea CORS(app) con este bloque
+# Configuración CORS para desarrollo y producción
+allowed_origins = [
+    "https://aethra-ai.github.io",  # Frontend en producción
+    "http://localhost:3000",        # Frontend local común
+    "http://localhost:5173",        # Vite/React común
+    "http://127.0.0.1:5000"         # Backend local
+]
+
+# Configura CORS con los orígenes permitidos
 CORS(app, 
-     # Aplica esta configuración a todas las rutas que empiecen con /api/ o /public-api/
-     resources={r"/*": {"origins": "*"}},
-     # Permite explícitamente los métodos que usamos, incluyendo OPTIONS
-     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-     # LA LÍNEA MÁS IMPORTANTE: Permite explícitamente la cabecera de autorización y X-API-Key
-     allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-API-Key"],
-     # Permite que el navegador envíe credenciales (cookies, tokens)
-     supports_credentials=True
-)
+     resources={
+         r"/*": {
+             "origins": allowed_origins,
+             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+             "allow_headers": ["Authorization", "Content-Type", "X-Requested-With", "X-API-Key"],
+             "supports_credentials": True,
+             "expose_headers": ["Content-Disposition"]
+         }
+     })
 # OpenAI client will be initialized per request for multi-tenant support
 # AGREGA ESTE BLOQUE COMPLETO DESPUÉS DE LA LÍNEA 'openai_client = ...'
 
-from functools import wraps # <<< ASEGÚRATE DE QUE ESTA IMPORTACIÓN ESTÉ ARRIBA CON LAS DEMÁS
+from functools import wraps # ASEGÚRATE DE QUE ESTA IMPORTACIÓN ESTÉ ARRIBA CON LAS DEMÁS
 
 # --- CONFIGURACIÓN DE SEGURIDAD PARA LA API DEL BOT ---
 INTERNAL_API_KEY = os.getenv('INTERNAL_API_KEY')
@@ -6653,7 +6661,7 @@ def get_user_notifications():
             SELECT 
                 id, user_id, tenant_id, tipo, titulo, mensaje, 
                 prioridad, leida, metadata, fecha_creacion, 
-                fecha_lectura as read_at, title, message, type, is_read
+                fecha_lectura as read_at
             FROM notifications
             WHERE user_id = %s AND tenant_id = %s
             ORDER BY fecha_creacion DESC
