@@ -5632,7 +5632,17 @@ def get_dashboard_metrics():
             params_clientes.extend(vacancy_params)
         sql += " GROUP BY c.id_cliente, c.empresa ORDER BY total_postulaciones DESC LIMIT 5"
         cursor.execute(sql, tuple(params_clientes))
-        top_clientes = cursor.fetchall()
+        top_clientes_raw = cursor.fetchall()
+        
+        # 🔧 VALIDAR Y SANITIZAR datos en top_clientes (no hay fechas aquí, pero validamos por seguridad)
+        top_clientes = []
+        for cliente in top_clientes_raw:
+            cliente_clean = dict(cliente)
+            # Asegurar que todos los valores numéricos sean correctos
+            for key in ['total_vacantes', 'total_postulaciones', 'total_contrataciones']:
+                if cliente_clean.get(key) is None:
+                    cliente_clean[key] = 0
+            top_clientes.append(cliente_clean)
         
         # 9. Efectividad por usuario (FILTRADO POR USUARIO) 🔐
         sql = """
@@ -5712,7 +5722,27 @@ def get_dashboard_metrics():
             LIMIT 5
         """
         cursor.execute(sql, tuple(params_candidatos))
-        candidatos_mas_activos = cursor.fetchall()
+        candidatos_mas_activos_raw = cursor.fetchall()
+        
+        # 🔧 VALIDAR Y SANITIZAR FECHAS en candidatos_mas_activos
+        candidatos_mas_activos = []
+        for candidato in candidatos_mas_activos_raw:
+            candidato_clean = dict(candidato)
+            # Validar ultimaActividad (ultimo_contacto)
+            if candidato_clean.get('ultimaActividad'):
+                try:
+                    # Intentar convertir a string ISO si es datetime
+                    if hasattr(candidato_clean['ultimaActividad'], 'isoformat'):
+                        candidato_clean['ultimaActividad'] = candidato_clean['ultimaActividad'].isoformat()
+                    # Validar que sea una fecha válida
+                    from datetime import datetime
+                    datetime.fromisoformat(str(candidato_clean['ultimaActividad']).replace('Z', '+00:00').split('.')[0])
+                except (ValueError, AttributeError, TypeError) as e:
+                    app.logger.warning(f"Fecha inválida en ultimaActividad para candidato {candidato_clean.get('nombre')}: {candidato_clean.get('ultimaActividad')} - Error: {e}")
+                    candidato_clean['ultimaActividad'] = None
+            else:
+                candidato_clean['ultimaActividad'] = None
+            candidatos_mas_activos.append(candidato_clean)
         
         # 12. Skills más demandados (FILTRADO POR USUARIO) 🔐
         sql = """
@@ -5793,24 +5823,33 @@ def get_dashboard_metrics():
             'ranking': 1
         }]
         
+        # 🔧 LOGGING DETALLADO: Registrar estructura de datos antes de enviar
+        app.logger.info(f"📊 Dashboard metrics - User {user_id}, Tenant {tenant_id}")
+        app.logger.info(f"📊 Total candidatos: {total_candidatos}, Candidatos hoy: {candidatos_hoy}")
+        app.logger.info(f"📊 Candidatos más activos count: {len(candidatos_mas_activos)}")
+        for idx, cand in enumerate(candidatos_mas_activos):
+            app.logger.info(f"📊 Candidato {idx}: nombre={cand.get('nombre')}, ultimaActividad={cand.get('ultimaActividad')}, tipo={type(cand.get('ultimaActividad'))}")
+        
+        response_data = {
+            "total_candidatos": total_candidatos,
+            "candidatos_hoy": candidatos_hoy,
+            "vacantes_por_estado": vacantes_por_estado,
+            "tasa_conversion": round(tasa_conversion, 2),
+            "tiempo_promedio_contratacion": int(tiempo_promedio),
+            "candidatos_por_mes": candidatos_por_mes,
+            "ingresos_totales": float(ingresos_totales),
+            "top_clientes": top_clientes,
+            "efectividad_usuario": efectividad_usuario,
+            "tasa_exito_vacantes": tasa_exito_vacantes,
+            "candidatos_mas_activos": candidatos_mas_activos,
+            "skills_demandados": skills_demandados,
+            "distribucion_ciudades": distribucion_ciudades,
+            "usuarios_efectividad": usuarios_efectividad
+        }
+        
         return jsonify({
             "success": True,
-            "data": {
-                "total_candidatos": total_candidatos,
-                "candidatos_hoy": candidatos_hoy,
-                "vacantes_por_estado": vacantes_por_estado,
-                "tasa_conversion": round(tasa_conversion, 2),
-                "tiempo_promedio_contratacion": int(tiempo_promedio),
-                "candidatos_por_mes": candidatos_por_mes,
-                "ingresos_totales": float(ingresos_totales),
-                "top_clientes": top_clientes,
-                "efectividad_usuario": efectividad_usuario,
-                "tasa_exito_vacantes": tasa_exito_vacantes,
-                "candidatos_mas_activos": candidatos_mas_activos,
-                "skills_demandados": skills_demandados,
-                "distribucion_ciudades": distribucion_ciudades,
-                "usuarios_efectividad": usuarios_efectividad
-            }
+            "data": response_data
         })
         
     except Exception as e: 
