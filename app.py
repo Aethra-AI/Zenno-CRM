@@ -84,7 +84,13 @@ from permission_service import (
     get_effective_permissions,
     has_permission,
     get_permission_scope,
-    can_perform_action
+    can_perform_action,
+    # Helpers por pestañas (Fase 3)
+    can_access_tab,
+    get_scope_for_tab,
+    can_action_on_tab,
+    get_ui_flags_for_tab,
+    get_redactions_for_tab
 )
 from werkzeug.utils import secure_filename
 from flask import Flask, jsonify, request, Response, send_file, send_from_directory, g, url_for, redirect
@@ -168,29 +174,21 @@ except Exception as e:
     app.logger.error(f"❌ Error ejecutando migraciones: {str(e)}")
     # No detener el servidor, solo registrar el error
 
-# Configuración CORS para desarrollo y producción
-allowed_origins = [
-    "https://aethra-ai.github.io",  # Frontend en producción
-    "http://localhost:3000",        # Frontend local común
-    "http://localhost:5173",        # Vite/React común
-    "http://127.0.0.1:5000"         # Backend local
-]
-
-# Configura CORS con los orígenes permitidos
+# Reemplaza la línea CORS(app) con este bloque
 CORS(app, 
-     resources={
-         r"/*": {
-             "origins": allowed_origins,
-             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-             "allow_headers": ["Authorization", "Content-Type", "X-Requested-With", "X-API-Key"],
-             "supports_credentials": True,
-             "expose_headers": ["Content-Disposition"]
-         }
-     })
+     # Aplica esta configuración a todas las rutas que empiecen con /api/ o /public-api/
+     resources={r"/*": {"origins": "*"}},
+     # Permite explícitamente los métodos que usamos, incluyendo OPTIONS
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     # LA LÍNEA MÁS IMPORTANTE: Permite explícitamente la cabecera de autorización y X-API-Key
+     allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-API-Key"],
+     # Permite que el navegador envíe credenciales (cookies, tokens)
+     supports_credentials=True
+)
 # OpenAI client will be initialized per request for multi-tenant support
 # AGREGA ESTE BLOQUE COMPLETO DESPUÉS DE LA LÍNEA 'openai_client = ...'
 
-from functools import wraps # ASEGÚRATE DE QUE ESTA IMPORTACIÓN ESTÉ ARRIBA CON LAS DEMÁS
+from functools import wraps # <<< ASEGÚRATE DE QUE ESTA IMPORTACIÓN ESTÉ ARRIBA CON LAS DEMÁS
 
 # --- CONFIGURACIÓN DE SEGURIDAD PARA LA API DEL BOT ---
 INTERNAL_API_KEY = os.getenv('INTERNAL_API_KEY')
@@ -5842,6 +5840,17 @@ def get_candidates():
         user_data = g.current_user
         user_id = user_data.get('user_id')
         
+        # 🔐 Verificar acceso a la pestaña "candidates"
+        if not can_access_tab(user_id, tenant_id, 'candidates'):
+            return jsonify({
+                'success': False,
+                'message': 'No tienes acceso a Candidatos',
+                'code': 'FORBIDDEN_TAB'
+            }), 403
+        
+        tab_scope = get_scope_for_tab(user_id, tenant_id, 'candidates')
+        redact_fields = get_redactions_for_tab(user_id, tenant_id, 'candidates')
+        
         # Obtener parámetros de consulta
         page = int(request.args.get('page', 1))
         limit = min(int(request.args.get('limit', 100)), 500)  # Máximo 500 por página
@@ -5884,11 +5893,23 @@ def get_candidates():
         """
         params = [tenant_id]
         
-        # 🔐 MÓDULO B5: Filtrar por usuario según rol
-        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
-        if condition:
-            query += f" AND ({condition})"
-            params.extend(filter_params)
+        # 🔐 Fase 3: Aplicar filtro por scope de pestaña (own/team/all)
+        if tab_scope in ('own', 'team'):
+            # Determinar usuarios accesibles según scope
+            if tab_scope == 'own':
+                accessible_users = [user_id]
+            else:  # team
+                accessible_users = get_accessible_user_ids(user_id, tenant_id) or [user_id]
+            placeholders = ','.join(['%s'] * len(accessible_users))
+            query += f" AND (a.created_by_user IN ({placeholders}) OR EXISTS (\n"
+            query += "    SELECT 1 FROM Resource_Assignments ra\n"
+            query += "    WHERE ra.resource_type = %s\n"
+            query += "      AND ra.resource_id = a.id_afiliado\n"
+            query += "      AND ra.assigned_to_user = %s\n"
+            query += "      AND ra.tenant_id = %s\n"
+            query += "      AND ra.is_active = 1))"
+            params.extend(accessible_users)
+            params.extend(['candidate', user_id, tenant_id])
         
         # Aplicar filtros - búsqueda palabra por palabra
         if search:
@@ -5938,6 +5959,13 @@ def get_candidates():
         cursor.execute(query, params)
         candidates = cursor.fetchall()
         
+        # 🔏 Redactar campos sensibles si aplica
+        if redact_fields:
+            for row in candidates:
+                for field in redact_fields:
+                    if field in row:
+                        row[field] = None
+        
         # Cerrar cursor antes de devolver respuesta
         cursor.close()
         
@@ -5968,6 +5996,12 @@ def create_candidate():
         user_data = g.current_user
         user_id = user_data.get('user_id')
         data = request.get_json()
+        
+        # 🔐 Verificar acceso a pestaña y permiso de crear
+        if not can_access_tab(user_id, tenant_id, 'candidates'):
+            return jsonify({'error': 'No tienes acceso a Candidatos'}), 403
+        if not can_action_on_tab(user_id, tenant_id, 'candidates', 'create'):
+            return jsonify({'error': 'No tienes permisos para crear candidatos', 'required_permission': 'create'}), 403
         
         # 🔐 MÓDULO B5: Verificar permiso de creación
         if not can_create_resource(user_id, tenant_id, 'candidate'):
@@ -7287,6 +7321,10 @@ def handle_vacancies():
         user_id = user_data.get('user_id')
         
         if request.method == 'GET':
+            # 🔐 Verificar acceso a la pestaña "vacancies"
+            if not can_access_tab(user_id, tenant_id, 'vacancies'):
+                return jsonify({'success': False, 'message': 'No tienes acceso a Vacantes'}), 403
+
             estado = request.args.get('estado')
             client_id = request.args.get('client_id')
             page = int(request.args.get('page', 1))
@@ -7311,11 +7349,23 @@ def handle_vacancies():
                 base_query += " AND V.id_cliente = %s"
                 params.append(client_id)
             
-            # 🔐 MÓDULO B6: Aplicar filtro por usuario
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'V.created_by_user', 'vacancy', 'V.id_vacante')
-            if condition:
-                base_query += f" AND ({condition})"
-                params.extend(filter_params)
+            # 🔐 Fase 3: Aplicar filtro por scope de pestaña
+            vac_scope = get_scope_for_tab(user_id, tenant_id, 'vacancies')
+            if vac_scope in ('own', 'team'):
+                if vac_scope == 'own':
+                    accessible_users = [user_id]
+                else:
+                    accessible_users = get_accessible_user_ids(user_id, tenant_id) or [user_id]
+                placeholders = ','.join(['%s'] * len(accessible_users))
+                base_query += f" AND (V.created_by_user IN ({placeholders}) OR EXISTS (\n"
+                base_query += "    SELECT 1 FROM Resource_Assignments ra\n"
+                base_query += "    WHERE ra.resource_type = %s\n"
+                base_query += "      AND ra.resource_id = V.id_vacante\n"
+                base_query += "      AND ra.assigned_to_user = %s\n"
+                base_query += "      AND ra.tenant_id = %s\n"
+                base_query += "      AND ra.is_active = 1))"
+                params.extend(accessible_users)
+                params.extend(['vacancy', user_id, tenant_id])
             
             # Filtro de estado (debe ir antes del GROUP BY)
             if estado:
@@ -7335,6 +7385,20 @@ def handle_vacancies():
             
             cursor.execute(base_query, params)
             vacancies = cursor.fetchall()
+
+            # 🔏 UI flags: ocultar datos sensibles si aplica
+            vac_ui = get_ui_flags_for_tab(user_id, tenant_id, 'vacancies')
+            hide_client_info = bool(vac_ui.get('hide_client_info')) if isinstance(vac_ui, dict) else False
+            hide_stats = bool(vac_ui.get('hide_stats')) if isinstance(vac_ui, dict) else False
+            if hide_client_info or hide_stats:
+                for row in vacancies:
+                    if hide_client_info and 'empresa' in row:
+                        row['empresa'] = None
+                    if hide_stats:
+                        if 'aplicaciones_count' in row:
+                            row['aplicaciones_count'] = 0
+                        if 'contratados_count' in row:
+                            row['contratados_count'] = 0
             
             # Formatear respuesta según lo esperado por la interfaz
             response = {
@@ -7350,6 +7414,11 @@ def handle_vacancies():
             return jsonify(response)
         elif request.method == 'POST':
             data = request.get_json()
+            # 🔐 Verificar acceso a pestaña y acción crear
+            if not can_access_tab(user_id, tenant_id, 'vacancies'):
+                return jsonify({'error': 'No tienes acceso a Vacantes'}), 403
+            if not can_action_on_tab(user_id, tenant_id, 'vacancies', 'create'):
+                return jsonify({'error': 'No tienes permisos para crear vacantes', 'required_permission': 'create'}), 403
             
             # 🔐 MÓDULO B6: Verificar permiso de creación
             if not can_create_resource(user_id, tenant_id, 'vacancy'):
@@ -16172,7 +16241,7 @@ def register_candidate_from_web():
         
         candidate_id = result['candidate_id']
         action = result['action']  # 'created' o 'updated'
-        
+
         # 11. Registrar en log de procesamiento
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -16226,6 +16295,79 @@ def register_candidate_from_web():
             'success': False,
             'error': 'Error al registrar candidato. Por favor intenta de nuevo.'
         }), 500
+
+# =====================
+# Permisos: Endpoints Admin (Roles/Users)
+# =====================
+
+@app.route('/api/roles/<int:role_id>/permissions', methods=['GET', 'PUT'])
+@token_required
+def role_permissions(role_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+
+        # Solo admins/gestores de usuarios
+        if not (is_admin(user_id, tenant_id) or can_manage_users(user_id, tenant_id)):
+            return jsonify({'error': 'No autorizado'}), 403
+
+        if request.method == 'GET':
+            cursor.execute("SELECT id, nombre, permisos FROM Roles WHERE id = %s", (role_id,))
+            role = cursor.fetchone()
+            if not role:
+                return jsonify({'error': 'Rol no encontrado'}), 404
+            return jsonify({'success': True, 'data': role})
+        else:
+            payload = request.get_json() or {}
+            permisos = json.dumps(payload.get('permisos', payload), ensure_ascii=False)
+            cursor.execute("UPDATE Roles SET permisos = %s WHERE id = %s", (permisos, role_id))
+            conn.commit()
+            return jsonify({'success': True})
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+
+
+@app.route('/api/users/<int:target_user_id>/custom-permissions', methods=['GET', 'PUT'])
+@token_required
+def user_custom_permissions(target_user_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        tenant_id = get_current_tenant_id()
+        user_data = g.current_user
+        user_id = user_data.get('user_id')
+
+        # Solo admins/gestores de usuarios
+        if not (is_admin(user_id, tenant_id) or can_manage_users(user_id, tenant_id)):
+            return jsonify({'error': 'No autorizado'}), 403
+
+        if request.method == 'GET':
+            cursor.execute("SELECT id, custom_permissions FROM Users WHERE id = %s", (target_user_id,))
+            rec = cursor.fetchone()
+            if not rec:
+                return jsonify({'error': 'Usuario no encontrado'}), 404
+            return jsonify({'success': True, 'data': rec})
+        else:
+            payload = request.get_json() or {}
+            custom = json.dumps(payload.get('custom_permissions', payload), ensure_ascii=False)
+            cursor.execute("UPDATE Users SET custom_permissions = %s WHERE id = %s", (custom, target_user_id))
+            conn.commit()
+            return jsonify({'success': True})
+    except Exception as e:
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
 
 
 # --- PUNTO DE ENTRADA PARA EJECUTAR EL SERVIDOR (SIN CAMBIOS) ---

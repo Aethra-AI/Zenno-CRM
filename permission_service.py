@@ -748,3 +748,92 @@ def can_perform_action(user_id, tenant_id, resource_type, action):
     return False
 
 
+# =====================================================
+# 9. AYUDAS ESPECÍFICAS PARA PESTAÑAS (TABS)
+# =====================================================
+
+def _get_tab_config(user_id, tenant_id, tab_key):
+    """
+    Obtiene el bloque de permisos para una pestaña específica
+    del conjunto de permisos efectivos (rol + overrides).
+    """
+    if is_admin(user_id, tenant_id):
+        # Admin: acceso total; devolver defaults permisivos
+        return {
+            'access': True,
+            'scope': 'all',
+            'actions': {'create': True, 'apply': True, 'write': True, 'full': True},
+            'ui': {},
+            'redact_fields': []
+        }
+
+    perms = get_effective_permissions(user_id, tenant_id)
+    tab_cfg = perms.get(tab_key)
+    if not isinstance(tab_cfg, dict):
+        return None
+    return tab_cfg
+
+
+def can_access_tab(user_id, tenant_id, tab_key):
+    """
+    True si el usuario puede ver/acceder a la pestaña (tab) indicada.
+    """
+    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
+    if tab_cfg is None:
+        return False
+    return bool(tab_cfg.get('access') is True)
+
+
+def get_scope_for_tab(user_id, tenant_id, tab_key):
+    """
+    Devuelve el scope configurado para una pestaña: 'own' | 'team' | 'all'.
+    Si no hay config, retorna 'none'. Admin → 'all'.
+    """
+    if is_admin(user_id, tenant_id):
+        return 'all'
+    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
+    if not tab_cfg:
+        return 'none'
+    return tab_cfg.get('scope', 'none')
+
+
+def can_action_on_tab(user_id, tenant_id, tab_key, action):
+    """
+    Verifica si el usuario puede realizar una acción en la pestaña dada.
+    Ej: can_action_on_tab(user, tenant, 'candidates', 'create')
+    """
+    if is_admin(user_id, tenant_id):
+        return True
+    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
+    if not tab_cfg:
+        return False
+    actions = tab_cfg.get('actions', {}) or {}
+    return bool(actions.get(action) is True)
+
+
+def get_ui_flags_for_tab(user_id, tenant_id, tab_key):
+    """
+    Retorna el objeto de banderas de UI configuradas para la pestaña (si existe).
+    """
+    if is_admin(user_id, tenant_id):
+        return {}
+    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
+    if not tab_cfg:
+        return {}
+    ui_flags = tab_cfg.get('ui')
+    return ui_flags if isinstance(ui_flags, dict) else {}
+
+
+def get_redactions_for_tab(user_id, tenant_id, tab_key):
+    """
+    Retorna lista de campos a anonimizar/ocultar para la pestaña dada.
+    """
+    if is_admin(user_id, tenant_id):
+        return []
+    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
+    if not tab_cfg:
+        return []
+    redact = tab_cfg.get('redact_fields')
+    return redact if isinstance(redact, list) else []
+
+

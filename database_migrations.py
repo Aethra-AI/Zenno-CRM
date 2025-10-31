@@ -41,6 +41,14 @@ class DatabaseMigrations:
             'description': 'Aumentar tamaño de columna api_key en Tenant_API_Keys de VARCHAR(64) a VARCHAR(255)',
             'execute': self._migration_002_fix_api_key_size
         })
+        
+        # Migración 4: Seed de permisos por pestañas para roles base
+        self.migrations.append({
+            'id': 4,
+            'name': 'seed_role_permissions_tabs_v1',
+            'description': 'Poblar Roles.permisos con esquema por pestañas para Admin/Supervisor/Reclutador',
+            'execute': self._migration_004_seed_role_permissions
+        })
     
     def _create_migrations_table(self, conn):
         """Crear tabla para trackear migraciones ejecutadas"""
@@ -416,6 +424,83 @@ class DatabaseMigrations:
         conn.commit()
         cursor.close()
 
+
+    def _migration_004_seed_role_permissions(self, conn):
+        """
+        Migración 004: Insertar/actualizar JSON de permisos por pestañas en Roles.permisos
+        para los roles base: Administrador, Supervisor, Reclutador.
+        """
+        import json
+        cursor = conn.cursor()
+
+        admin_perms = {
+            "candidates": {"access": True, "scope": "all", "actions": {"create": True, "apply": True, "write": True, "full": True}, "ui": {"candidate_modal_tabs": {"summary": True, "experience": True, "applications": True, "conversations": True, "edit": True, "timeline": True}}, "redact_fields": []},
+            "vacancies": {"access": True, "scope": "all", "actions": {"create": True, "write": True, "full": True}, "ui": {"hide_client_info": False, "hide_stats": False, "hide_applications_tab": False, "applications_scope": "all"}},
+            "applications": {"access": True, "scope": "all", "actions": {"create": True, "write": True, "full": True}},
+            "interviews": {"access": True, "scope": "all", "actions": {"create": True, "write": True}},
+            "clients": {"access": True, "scope": "all", "actions": {"create": True, "write": True, "full": True}, "redact_fields": []},
+            "hired": {"access": True, "scope": "all", "actions": {"create": True, "write": True, "full": True}},
+            "dashboard": {"access": True},
+            "conversations": {"access": True},
+            "analytics": {"access": True},
+            "email": {"access": True},
+            "calendar": {"access": True},
+            "users": {"access": True, "actions": {"manage": True}},
+            "settings": {"access": True}
+        }
+
+        supervisor_perms = {
+            "candidates": {"access": True, "scope": "team", "actions": {"create": True, "apply": True, "write": True, "full": False}, "ui": {"candidate_modal_tabs": {"summary": True, "experience": True, "applications": True, "conversations": True, "edit": True, "timeline": True}}, "redact_fields": []},
+            "vacancies": {"access": True, "scope": "team", "actions": {"create": False, "write": True, "full": False}, "ui": {"hide_client_info": False, "hide_stats": False, "hide_applications_tab": False, "applications_scope": "all"}},
+            "applications": {"access": True, "scope": "team", "actions": {"create": True, "write": True}},
+            "interviews": {"access": True, "scope": "team", "actions": {"create": True, "write": True}},
+            "clients": {"access": True, "scope": "team", "actions": {"create": False, "write": True}, "redact_fields": []},
+            "hired": {"access": True, "scope": "team", "actions": {"create": False, "write": True}},
+            "dashboard": {"access": True},
+            "conversations": {"access": True},
+            "analytics": {"access": True},
+            "email": {"access": True},
+            "calendar": {"access": True},
+            "users": {"access": False, "actions": {"manage": False}},
+            "settings": {"access": False}
+        }
+
+        recruiter_perms = {
+            "candidates": {"access": True, "scope": "own", "actions": {"create": True, "apply": True, "write": True, "full": False}, "ui": {"candidate_modal_tabs": {"summary": True, "experience": True, "applications": False, "conversations": False, "edit": False, "timeline": False}}, "redact_fields": ["email", "telefono"]},
+            "vacancies": {"access": True, "scope": "own", "actions": {"create": False, "write": False, "full": False}, "ui": {"hide_client_info": True, "hide_stats": True, "hide_applications_tab": True, "applications_scope": "own"}},
+            "applications": {"access": True, "scope": "own", "actions": {"create": True, "write": False}},
+            "interviews": {"access": True, "scope": "own", "actions": {"create": True, "write": False}},
+            "clients": {"access": True, "scope": "own", "actions": {"create": False, "write": False}, "redact_fields": ["empresa"]},
+            "hired": {"access": True, "scope": "own", "actions": {"create": False, "write": False}},
+            "dashboard": {"access": True},
+            "conversations": {"access": True},
+            "analytics": {"access": False},
+            "email": {"access": False},
+            "calendar": {"access": True},
+            "users": {"access": False, "actions": {"manage": False}},
+            "settings": {"access": False}
+        }
+
+        role_map = {
+            'Administrador': admin_perms,
+            'Supervisor': supervisor_perms,
+            'Reclutador': recruiter_perms
+        }
+
+        for role_name, perms in role_map.items():
+            payload = json.dumps(perms, ensure_ascii=False)
+            cursor.execute(
+                """
+                UPDATE Roles
+                SET permisos = %s
+                WHERE nombre = %s
+                """,
+                (payload, role_name)
+            )
+
+        conn.commit()
+        cursor.close()
+        logger.info("   ✅ Roles.permisos poblado para Administrador, Supervisor y Reclutador")
 
 # Función helper para ejecutar migraciones desde app.py
 def run_database_migrations(db_config):
