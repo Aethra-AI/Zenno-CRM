@@ -5600,7 +5600,23 @@ def get_dashboard_metrics():
             params.extend(candidate_params)
         sql += " GROUP BY DATE_FORMAT(a.fecha_registro, '%Y-%m') ORDER BY mes"
         cursor.execute(sql, tuple(params))
-        candidatos_por_mes = cursor.fetchall()
+        candidatos_por_mes_raw = cursor.fetchall()
+        
+        # 🔧 VALIDAR Y SANITIZAR candidatos_por_mes
+        candidatos_por_mes = []
+        for item in candidatos_por_mes_raw:
+            item_clean = dict(item)
+            # Validar formato de mes YYYY-MM
+            if item_clean.get('mes'):
+                try:
+                    from datetime import datetime
+                    datetime.strptime(item_clean['mes'], '%Y-%m')
+                except (ValueError, TypeError):
+                    app.logger.warning(f"Formato de mes inválido: {item_clean.get('mes')}")
+                    continue
+            if item_clean.get('total') is None:
+                item_clean['total'] = 0
+            candidatos_por_mes.append(item_clean)
         
         # 7. Ingresos generados - 🔐 CORRECCIÓN: Solo Admin puede ver datos financieros
         ingresos_totales = 0
@@ -7180,9 +7196,23 @@ def get_activities():
                 except:
                     pass
             
-            # Formatear timestamp
+            # 🔧 VALIDAR Y FORMATEAR timestamp de forma segura
             if activity['created_at']:
-                activity['created_at'] = activity['created_at'].isoformat()
+                try:
+                    # Si es un objeto datetime, convertir a ISO
+                    if hasattr(activity['created_at'], 'isoformat'):
+                        activity['created_at'] = activity['created_at'].isoformat()
+                    # Si ya es string, validar formato
+                    elif isinstance(activity['created_at'], str):
+                        # Validar que sea una fecha válida
+                        from datetime import datetime
+                        datetime.fromisoformat(activity['created_at'].replace('Z', '+00:00').split('.')[0])
+                    # Si es None o inválido, establecer a None
+                except (ValueError, AttributeError, TypeError) as e:
+                    app.logger.warning(f"Fecha inválida en actividad {activity.get('id')}: {activity.get('created_at')} - Error: {e}")
+                    activity['created_at'] = None
+            else:
+                activity['created_at'] = None
         
         return jsonify({
             'success': True,
