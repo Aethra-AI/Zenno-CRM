@@ -6078,14 +6078,19 @@ def create_candidate():
         if cursor.fetchone():
             return jsonify({'error': 'Ya existe un candidato con este email'}), 409
         
-        # 🔐 MÓDULO B5: Insertar con created_by_user
+        # 🔐 MÓDULO B5: Insertar con created_by_user_id y estado válido
         sql = """
             INSERT INTO Afiliados (
                 nombre_completo, email, telefono, ciudad, cargo_solicitado,
                 experiencia, grado_academico, disponibilidad_rotativos, cv_url,
-                linkedin, portfolio, skills, observaciones, tenant_id, created_by_user, fecha_registro
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
+                linkedin, portfolio, skills, observaciones, tenant_id, estado, created_by_user_id, fecha_registro
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURDATE())
         """
+        
+        # 🔍 CORRECCIÓN: Mapear estado al valor correcto del ENUM
+        estado = data.get('estado', 'active')
+        if estado not in ['active', 'pending', 'hired', 'rejected']:
+            estado = 'active'  # Valor por defecto válido
         
         cursor.execute(sql, (
             data['nombre_completo'],
@@ -6102,6 +6107,7 @@ def create_candidate():
             data.get('skills', ''),
             data.get('observaciones', ''),
             tenant_id,
+            estado,  # 🔍 Estado válido del ENUM
             user_id  # 🔐 Registrar quién creó el candidato
         ))
         
@@ -15122,13 +15128,14 @@ def create_candidate_from_cv_data(cv_data, tenant_id, user_id):
         
         # Insertar candidato en tabla Afiliados con campos adicionales
         # Incluye el user_id para rastrear quién subió el CV
+        # 🔍 CORRECCIÓN: Usar 'active' en lugar de 'Activo' para el ENUM
         cursor.execute("""
             INSERT INTO Afiliados (
                 tenant_id, nombre_completo, email, telefono, ciudad,
                 experiencia, skills, linkedin, portfolio, estado, fecha_registro,
                 created_by_user_id, created_at
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Activo', NOW(), %s, NOW()
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active', NOW(), %s, NOW()
             )
         """, (
             tenant_id, nombre_completo, email, telefono, ciudad,
@@ -16057,6 +16064,7 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url, refe
         else:
             # ===== CREAR NUEVO CANDIDATO =====
             # Crear candidato (TrackingEnlaces se encarga de la asociación)
+            # 🔍 CORRECCIÓN: Usar 'active' en lugar de 'Activo' para el ENUM
             cursor.execute("""
                 INSERT INTO Afiliados (
                     tenant_id, nombre_completo, identidad, email, telefono, 
@@ -16069,7 +16077,7 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url, refe
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
-                    'Activo', NOW(), NOW()
+                    'active', NOW(), NOW()
                 )
             """, (
                 tenant_id, nombre_completo, identidad, email, telefono,
