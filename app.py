@@ -7201,7 +7201,7 @@ def get_activities():
                 try:
                     # Si es un objeto datetime, convertir a ISO
                     if hasattr(activity['created_at'], 'isoformat'):
-                activity['created_at'] = activity['created_at'].isoformat()
+                        activity['created_at'] = activity['created_at'].isoformat()
                     # Si ya es string, validar formato
                     elif isinstance(activity['created_at'], str):
                         # Validar que sea una fecha válida
