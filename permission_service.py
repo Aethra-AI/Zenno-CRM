@@ -389,8 +389,12 @@ def was_created_by_user(user_id, tenant_id, resource_type, resource_id):
     
     cursor = conn.cursor(dictionary=True)
     try:
+        # 🔍 CORRECCIÓN: Usar el nombre de columna correcto según la tabla
+        # Para Afiliados: created_by_user_id, para Vacantes/Clientes: created_by_user
+        created_by_column = 'created_by_user_id' if resource_type == 'candidate' else 'created_by_user'
+        
         query = f"""
-            SELECT created_by_user
+            SELECT {created_by_column}
             FROM {table}
             WHERE {id_column} = %s 
               AND tenant_id = %s
@@ -401,7 +405,7 @@ def was_created_by_user(user_id, tenant_id, resource_type, resource_id):
         if not result:
             return False
         
-        return result['created_by_user'] == user_id
+        return result[created_by_column] == user_id
     
     except Exception as e:
         logger.error(f"Error verificando creador del recurso: {str(e)}")

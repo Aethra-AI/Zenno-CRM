@@ -4014,7 +4014,7 @@ def get_kpi_reports():
         
         # 🔐 MÓDULO B12: Obtener condiciones de filtro
         vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
         hired_condition, hired_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user', 'client', 'c.id_cliente')
         
         # 1. Métricas de tiempo
@@ -4330,7 +4330,7 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         
         # 🔐 MÓDULO B5: Filtrar por usuario según rol
         if user_id and tenant_id:
-            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+            condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
             if condition:
                 conditions.append(f"({condition})")
                 params.extend(filter_params)
@@ -4663,7 +4663,7 @@ class FilterEngine:
             
             # 🔐 Aplicar filtros de permisos
             condition, filter_params = build_user_filter_condition(
-                user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+                user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado'
             )
             if condition:
                 query += f" AND ({condition})"
@@ -4772,7 +4772,7 @@ def get_all_candidates_for_selection():
         
         # 🔐 Aplicar filtros de permisos
         condition, filter_params = build_user_filter_condition(
-            user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+            user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado'
         )
         if condition:
             query += f" AND ({condition})"
@@ -4854,7 +4854,7 @@ def get_filter_options():
         
         # 🔐 Aplicar filtros de permisos
         condition, filter_params = build_user_filter_condition(
-            user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+            user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado'
         )
         
         # Obtener ciudades
@@ -5248,7 +5248,7 @@ def get_reports():
         user_id = user_data.get('user_id')
         
         # 🔐 Construir filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
         vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Si no se especifica reporte o es 'summary', devolver resumen general
@@ -5390,7 +5390,7 @@ def get_dashboard_data():
             user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante'
         )
         candidate_condition, candidate_params = build_user_filter_condition(
-            user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado'
+            user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado'
         )
         
         # Métricas básicas - Entrevistas (filtrar a través de Vacantes)
@@ -5516,7 +5516,7 @@ def get_dashboard_metrics():
             return jsonify({"error": "No se pudo obtener tenant_id del usuario autenticado"}), 401
         
         # 🔐 CORRECCIÓN: Obtener filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
         vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # 1. Candidatos activos totales (filtrado por usuario)
@@ -5847,21 +5847,21 @@ def get_dashboard_metrics():
             app.logger.info(f"📊 Candidato {idx}: nombre={cand.get('nombre')}, ultimaActividad={cand.get('ultimaActividad')}, tipo={type(cand.get('ultimaActividad'))}")
         
         response_data = {
-            "total_candidatos": total_candidatos,
-            "candidatos_hoy": candidatos_hoy,
-            "vacantes_por_estado": vacantes_por_estado,
-            "tasa_conversion": round(tasa_conversion, 2),
-            "tiempo_promedio_contratacion": int(tiempo_promedio),
-            "candidatos_por_mes": candidatos_por_mes,
-            "ingresos_totales": float(ingresos_totales),
-            "top_clientes": top_clientes,
-            "efectividad_usuario": efectividad_usuario,
-            "tasa_exito_vacantes": tasa_exito_vacantes,
-            "candidatos_mas_activos": candidatos_mas_activos,
-            "skills_demandados": skills_demandados,
-            "distribucion_ciudades": distribucion_ciudades,
-            "usuarios_efectividad": usuarios_efectividad
-        }
+                "total_candidatos": total_candidatos,
+                "candidatos_hoy": candidatos_hoy,
+                "vacantes_por_estado": vacantes_por_estado,
+                "tasa_conversion": round(tasa_conversion, 2),
+                "tiempo_promedio_contratacion": int(tiempo_promedio),
+                "candidatos_por_mes": candidatos_por_mes,
+                "ingresos_totales": float(ingresos_totales),
+                "top_clientes": top_clientes,
+                "efectividad_usuario": efectividad_usuario,
+                "tasa_exito_vacantes": tasa_exito_vacantes,
+                "candidatos_mas_activos": candidatos_mas_activos,
+                "skills_demandados": skills_demandados,
+                "distribucion_ciudades": distribucion_ciudades,
+                "usuarios_efectividad": usuarios_efectividad
+            }
         
         return jsonify({
             "success": True,
@@ -5956,7 +5956,7 @@ def get_candidates():
             else:  # team
                 accessible_users = get_accessible_user_ids(user_id, tenant_id) or [user_id]
             placeholders = ','.join(['%s'] * len(accessible_users))
-            query += f" AND (a.created_by_user IN ({placeholders}) OR EXISTS (\n"
+            query += f" AND (a.created_by_user_id IN ({placeholders}) OR EXISTS (\n"
             query += "    SELECT 1 FROM Resource_Assignments ra\n"
             query += "    WHERE ra.resource_type = %s\n"
             query += "      AND ra.resource_id = a.id_afiliado\n"
@@ -6586,7 +6586,7 @@ def get_notifications():
         
         # 🔐 MÓDULO B13: Obtener condiciones de filtro
         vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
         
         notifications = []
         
@@ -6962,7 +6962,7 @@ def advanced_search_candidates():
         params.append(tenant_id)
         
         # Filtrar por permisos de usuario
-        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
         if condition:
             conditions.append(f"({condition})")
             params.extend(filter_params)
@@ -7201,7 +7201,7 @@ def get_activities():
                 try:
                     # Si es un objeto datetime, convertir a ISO
                     if hasattr(activity['created_at'], 'isoformat'):
-                        activity['created_at'] = activity['created_at'].isoformat()
+                activity['created_at'] = activity['created_at'].isoformat()
                     # Si ya es string, validar formato
                     elif isinstance(activity['created_at'], str):
                         # Validar que sea una fecha válida
@@ -10835,7 +10835,7 @@ def get_dashboard_activity():
         user_id = user_data.get('user_id')
         
         # 🔐 Construir filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
         vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Consulta FILTRADA para nuevos afiliados por día en los últimos 30 días
@@ -11420,7 +11420,7 @@ def get_dashboard_stats():
         user_id = user_data.get('user_id')
         
         # 🔐 CORRECCIÓN: Obtener filtros por usuario
-        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user', 'candidate', 'a.id_afiliado')
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
         vacancy_condition, vacancy_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
         
         # Estadísticas de candidatos (filtrado por usuario)
