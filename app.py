@@ -9276,7 +9276,9 @@ def admin_required(f):
                 return jsonify({'error': 'Usuario no encontrado'}), 404
                 
             # Verificar si el usuario es administrador
-            if current_user.get('rol_nombre') != 'admin':
+            rol_nombre = current_user.get('rol_nombre', '').lower()
+            if rol_nombre not in ['admin', 'administrador']:
+                app.logger.warning(f"Usuario {current_user_id} con rol '{current_user.get('rol_nombre')}' intentó acceder a función admin")
                 return jsonify({'error': 'Se requieren permisos de administrador'}), 403
                 
             return f(current_user_id, *args, **kwargs)
