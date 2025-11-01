@@ -41,7 +41,7 @@ class DatabaseMigrations:
             'description': 'Aumentar tamaño de columna api_key en Tenant_API_Keys de VARCHAR(64) a VARCHAR(255)',
             'execute': self._migration_002_fix_api_key_size
         })
-        
+    
         # Migración 4: Seed de permisos por pestañas para roles base
         self.migrations.append({
             'id': 4,
