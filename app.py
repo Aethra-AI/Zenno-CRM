@@ -15985,7 +15985,7 @@ def format_skills_from_ai(habilidades):
     return todas_las_habilidades
 
 
-def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url, referrer_user_id=None):
+def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url, referrer_user_id=None, codigo_referencia=None):
     """
     Crear o actualizar candidato desde formulario web combinando datos manuales + IA
     
@@ -16089,19 +16089,20 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url, refe
                     ciudad, grado_academico, cargo_solicitado,
                     experiencia, skills, cv_url,
                     linkedin, portfolio, fuente_reclutamiento,
-                    estado, fecha_registro, created_at
+                    created_by_user_id, estado, fecha_registro, created_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, 
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
-                    'active', NOW(), NOW()
+                    %s, 'active', NOW(), NOW()
                 )
             """, (
                 tenant_id, nombre_completo, identidad, email, telefono,
                 ciudad, grado_academico, cargo_solicitado,
                 experiencia_texto, skills_texto, cv_url,
-                linkedin, portfolio, "Sitio Web"
+                linkedin, portfolio, "Sitio Web",
+                referrer_user_id
             ))
             
             if referrer_user_id:
@@ -16110,7 +16111,7 @@ def create_candidate_from_web_form(manual_data, cv_data, tenant_id, cv_url, refe
             candidate_id = cursor.lastrowid
             
             # Si hay código de referencia, registrar en TrackingEnlaces
-            if referrer_user_id and 'codigo_referencia' in locals() and codigo_referencia:
+            if referrer_user_id and codigo_referencia:
                 try:
                     # Obtener IP y User Agent para tracking
                     ip_address = request.remote_addr if request else None
@@ -16331,7 +16332,8 @@ def register_candidate_from_web():
             cv_data=cv_data,
             tenant_id=tenant_id,
             cv_url=cv_url,
-            referrer_user_id=referrer_user_id
+            referrer_user_id=referrer_user_id,
+            codigo_referencia=codigo_referencia
         )
         
         candidate_id = result['candidate_id']
