@@ -9002,7 +9002,7 @@ def create_user(user_data):
         
         # Insertar el nuevo usuario
         cursor.execute("""
-            INSERT INTO Users (nombre, email, password, telefono, rol_id, activo, fecha_creacion)
+            INSERT INTO Users (nombre, email, password_hash, telefono, rol_id, activo, fecha_creacion)
             VALUES (%s, %s, %s, %s, %s, %s, NOW())
         """, (
             user_data.get('nombre'),
@@ -9059,7 +9059,7 @@ def update_user(user_id, user_data):
             
         if 'password' in user_data and user_data['password']:
             hashed_password = bcrypt.hashpw(user_data['password'].encode('utf-8'), bcrypt.gensalt())
-            update_fields.append("password = %s")
+            update_fields.append("password_hash = %s")
             params.append(hashed_password.decode('utf-8'))
             
         if 'telefono' in user_data:
