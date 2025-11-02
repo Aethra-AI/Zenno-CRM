@@ -9273,13 +9273,26 @@ def admin_required(f):
             # Obtener el usuario actual
             current_user = get_user_by_id(current_user_id)
             if not current_user:
+                app.logger.error(f"Usuario {current_user_id} no encontrado en BD")
                 return jsonify({'error': 'Usuario no encontrado'}), 404
+            
+            app.logger.info(f"Verificando permisos admin para usuario {current_user_id}")
+            app.logger.info(f"Datos del usuario: {current_user}")
                 
             # Verificar si el usuario es administrador
-            rol_nombre = current_user.get('rol_nombre', '').lower()
-            if rol_nombre not in ['admin', 'administrador']:
-                app.logger.warning(f"Usuario {current_user_id} con rol '{current_user.get('rol_nombre')}' intentó acceder a función admin")
+            rol_nombre = current_user.get('rol_nombre', '')
+            app.logger.info(f"Rol obtenido: '{rol_nombre}' (tipo: {type(rol_nombre)})")
+            
+            if not rol_nombre:
+                app.logger.error(f"Usuario {current_user_id} no tiene rol_nombre")
                 return jsonify({'error': 'Se requieren permisos de administrador'}), 403
+            
+            rol_nombre_lower = rol_nombre.lower()
+            if rol_nombre_lower not in ['admin', 'administrador']:
+                app.logger.warning(f"Usuario {current_user_id} con rol '{rol_nombre}' intentó acceder a función admin")
+                return jsonify({'error': 'Se requieren permisos de administrador'}), 403
+            
+            app.logger.info(f"Usuario {current_user_id} con rol '{rol_nombre}' autorizado como admin")
                 
             return f(current_user_id, *args, **kwargs)
             
@@ -9470,7 +9483,7 @@ def validate_password_strength(password):
 @app.route('/api/users', methods=['POST'])
 @token_required
 @admin_required
-def create_user_route():
+def create_user_route(current_user_id):
     """
     Crea un nuevo usuario en el sistema.
     
@@ -9490,11 +9503,14 @@ def create_user_route():
     - 500: Error del servidor
     """
     try:
+        app.logger.info(f"=== Creando nuevo usuario - Admin ID: {current_user_id} ===")
+        
         # Verificar que el contenido sea JSON
         if not request.is_json:
             return jsonify({'error': 'El cuerpo de la solicitud debe ser JSON'}), 400
             
         data = request.get_json()
+        app.logger.info(f"Datos recibidos: {data}")
         
         # Validar datos requeridos
         required_fields = ['nombre', 'email', 'password']
