@@ -181,6 +181,12 @@ class WhatsAppWebManager:
                     "tenant_id": tenant_id,
                     "session_id": session_id
                 }
+            elif response.status_code == 404:
+                # La sesión existe en BD pero no en el bridge (posible reinicio)
+                return {
+                    "status": "no_session",
+                    "message": "No hay sesión activa (Bridge 404)"
+                }
             else:
                 return {
                     "status": "error",
