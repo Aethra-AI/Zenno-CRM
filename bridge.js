@@ -130,8 +130,6 @@ async function startSession(sessionId, tenantId = 'default') {
             '--disable-dev-shm-usage',
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
-            '--no-zygote',
-            '--single-process',
             '--disable-gpu'
         ]
     };
@@ -149,6 +147,10 @@ async function startSession(sessionId, tenantId = 'default') {
                 break;
             }
         }
+    }
+
+    if (!puppeteerOptions.executablePath) {
+        console.log(`[${sessionId}] ℹ️  Usando Chromium empaquetado con Puppeteer`);
     }
 
     // Configuración de Puppeteer para evitar detección
