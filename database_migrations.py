@@ -49,6 +49,14 @@ class DatabaseMigrations:
             'description': 'Poblar Roles.permisos con esquema por pestañas para Admin/Supervisor/Reclutador',
             'execute': self._migration_004_seed_role_permissions
         })
+
+        # Migración 5: Crear tabla WhatsApp_Web_Sessions
+        self.migrations.append({
+            'id': 5,
+            'name': 'create_whatsapp_web_sessions_table',
+            'description': 'Crear tabla para sesiones de WhatsApp Web',
+            'execute': self._migration_005_create_whatsapp_web_sessions
+        })
     
     def _create_migrations_table(self, conn):
         """Crear tabla para trackear migraciones ejecutadas"""
@@ -501,6 +509,33 @@ class DatabaseMigrations:
         conn.commit()
         cursor.close()
         logger.info("   ✅ Roles.permisos poblado para Administrador, Supervisor y Reclutador")
+
+    def _migration_005_create_whatsapp_web_sessions(self, conn):
+        """
+        Migración 005: Crear tabla WhatsApp_Web_Sessions
+        """
+        cursor = conn.cursor()
+        
+        logger.info("   📦 Creando tabla WhatsApp_Web_Sessions...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS WhatsApp_Web_Sessions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                tenant_id INT NOT NULL,
+                session_id VARCHAR(255) NOT NULL,
+                status VARCHAR(50) DEFAULT 'initializing',
+                qr_code TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                UNIQUE KEY unique_session (tenant_id, session_id),
+                INDEX idx_status (status),
+                FOREIGN KEY (tenant_id) REFERENCES Tenants(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        
+        conn.commit()
+        cursor.close()
+        logger.info("   ✅ Tabla WhatsApp_Web_Sessions creada exitosamente")
 
 # Función helper para ejecutar migraciones desde app.py
 def run_database_migrations(db_config):

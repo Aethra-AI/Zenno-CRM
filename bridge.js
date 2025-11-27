@@ -50,7 +50,7 @@ try {
     } else {
         console.warn('⚠️  OPENAI_API_KEY no configurada. Funciones de IA deshabilitadas.');
     }
-    
+
     if (process.env.GEMINI_API_KEY) {
         const { GoogleGenerativeAI } = require('@google/generative-ai');
         genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -88,12 +88,12 @@ const PROXY_LIST = [
  */
 function getUniqueProxyForSession(sessionId) {
     if (!PROXY_LIST.length) return null;
-    
+
     // Función hash simple para convertir el sessionId en un número
     const hash = sessionId.split('').reduce((acc, char) => {
         return (acc << 5) - acc + char.charCodeAt(0);
     }, 0);
-    
+
     const proxyIndex = Math.abs(hash) % PROXY_LIST.length;
     return PROXY_LIST[proxyIndex];
 }
@@ -113,8 +113,8 @@ const sessionManager = require('./whatsapp-session-manager');
 async function startSession(sessionId, tenantId = 'default') {
     // Si ya existe una sesión activa, la retornamos
     if (activeSessions.has(sessionId)) {
-        return { 
-            sessionId, 
+        return {
+            sessionId,
             status: 'already_running',
             message: 'La sesión ya está activa'
         };
@@ -136,6 +136,21 @@ async function startSession(sessionId, tenantId = 'default') {
         ]
     };
 
+    // Configuración de path de Chromium para entornos Linux/Server (Oracle Cloud)
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+        puppeteerOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    } else if (process.platform === 'linux') {
+        // Rutas comunes en Ubuntu/Debian
+        const commonPaths = ['/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium'];
+        for (const p of commonPaths) {
+            if (fs.existsSync(p)) {
+                console.log(`[${sessionId}] 🐧 Usando Chromium en: ${p}`);
+                puppeteerOptions.executablePath = p;
+                break;
+            }
+        }
+    }
+
     // Configuración de Puppeteer para evitar detección
     puppeteerOptions.args.push(
         '--disable-software-rasterizer',
@@ -152,10 +167,10 @@ async function startSession(sessionId, tenantId = 'default') {
         const { server, username, password } = proxyConfig;
         const auth = username && password ? `${username}:${password}@` : '';
         const proxyUrl = `http://${auth}${server}`;
-        
+
         console.log(`[${sessionId}] 🌐 Usando proxy: ${server}`);
         puppeteerOptions.args.push(`--proxy-server=${proxyUrl}`);
-        
+
         if (username && password) {
             puppeteerOptions.args.push(`--proxy-auth=${username}:${password}`);
         }
@@ -192,8 +207,8 @@ async function startSession(sessionId, tenantId = 'default') {
     // Inicializar el cliente
     try {
         await client.initialize();
-        return { 
-            sessionId, 
+        return {
+            sessionId,
             status: 'initialized',
             message: 'Sesión inicializada correctamente',
         };
@@ -238,7 +253,7 @@ function setupClientEventHandlers(client, sessionId) {
         session.status = 'ready';
         session.lastActivity = new Date();
         notifyStatusUpdate(sessionId, 'ready', 'Cliente listo para enviar mensajes');
-        
+
         // Configurar manejadores de mensajes
         setupMessageHandlers(client, sessionId);
     });
@@ -262,10 +277,10 @@ function setupMessageHandlers(client, sessionId) {
         if (!session) return;
 
         session.lastActivity = new Date();
-        
+
         // Aquí iría la lógica de procesamiento de mensajes
         // ...
-        
+
         // Notificar al frontend sobre el nuevo mensaje
         notifyNewMessage(sessionId, msg);
     });
@@ -370,7 +385,7 @@ async function startServer() {
         const PORT = process.env.PORT || 3000;
         const server = app.listen(PORT, async () => {
             console.log(`✅ Servidor Express escuchando en http://localhost:${PORT}`);
-            
+
             // Probar conectividad
             try {
                 const res = await fetch('https://www.google.com', { method: 'HEAD' });
@@ -378,10 +393,10 @@ async function startServer() {
             } catch (err) {
                 console.error("❌ FALLO CRÍTICO de conectividad:", err.message);
             }
-            
+
             // Configurar WebSocket
             setupWebSocketServer(server);
-            
+
             // Restaurar sesiones existentes
             await restoreSessions();
         });
@@ -419,7 +434,7 @@ async function startServer() {
 async function restoreSessions() {
     try {
         const sessionsDir = path.join(__dirname, 'sessions');
-        
+
         // Verificar si el directorio existe
         if (!fs.existsSync(sessionsDir)) {
             console.log('ℹ️  No hay sesiones previas para restaurar');
@@ -432,18 +447,18 @@ async function restoreSessions() {
             .map(dirent => dirent.name);
 
         console.log(`🔍 Buscando sesiones en ${tenantDirs.length} directorios de tenant...`);
-        
+
         let restoredCount = 0;
-        
+
         // Procesar cada directorio de tenant
         for (const tenantId of tenantDirs) {
             const tenantDir = path.join(sessionsDir, tenantId);
             const sessionDirs = fs.readdirSync(tenantDir, { withFileTypes: true })
                 .filter(dirent => dirent.isDirectory())
                 .map(dirent => dirent.name);
-            
+
             console.log(`🔄 Procesando ${sessionDirs.length} sesiones para el tenant ${tenantId}...`);
-            
+
             // Iniciar cada sesión
             for (const sessionId of sessionDirs) {
                 try {
@@ -455,9 +470,9 @@ async function restoreSessions() {
                 }
             }
         }
-        
+
         console.log(`✅ Restauración completada. ${restoredCount} sesiones restauradas.`);
-        
+
     } catch (error) {
         console.error('❌ Error al restaurar sesiones:', error);
     }
@@ -470,16 +485,16 @@ async function restoreSessions() {
  */
 async function shutdown(server, exitCode = 0) {
     console.log('🛑 Cerrando servidor...');
-    
+
     try {
         // Cerrar todas las sesiones de WhatsApp
         const closePromises = [];
         for (const [sessionId] of activeSessions) {
             closePromises.push(cleanupSession(sessionId));
         }
-        
+
         await Promise.all(closePromises);
-        
+
         // Cerrar la base de datos
         if (db) {
             await new Promise((resolve) => {
@@ -489,7 +504,7 @@ async function shutdown(server, exitCode = 0) {
                 });
             });
         }
-        
+
         // Cerrar el servidor HTTP
         if (server) {
             await new Promise((resolve) => {
@@ -499,7 +514,7 @@ async function shutdown(server, exitCode = 0) {
                 });
             });
         }
-        
+
     } catch (error) {
         console.error('Error durante el cierre:', error);
     } finally {
@@ -529,18 +544,18 @@ const db = new sqlite3.Database('./whatsapp_chats.db', (err) => {
         db.run(`CREATE TABLE IF NOT EXISTS conversation_tags (chat_id TEXT NOT NULL, tag_id INTEGER NOT NULL, PRIMARY KEY (chat_id, tag_id), FOREIGN KEY(tag_id) REFERENCES chat_tags(id) ON DELETE CASCADE)`);
         db.run(`CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, contact_name TEXT, type TEXT NOT NULL, summary TEXT NOT NULL, timestamp INTEGER NOT NULL, is_read INTEGER NOT NULL DEFAULT 0)`);
         db.run(`CREATE TABLE IF NOT EXISTS Whatsapp_Queue_Local (id INTEGER PRIMARY KEY AUTOINCREMENT, task_type TEXT NOT NULL, related_id INTEGER NOT NULL, chat_id TEXT NOT NULL, message_body TEXT NOT NULL, scheduled_for INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending')`);
-        
+
         console.log("✅ [1/4] Estructura de tablas base verificada.");
 
         // PASO 2: Limpiar tablas antiguas
         db.run(`DROP TABLE IF EXISTS Prompt_Modules`, () => {
-             console.log("✅ [2/4] Tabla antigua de prompts eliminada (si existía).");
+            console.log("✅ [2/4] Tabla antigua de prompts eliminada (si existía).");
         });
-        
+
         // PASO 3: Poblar datos por defecto
         db.run("INSERT OR IGNORE INTO chat_tags (name, color) VALUES ('Afiliado Verificado', '#28a745')");
         db.run("INSERT OR IGNORE INTO chat_tags (name, color) VALUES ('Nuevo Contacto', '#17a2b8')");
-        
+
         const defaultSettings = {
             'model': 'gpt-4o',
             'prompt_new_user': 'PROMPT PARA USUARIOS NUEVOS VA AQUÍ.',
@@ -581,7 +596,7 @@ async function callCrmTool(functionName, args) {
 
     const params = new URLSearchParams(args);
     const url = `${process.env.CRM_API_URL}${endpoint}?${params.toString()}`;
-    
+
     try {
         const response = await fetch(url, { headers: { 'X-API-Key': process.env.CRM_INTERNAL_API_KEY } });
 
@@ -590,22 +605,22 @@ async function callCrmTool(functionName, args) {
             console.error(`Error en la API del CRM (${response.status}): ${errorBody}`);
             throw new Error(`Error en API CRM: ${response.statusText}`);
         }
-        
+
         const responseText = await response.text();
         const responseData = responseText ? JSON.parse(responseText) : null;
 
         let recordCount = 0;
         if (responseData) {
-             if (Array.isArray(responseData)) recordCount = responseData.length;
-             else if (responseData.applications && Array.isArray(responseData.applications)) recordCount = responseData.applications.length;
-             else recordCount = 1;
+            if (Array.isArray(responseData)) recordCount = responseData.length;
+            else if (responseData.applications && Array.isArray(responseData.applications)) recordCount = responseData.applications.length;
+            else recordCount = 1;
         }
-        
+
         console.log(`\n--- Llamando Herramienta CRM: ${functionName} ---`);
         console.log(`URL: ${url}`);
         console.log(`-> Recibidos ${recordCount} registros de app.py.`);
         console.log(`--- FIN LLAMADA HERRAMIENTA ---\n`);
-        
+
         return responseData;
 
     } catch (error) {
@@ -619,9 +634,9 @@ async function analyzeConversationWithGemini(conversation) {
         console.warn("Advertencia: GEMINI_API_KEY no configurada. Se saltará el análisis.");
         return null;
     }
-    
+
     const historyForAnalysis = conversation.map(msg => `${msg.from_me ? 'Asesor' : 'Usuario'}: ${msg.body}`).join('\n');
-    
+
     const prompt = `
         Analiza la siguiente conversación de una agencia de empleos llamada Henmir.
         Responde ÚNICA Y EXCLUSIVAMENTE con un objeto JSON válido que empiece con '{' y termine con '}'. No incluyas texto, notas o marcadores de código antes o después del JSON.
@@ -641,7 +656,7 @@ async function analyzeConversationWithGemini(conversation) {
     try {
         console.log(`\n--- INICIANDO ANÁLISIS CON GEMINI ---`);
         console.log(`Enviando ${conversation.length} mensajes para análisis...`);
-        
+
         const result = await geminiModel.generateContent(prompt);
         const response = await result.response;
         let text = response.text();
@@ -679,10 +694,10 @@ async function processMessageQueue() {
     if (activeSessions.length === 0) {
         return;
     }
-    
+
     const now_utc_timestamp = Math.floor(Date.now() / 1000);
     const query = "SELECT * FROM Whatsapp_Queue_Local WHERE status = 'pending' AND scheduled_for <= ?";
-    
+
     db.all(query, [now_utc_timestamp], async (err, tasks) => {
         if (err) {
             console.error("❌ Error al consultar la cola de mensajes:", err.message);
@@ -709,20 +724,20 @@ async function processMessageQueue() {
             try {
                 // 2. Usamos el ID formateado para enviar el mensaje.
                 await client.sendMessage(formattedChatId, task.message_body);
-                
+
                 console.log(`[Worker] ✅ Mensaje enviado a ${formattedChatId} para la tarea ${task.id}.`);
-                
+
                 if (task.task_type === 'postulation') {
                     await notifyBackendTaskStatus(task.related_id, 'sent');
                 }
-                
+
                 db.run("DELETE FROM Whatsapp_Queue_Local WHERE id = ?", [task.id]);
 
             } catch (sendError) {
                 console.error(`[Worker] ❌ Fallo al enviar mensaje para la tarea ${task.id}. Error: ${sendError.message}`);
-                
+
                 if (task.task_type === 'postulation') {
-                   await notifyBackendTaskStatus(task.related_id, 'failed');
+                    await notifyBackendTaskStatus(task.related_id, 'failed');
                 }
 
                 db.run("UPDATE Whatsapp_Queue_Local SET status = 'failed' WHERE id = ?", [task.id]);
@@ -749,7 +764,7 @@ async function notifyBackendTaskStatus(postulationId, status) {
 }
 
 // Iniciar el procesador de la cola para que se ejecute cada minuto
-setInterval(processMessageQueue, 60 * 1000); 
+setInterval(processMessageQueue, 60 * 1000);
 
 // --- FIN DEL NUEVO BLOQUE ---
 
@@ -762,7 +777,7 @@ setInterval(processMessageQueue, 60 * 1000);
  */
 async function generateResponseForState(state, chatId, userMessage) {
     console.log(`[Text Gen] Generando respuesta para el nuevo estado: ${state}`);
-    
+
     // 1. Cargar el módulo de prompt para el nuevo estado
     const module = await new Promise((resolve, reject) => {
         db.get("SELECT * FROM Prompt_Modules WHERE module_id = ?", [state], (err, row) => {
@@ -824,19 +839,19 @@ async function generateResponseForState(state, chatId, userMessage) {
 app.post('/api/session/init', async (req, res) => {
     try {
         const { session_id: sessionId, tenant_id: tenantId = 'default' } = req.body;
-        
+
         if (!sessionId) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: 'Se requiere el parámetro session_id',
             });
         }
 
         const result = await startSession(sessionId, tenantId);
         res.json(result);
-        
+
     } catch (error) {
         console.error('Error al inicializar la sesión:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Error al inicializar la sesión',
             details: error.message,
         });
@@ -859,21 +874,21 @@ app.post('/api/session/:sessionId/message', async (req, res) => {
     try {
         const { sessionId } = req.params;
         const { chatId, message } = req.body;
-        
+
         if (!chatId || !message) {
-            return res.status(400).json({ 
-                error: 'Se requieren los parámetros chatId y message' 
+            return res.status(400).json({
+                error: 'Se requieren los parámetros chatId y message'
             });
         }
 
         const result = await sendMessageToSession(sessionId, chatId, message);
         res.json(result);
-        
+
     } catch (error) {
         console.error('Error al enviar mensaje:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Error al enviar el mensaje',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -894,13 +909,13 @@ app.post('/api/session/:sessionId/message', async (req, res) => {
 app.get('/api/session/:sessionId/status', (req, res) => {
     const { sessionId } = req.params;
     const session = activeSessions.get(sessionId);
-    
+
     if (!session) {
-        return res.status(404).json({ 
-            error: 'Sesión no encontrada' 
+        return res.status(404).json({
+            error: 'Sesión no encontrada'
         });
     }
-    
+
     res.json({
         sessionId,
         status: session.status,
@@ -927,7 +942,7 @@ app.get('/api/sessions', (req, res) => {
         lastActivity: session.lastActivity.toISOString(),
         isReady: session.status === 'ready'
     }));
-    
+
     res.json({ sessions });
 });
 
@@ -945,9 +960,9 @@ app.delete('/api/session/:sessionId', async (req, res) => {
         res.json({ success: true, message: 'Sesión cerrada correctamente' });
     } catch (error) {
         console.error('Error al cerrar la sesión:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: 'Error al cerrar la sesión',
-            details: error.message 
+            details: error.message
         });
     }
 });
@@ -961,25 +976,25 @@ app.delete('/api/session/:sessionId', async (req, res) => {
  */
 async function sendMessageToSession(sessionId, chatId, message) {
     const session = activeSessions.get(sessionId);
-    
+
     if (!session) {
         throw new Error(`No se encontró una sesión activa con ID: ${sessionId}`);
     }
-    
+
     if (session.status !== 'ready') {
         throw new Error(`La sesión no está lista. Estado actual: ${session.status}`);
     }
-    
+
     try {
         // Verificar si el chatId tiene el formato correcto
         const formattedChatId = chatId.endsWith('@c.us') ? chatId : `${chatId}@c.us`;
-        
+
         // Enviar el mensaje
         const sentMessage = await session.client.sendMessage(formattedChatId, message);
-        
+
         // Actualizar la última actividad
         session.lastActivity = new Date();
-        
+
         // Registrar el mensaje en la base de datos
         await new Promise((resolve, reject) => {
             db.run(
@@ -988,7 +1003,7 @@ async function sendMessageToSession(sessionId, chatId, message) {
                 (err) => err ? reject(err) : resolve()
             );
         });
-        
+
         // Actualizar la conversación
         await new Promise((resolve, reject) => {
             db.run(
@@ -997,13 +1012,13 @@ async function sendMessageToSession(sessionId, chatId, message) {
                 (err) => err ? reject(err) : resolve()
             );
         });
-        
+
         return {
             success: true,
             messageId: sentMessage.id.id,
             timestamp: new Date().toISOString()
         };
-        
+
     } catch (error) {
         console.error(`[${sessionId}] Error al enviar mensaje a ${chatId}:`, error);
         throw new Error(`Error al enviar mensaje: ${error.message}`);
@@ -1046,18 +1061,18 @@ app.get('/api/crm/chatbot-settings', (req, res) => {
             console.error("Error al obtener ajustes del chatbot desde DB:", err);
             return res.status(500).json({ error: "Error de base de datos" });
         }
-        const settings = rows.reduce((acc, row) => ({...acc, [row.key]: row.value }), {});
+        const settings = rows.reduce((acc, row) => ({ ...acc, [row.key]: row.value }), {});
         res.json(settings);
     });
 });
 
 app.post('/api/crm/chatbot-settings', (req, res) => {
     const { model, prompt_new_user, prompt_affiliate } = req.body;
-    
+
     if (model === undefined || prompt_new_user === undefined || prompt_affiliate === undefined) {
         return res.status(400).json({ error: "Faltan datos clave (model, prompt_new_user, prompt_affiliate)" });
     }
-    
+
     db.serialize(() => {
         const stmt = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
         stmt.run('model', model);
@@ -1139,7 +1154,7 @@ app.put('/api/crm/prompt-modules/:moduleId', (req, res) => {
         moduleId
     ];
 
-    db.run(query, params, function(err) {
+    db.run(query, params, function (err) {
         if (err) {
             console.error(`Error al actualizar el módulo ${moduleId}:`, err);
             return res.status(500).json({ error: "Error de base de datos al guardar." });
@@ -1173,10 +1188,10 @@ app.post('/api/whatsauto_reply', async (req, res) => {
         const settings = await new Promise((resolve, reject) => {
             db.all("SELECT key, value FROM settings", (err, rows) => {
                 if (err) return reject(new Error("No se pudo cargar la configuración."));
-                resolve(rows.reduce((acc, row) => ({...acc, [row.key]: row.value }), {}));
+                resolve(rows.reduce((acc, row) => ({ ...acc, [row.key]: row.value }), {}));
             });
         });
-        
+
         const promptKey = userState.status === 'identified_affiliate' || userState.status === 'AFFILIATE_LOGGED_IN' ? 'prompt_affiliate' : 'prompt_new_user';
         const systemPrompt = settings[promptKey];
         const model = settings.model || 'gpt-4o';
@@ -1185,24 +1200,24 @@ app.post('/api/whatsauto_reply', async (req, res) => {
             db.all("SELECT from_me, body FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT 8", [chatId], (err, rows) => err ? reject(err) : resolve(rows.reverse()));
         });
         const formattedHistory = historyFromDb.map(msg => ({ role: msg.from_me ? 'assistant' : 'user', content: msg.body }));
-        
+
         const messagesForOpenAI = [
             { role: 'system', content: systemPrompt },
             ...formattedHistory,
-            { 
-                role: 'user', 
-                content: `--- INICIO DE CONTEXTO DE SISTEMA ---\n${JSON.stringify(userState, null, 2)}\n--- FIN DE CONTEXTO DE SISTEMA ---\n\nMENSAJE_DEL_USUARIO: "${message}"` 
+            {
+                role: 'user',
+                content: `--- INICIO DE CONTEXTO DE SISTEMA ---\n${JSON.stringify(userState, null, 2)}\n--- FIN DE CONTEXTO DE SISTEMA ---\n\nMENSAJE_DEL_USUARIO: "${message}"`
             }
         ];
 
         const available_tools = [
-            { type: "function", function: { name: "search_vacancies_tool", description: "Busca vacantes disponibles en una ciudad específica, opcionalmente filtrando por una palabra clave o área.", parameters: { type: "object", properties: { city: { type: "string", description: "La ciudad donde buscar las vacantes, ej: 'San Pedro Sula'" }, keyword: {type: "string", description: "Una palabra clave para filtrar, ej: 'ventas', 'cocinero'"} }, required: ["city"] } } },
+            { type: "function", function: { name: "search_vacancies_tool", description: "Busca vacantes disponibles en una ciudad específica, opcionalmente filtrando por una palabra clave o área.", parameters: { type: "object", properties: { city: { type: "string", description: "La ciudad donde buscar las vacantes, ej: 'San Pedro Sula'" }, keyword: { type: "string", description: "Una palabra clave para filtrar, ej: 'ventas', 'cocinero'" } }, required: ["city"] } } },
             { type: "function", function: { name: "validate_registration_tool", description: "Valida si un número de identidad ya está registrado en el sistema de afiliados.", parameters: { type: "object", properties: { identity: { type: "string", description: "El número de identidad del usuario, sin guiones ni espacios." } }, required: ["identity"] } } },
-            
+
             // ✨ CORRECCIÓN CLAVE #1 AQUÍ ✨
             // El parámetro ahora se llama 'cargo_solicitado' para coincidir con lo que espera app.py
             { type: "function", function: { name: "get_vacancy_details_tool", description: "Obtiene los detalles y requisitos de una vacante específica por su nombre.", parameters: { type: "object", properties: { cargo_solicitado: { type: "string" } }, required: ["cargo_solicitado"] } } },
-            
+
             { type: "function", function: { name: "get_candidate_status_tool", description: "Consulta el estado actual de las postulaciones de un candidato usando su número de identidad.", parameters: { type: "object", properties: { identity_number: { type: "string", description: "El número de identidad del afiliado, sin guiones ni espacios." } }, required: ["identity_number"] } } }
         ];
 
@@ -1215,17 +1230,17 @@ app.post('/api/whatsauto_reply', async (req, res) => {
         const toolCalls = responseMessage.tool_calls;
         if (toolCalls) {
             messagesForOpenAI.push(responseMessage);
-            
+
             for (const toolCall of toolCalls) {
                 const functionName = toolCall.function.name;
                 const functionArgs = JSON.parse(toolCall.function.arguments);
 
                 console.log(`[Tool Call] La IA solicita ejecutar '${functionName}' con args:`, functionArgs);
                 const toolResult = await callCrmTool(functionName, functionArgs);
-                
-                if(functionArgs.city) db.run("UPDATE conversations SET context_city = ? WHERE chat_id = ?", [functionArgs.city.trim(), chatId]);
-                if(functionArgs.area) db.run("UPDATE conversations SET context_area = ? WHERE chat_id = ?", [functionArgs.area.trim(), chatId]);
-                
+
+                if (functionArgs.city) db.run("UPDATE conversations SET context_city = ? WHERE chat_id = ?", [functionArgs.city.trim(), chatId]);
+                if (functionArgs.area) db.run("UPDATE conversations SET context_area = ? WHERE chat_id = ?", [functionArgs.area.trim(), chatId]);
+
                 if (functionName === 'validate_registration_tool') {
                     if (toolResult && toolResult.success === true) {
                         nextState = 'AFFILIATE_LOGGED_IN';
@@ -1235,18 +1250,18 @@ app.post('/api/whatsauto_reply', async (req, res) => {
                         db.run("UPDATE conversations SET status = ? WHERE chat_id = ?", [nextState, chatId]);
                     }
                 }
-                
+
                 messagesForOpenAI.push({ tool_call_id: toolCall.id, role: "tool", name: functionName, content: JSON.stringify(toolResult) });
             }
-            
+
             const secondResponse = await openai.chat.completions.create({ model: model, messages: messagesForOpenAI });
             finalReply = secondResponse.choices[0].message.content;
         }
-        
+
         if (nextState !== userState.status) {
             console.log(`[State Transition] Chat: ${chatId} | De: ${userState.status} -> A: ${nextState}`);
         }
-        
+
         if (finalReply) {
             const responseTime = Math.floor(Date.now() / 1000);
             db.run(`INSERT INTO messages (chat_id, sender, body, timestamp, from_me) VALUES (?, ?, ?, ?, ?)`, [chatId, 'me', finalReply, responseTime, true]);
@@ -1281,20 +1296,20 @@ app.get('/api/crm/chats', async (req, res) => {
         ORDER BY c.is_pinned DESC, c.last_message_timestamp DESC 
         LIMIT 200;
     `;
-    
+
     db.all(query, [], (err, rows) => {
         if (err) {
             console.error("Error al obtener chats para la lista:", err);
             return res.status(500).json({ error: "Error de base de datos al cargar los chats." });
         }
-        
+
         const finalRows = rows.map(row => ({
             ...row,
             lastMessage: row.lastMessage ? row.lastMessage.slice(0, 50) : '[Mensaje multimedia]',
             lastMessageFromMe: !!row.lastMessageFromMe,
             tags: row.tags ? JSON.parse(`[${row.tags}]`) : []
         }));
-        
+
         res.json(finalRows);
     });
 });
@@ -1303,7 +1318,7 @@ app.get('/api/crm/chats', async (req, res) => {
 
 app.get('/api/crm/conversations/:chatId', (req, res) => {
     const { chatId } = req.params;
-    
+
     // Usamos Promise.all para ejecutar todas las consultas en paralelo, es más eficiente.
     Promise.all([
         // Consulta 1: Mensajes
@@ -1369,7 +1384,7 @@ app.post('/api/crm/chats/:chatId/context', (req, res) => {
         WHERE chat_id = ?
     `;
 
-    db.run(sql, [custom_name || null, chat_type || null, chatId], function(err) {
+    db.run(sql, [custom_name || null, chat_type || null, chatId], function (err) {
         if (err) {
             console.error("Error actualizando contexto de chat:", err.message);
             return res.status(500).json({ error: err.message });
@@ -1396,7 +1411,7 @@ app.get('/api/crm/chattags', (req, res) => {
 app.post('/api/crm/chattags', (req, res) => {
     const { name, color } = req.body;
     if (!name) return res.status(400).json({ error: "El nombre es requerido" });
-    db.run("INSERT INTO chat_tags (name, color) VALUES (?, ?)", [name, color || '#808080'], function(err) {
+    db.run("INSERT INTO chat_tags (name, color) VALUES (?, ?)", [name, color || '#808080'], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.status(201).json({ id: this.lastID, name, color });
     });
@@ -1423,7 +1438,7 @@ app.post('/api/crm/chats/:chatId/tags', (req, res) => {
 // Remover una etiqueta de un chat
 app.delete('/api/crm/chats/:chatId/tags/:tagId', (req, res) => {
     const { chatId, tagId } = req.params;
-    db.run("DELETE FROM conversation_tags WHERE chat_id = ? AND tag_id = ?", [chatId, tagId], function(err) {
+    db.run("DELETE FROM conversation_tags WHERE chat_id = ? AND tag_id = ?", [chatId, tagId], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         if (this.changes === 0) return res.status(404).json({ error: "Asignación de etiqueta no encontrada." });
         res.json({ success: true, message: "Etiqueta removida." });
@@ -1443,7 +1458,7 @@ app.get('/api/crm/notifications', (req, res) => {
 app.post('/api/crm/notifications/:id/mark-read', (req, res) => {
     const { id } = req.params;
     const query = "UPDATE notifications SET is_read = 1 WHERE id = ?";
-    db.run(query, [id], function(err) {
+    db.run(query, [id], function (err) {
         if (err) return res.status(500).json({ error: "Error de base de datos" });
         if (this.changes === 0) return res.status(404).json({ error: "Notificación no encontrada." });
         res.json({ success: true, message: "Notificación marcada como leída." });
@@ -1472,12 +1487,12 @@ app.post('/api/crm/chats/:chatId/manual_status', async (req, res) => {
         // 1. Actualizar el estado y la identidad en la tabla 'conversations'
         const clean_identity = new_status === 'identified_affiliate' ? identity_number.trim() : null;
         const chat_type = new_status === 'identified_affiliate' ? 'candidate' : 'unassigned';
-        
+
         await new Promise((resolve, reject) => {
             db.run(
                 `UPDATE conversations SET status = ?, known_identity = ?, chat_type = ? WHERE chat_id = ?`,
                 [new_status, clean_identity, chat_type, chatId],
-                function(err) {
+                function (err) {
                     if (err) return reject(err);
                     if (this.changes === 0) return reject(new Error('Chat no encontrado para actualizar.'));
                     resolve();
@@ -1499,29 +1514,29 @@ app.post('/api/crm/chats/:chatId/manual_status', async (req, res) => {
 
         const affiliateTagId = tags[affiliateTagName];
         const newContactTagId = tags[newContactTagName];
-        
+
         if (!affiliateTagId || !newContactTagId) {
             throw new Error("Las etiquetas de estado base ('Afiliado Verificado', 'Nuevo Contacto') no existen en la base de datos.");
         }
 
         // Eliminar AMBAS etiquetas de estado para limpiar antes de asignar la correcta
         await new Promise((resolve, reject) => {
-            db.run(`DELETE FROM conversation_tags WHERE chat_id = ? AND tag_id IN (?, ?)`, 
-                   [chatId, affiliateTagId, newContactTagId], 
-                   err => err ? reject(err) : resolve());
+            db.run(`DELETE FROM conversation_tags WHERE chat_id = ? AND tag_id IN (?, ?)`,
+                [chatId, affiliateTagId, newContactTagId],
+                err => err ? reject(err) : resolve());
         });
 
         // Asignar la etiqueta correcta según el nuevo estado
         const tagIdToAssign = new_status === 'identified_affiliate' ? affiliateTagId : newContactTagId;
         await new Promise((resolve, reject) => {
-            db.run("INSERT OR IGNORE INTO conversation_tags (chat_id, tag_id) VALUES (?, ?)", 
-                   [chatId, tagIdToAssign], 
-                   err => err ? reject(err) : resolve());
+            db.run("INSERT OR IGNORE INTO conversation_tags (chat_id, tag_id) VALUES (?, ?)",
+                [chatId, tagIdToAssign],
+                err => err ? reject(err) : resolve());
         });
 
         // Si todo fue bien, confirmamos los cambios
         await new Promise((resolve, reject) => db.run('COMMIT', err => err ? reject(err) : resolve()));
-        
+
         console.log(`[Manual Flow Change] Flujo cambiado a '${new_status}' para el chat ${chatId}.`);
         res.json({ success: true, message: 'El flujo del usuario ha sido actualizado manualmente.' });
 
@@ -1573,8 +1588,8 @@ app.post('/api/crm/internal/run_initial_sync', async (req, res) => {
                status = excluded.status,
                known_identity = excluded.known_identity,
                chat_type = excluded.chat_type;`
-);
-        
+        );
+
         // Sentencia preparada para asignar la etiqueta
         const tagStmt = db.prepare(
             `INSERT OR IGNORE INTO conversation_tags (chat_id, tag_id) VALUES (?, ?)`
@@ -1591,7 +1606,7 @@ app.post('/api/crm/internal/run_initial_sync', async (req, res) => {
             upsertStmt.run(chatId, contactName, identity);
             // Asignar la etiqueta de afiliado
             tagStmt.run(chatId, affiliateTagId);
-            
+
             processedCount++;
         }
 
@@ -1768,7 +1783,7 @@ app.post('/api/crm/chats/:chatId/pin', (req, res) => {
     db.run(
         "UPDATE conversations SET is_pinned = ? WHERE chat_id = ?",
         [is_pinned ? 1 : 0, chatId],
-        function(err) {
+        function (err) {
             if (err) {
                 console.error(`Error al actualizar el estado de anclado para ${chatId}:`, err);
                 return res.status(500).json({ error: "Error de base de datos." });
@@ -1785,7 +1800,7 @@ app.post('/api/crm/chats/:chatId/mark_read', (req, res) => {
     db.run(
         "UPDATE conversations SET unread_count = 0 WHERE chat_id = ?",
         [chatId],
-        function(err) {
+        function (err) {
             if (err) {
                 console.error(`Error al marcar como leído para ${chatId}:`, err);
                 return res.status(500).json({ error: "Error de base de datos." });
@@ -1808,7 +1823,7 @@ app.post('/api/crm/chats/:chatId/disable_bot', (req, res) => {
     console.log(`[Bot Control] Solicitud para DESACTIVAR el bot para el chat: ${chatId}`);
 
     const sql = "UPDATE conversations SET bot_active = 0 WHERE chat_id = ?";
-    db.run(sql, [chatId], function(err) {
+    db.run(sql, [chatId], function (err) {
         if (err) {
             console.error(`Error al desactivar el bot para ${chatId}:`, err.message);
             return res.status(500).json({ error: "Error de base de datos." });
@@ -1831,11 +1846,11 @@ app.post('/api/crm/chats/:chatId/enable_bot', (req, res) => {
     if (!chatId) {
         return res.status(400).json({ error: "Falta el ID del chat." });
     }
-    
+
     console.log(`[Bot Control] Solicitud para REACTIVAR el bot para el chat: ${chatId}`);
 
     const sql = "UPDATE conversations SET bot_active = 1 WHERE chat_id = ?";
-    db.run(sql, [chatId], function(err) {
+    db.run(sql, [chatId], function (err) {
         if (err) {
             console.error(`Error al reactivar el bot para ${chatId}:`, err.message);
             return res.status(500).json({ error: "Error de base de datos." });
@@ -1857,14 +1872,14 @@ app.post('/api/crm/chats/:chatId/enable_bot', (req, res) => {
 function validateTenantFromCRM(req, res, next) {
     // Obtener tenant ID desde headers o body
     const tenantId = req.headers['x-tenant-id'] || req.body?.tenantId;
-    
+
     if (!tenantId) {
         return res.status(401).json({
             success: false,
             error: 'Tenant ID requerido'
         });
     }
-    
+
     req.tenantId = tenantId;
     next();
 }
@@ -1876,13 +1891,13 @@ app.post('/api/whatsapp/session/init', validateTenantFromCRM, async (req, res) =
     try {
         const { tenantId } = req;
         const userId = req.body?.userId || tenantId;
-        
+
         console.log(`[WhatsApp API] Inicializando sesión para tenant: ${tenantId}`);
-        
+
         const result = await sessionManager.initializeSession(tenantId, userId);
-        
+
         res.json(result);
-        
+
     } catch (error) {
         console.error('Error inicializando sesión WhatsApp:', error);
         res.status(500).json({
@@ -1899,9 +1914,9 @@ app.post('/api/whatsapp/session/init', validateTenantFromCRM, async (req, res) =
 app.get('/api/whatsapp/session/status', validateTenantFromCRM, (req, res) => {
     try {
         const { tenantId } = req;
-        
+
         const sessionStatus = sessionManager.getSessionStatus(tenantId);
-        
+
         if (!sessionStatus) {
             return res.json({
                 success: true,
@@ -1909,12 +1924,12 @@ app.get('/api/whatsapp/session/status', validateTenantFromCRM, (req, res) => {
                 message: 'No hay sesión activa'
             });
         }
-        
+
         res.json({
             success: true,
             session: sessionStatus
         });
-        
+
     } catch (error) {
         console.error('Error obteniendo estado de sesión:', error);
         res.status(500).json({
@@ -1931,11 +1946,11 @@ app.get('/api/whatsapp/session/status', validateTenantFromCRM, (req, res) => {
 app.delete('/api/whatsapp/session/close', validateTenantFromCRM, async (req, res) => {
     try {
         const { tenantId } = req;
-        
+
         console.log(`[WhatsApp API] Cerrando sesión para tenant: ${tenantId}`);
-        
+
         const success = await sessionManager.closeSession(tenantId);
-        
+
         if (success) {
             res.json({
                 success: true,
@@ -1947,7 +1962,7 @@ app.delete('/api/whatsapp/session/close', validateTenantFromCRM, async (req, res
                 error: 'No se encontró una sesión activa'
             });
         }
-        
+
     } catch (error) {
         console.error('Error cerrando sesión WhatsApp:', error);
         res.status(500).json({
@@ -1964,14 +1979,14 @@ app.delete('/api/whatsapp/session/close', validateTenantFromCRM, async (req, res
 app.get('/api/whatsapp/chats', validateTenantFromCRM, (req, res) => {
     try {
         const { tenantId } = req;
-        
+
         const chats = sessionManager.getTenantChats(tenantId);
-        
+
         res.json({
             success: true,
             chats: chats
         });
-        
+
     } catch (error) {
         console.error('Error obteniendo chats:', error);
         res.status(500).json({
@@ -1989,14 +2004,14 @@ app.get('/api/whatsapp/chats/:chatId/messages', validateTenantFromCRM, (req, res
     try {
         const { tenantId } = req;
         const { chatId } = req.params;
-        
+
         const messages = sessionManager.getChatHistory(tenantId, chatId);
-        
+
         res.json({
             success: true,
             messages: messages
         });
-        
+
     } catch (error) {
         console.error('Error obteniendo mensajes del chat:', error);
         res.status(500).json({
@@ -2015,26 +2030,26 @@ app.post('/api/whatsapp/chats/:chatId/messages', validateTenantFromCRM, async (r
         const { tenantId } = req;
         const { chatId } = req.params;
         const { message } = req.body;
-        
+
         if (!message || message.trim() === '') {
             return res.status(400).json({
                 success: false,
                 error: 'El mensaje no puede estar vacío'
             });
         }
-        
+
         console.log(`[WhatsApp API] Enviando mensaje de ${tenantId} a ${chatId}`);
-        
+
         const result = await sessionManager.sendMessage(tenantId, chatId, message);
-        
+
         res.json({
             success: true,
             ...result
         });
-        
+
     } catch (error) {
         console.error('Error enviando mensaje:', error);
-        
+
         if (error.message.includes('no está lista')) {
             res.status(503).json({
                 success: false,
@@ -2058,21 +2073,21 @@ app.get('/api/whatsapp/sessions', (req, res) => {
     try {
         // Verificar que sea administrador (simplificado para demo)
         const isAdmin = req.headers['x-admin'] === 'true';
-        
+
         if (!isAdmin) {
             return res.status(403).json({
                 success: false,
                 error: 'Acceso denegado. Solo administradores pueden ver todas las sesiones.'
             });
         }
-        
+
         const sessions = sessionManager.getAllSessions();
-        
+
         res.json({
             success: true,
             sessions: sessions
         });
-        
+
     } catch (error) {
         console.error('Error obteniendo todas las sesiones:', error);
         res.status(500).json({
@@ -2093,7 +2108,7 @@ app.get('/api/whatsapp/sessions', (req, res) => {
 app.get('/api/crm/extract_contacts', async (req, res) => {
     const activeSessions = sessionManager.getAllSessions();
     if (activeSessions.length === 0) {
-        return res.status(503).json({ 
+        return res.status(503).json({
             error: "No hay sesiones de WhatsApp activas.",
             message: "Espera a que se inicialice una sesión de WhatsApp e inténtalo de nuevo."
         });
@@ -2101,25 +2116,25 @@ app.get('/api/crm/extract_contacts', async (req, res) => {
 
     try {
         console.log('🔍 Iniciando extracción de contactos de WhatsApp...');
-        
+
         // 1. Obtener todos los chats
         const chats = await client.getChats();
-        
+
         // 2. Filtrar solo chats individuales (no grupos)
         const individualChats = chats.filter(chat => !chat.isGroup && chat.id.user);
-        
+
         // 3. Obtener información adicional de cada contacto
         const contacts = [];
         let processedCount = 0;
-        
+
         for (const chat of individualChats) {
             try {
                 processedCount++;
-                
+
                 // Extraer información básica
                 const phoneNumber = chat.id.user;
                 let contactName = chat.name || 'Sin nombre';
-                
+
                 // Intentar obtener más información del contacto si está disponible
                 try {
                     const contact = await client.getContactById(chat.id._serialized);
@@ -2131,10 +2146,10 @@ app.get('/api/crm/extract_contacts', async (req, res) => {
                 } catch (contactError) {
                     // Si no se puede obtener info del contacto, seguimos con el nombre del chat
                 }
-                
+
                 // Formatear el número de teléfono
                 const formattedPhone = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@c.us`;
-                
+
                 contacts.push({
                     phone_number: phoneNumber,
                     formatted_phone: formattedPhone,
@@ -2144,23 +2159,23 @@ app.get('/api/crm/extract_contacts', async (req, res) => {
                     unread_count: chat.unreadCount || 0,
                     is_archived: chat.archived || false
                 });
-                
+
                 // Log de progreso cada 100 contactos
                 if (processedCount % 100 === 0) {
                     console.log(`📱 Procesados ${processedCount}/${individualChats.length} contactos...`);
                 }
-                
+
             } catch (error) {
                 console.warn(`⚠️ Error procesando contacto ${chat.id._serialized}:`, error.message);
                 // Continuar con el siguiente contacto
             }
         }
-        
+
         // 4. Ordenar por nombre
         contacts.sort((a, b) => a.contact_name.localeCompare(b.contact_name));
-        
+
         console.log(`✅ Extracción completada: ${contacts.length} contactos extraídos de ${individualChats.length} chats individuales.`);
-        
+
         res.json({
             success: true,
             message: `Extracción completada exitosamente`,
@@ -2169,13 +2184,13 @@ app.get('/api/crm/extract_contacts', async (req, res) => {
             extraction_timestamp: new Date().toISOString(),
             contacts: contacts
         });
-        
+
     } catch (error) {
         console.error("❌ Error fatal durante la extracción de contactos:", error.message);
-        res.status(500).json({ 
-            success: false, 
+        res.status(500).json({
+            success: false,
             error: "Error interno durante la extracción de contactos",
-            message: error.message 
+            message: error.message
         });
     }
 });
@@ -2186,25 +2201,25 @@ app.get('/api/crm/extract_contacts', async (req, res) => {
 app.get('/api/crm/export_contacts_csv', async (req, res) => {
     const activeSessions = sessionManager.getAllSessions();
     if (activeSessions.length === 0) {
-        return res.status(503).json({ 
+        return res.status(503).json({
             error: "No hay sesiones de WhatsApp activas."
         });
     }
 
     try {
         console.log('📊 Iniciando exportación CSV de contactos...');
-        
+
         const chats = await client.getChats();
         const individualChats = chats.filter(chat => !chat.isGroup && chat.id.user);
-        
+
         // Crear contenido CSV
         let csvContent = 'Nombre,Numero_Telefono,Numero_Formateado,Ultimo_Mensaje,Mensajes_No_Leidos,Archivado\n';
-        
+
         for (const chat of individualChats) {
             try {
                 const phoneNumber = chat.id.user;
                 let contactName = chat.name || 'Sin nombre';
-                
+
                 try {
                     const contact = await client.getContactById(chat.id._serialized);
                     if (contact.name && contact.name.trim() !== '') {
@@ -2215,39 +2230,39 @@ app.get('/api/crm/export_contacts_csv', async (req, res) => {
                 } catch (contactError) {
                     // Continuar con el nombre del chat
                 }
-                
+
                 const formattedPhone = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@c.us`;
                 const lastMessageTime = chat.timestamp ? new Date(chat.timestamp * 1000).toISOString() : '';
                 const unreadCount = chat.unreadCount || 0;
                 const isArchived = chat.archived ? 'Si' : 'No';
-                
+
                 // Escapar comillas en el nombre
                 const escapedName = contactName.replace(/"/g, '""');
-                
+
                 csvContent += `"${escapedName}","${phoneNumber}","${formattedPhone}","${lastMessageTime}","${unreadCount}","${isArchived}"\n`;
-                
+
             } catch (error) {
                 console.warn(`⚠️ Error procesando contacto para CSV ${chat.id._serialized}:`, error.message);
             }
         }
-        
+
         // Configurar headers para descarga de archivo
         const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
         const filename = `contactos_whatsapp_${timestamp}.csv`;
-        
+
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
         res.setHeader('Content-Length', Buffer.byteLength(csvContent, 'utf8'));
-        
+
         console.log(`✅ Exportación CSV completada: ${individualChats.length} contactos exportados.`);
-        
+
         res.send('\ufeff' + csvContent); // BOM para UTF-8
-        
+
     } catch (error) {
         console.error("❌ Error fatal durante la exportación CSV:", error.message);
-        res.status(500).json({ 
-            success: false, 
-            error: "Error interno durante la exportación CSV" 
+        res.status(500).json({
+            success: false,
+            error: "Error interno durante la exportación CSV"
         });
     }
 });
@@ -2262,7 +2277,7 @@ app.get('/api/crm/export_contacts_csv', async (req, res) => {
  * @returns {WebSocket.Server} Instancia del servidor WebSocket
  */
 function setupWebSocketServer(server) {
-    const wss = new WebSocket.Server({ 
+    const wss = new WebSocket.Server({
         server,
         clientTracking: true,
         perMessageDeflate: {
@@ -2288,7 +2303,7 @@ function setupWebSocketServer(server) {
     wss.on('connection', (ws, req) => {
         const clientId = Date.now().toString();
         console.log(`🔌 Nueva conexión WebSocket [${clientId}]`);
-            
+
         // Almacenar la conexión
         webSocketClients.set(clientId, ws);
         crmSocket = ws; // Mantener compatibilidad con código existente
@@ -2447,10 +2462,10 @@ function setupWebSocketServer(server) {
                         const { telefono, mensaje, nombre } = payload.task;
                         const chatId = `${telefono.replace(/\D/g, '')}@c.us`;
                         await client.sendMessage(chatId, mensaje);
-                        ws.send(JSON.stringify({ 
-                            type: 'log', 
-                            success: true, 
-                            message: `Éxito: Campaña enviada a ${nombre}` 
+                        ws.send(JSON.stringify({
+                            type: 'log',
+                            success: true,
+                            message: `Éxito: Campaña enviada a ${nombre}`
                         }));
                     }
                     break;
@@ -2458,19 +2473,19 @@ function setupWebSocketServer(server) {
                 case 'queue_notification_task':
                     if (payload.task) {
                         const { task_type, related_id, chat_id, message_body } = payload.task;
-                            const HONDURAS_TIMEZONE = 'America/Tegucigalpa';
-                            const now_hn = moment().tz(HONDURAS_TIMEZONE);
-                            let scheduled_time;
-                            if (now_hn.hour() >= 8 && now_hn.hour() < 19) {
-                                scheduled_time = moment().add(10, 'seconds');
-                            } else {
-                                scheduled_time = now_hn.add(1, 'day').hour(8).minute(0).second(0);
-                            }
-                            const scheduled_for_timestamp = scheduled_time.unix();
-                            const sql = `INSERT INTO Whatsapp_Queue_Local (task_type, related_id, chat_id, message_body, scheduled_for) VALUES (?, ?, ?, ?, ?)`;
-                            db.run(sql, [task_type, related_id, chat_id, message_body, scheduled_for_timestamp]);
+                        const HONDURAS_TIMEZONE = 'America/Tegucigalpa';
+                        const now_hn = moment().tz(HONDURAS_TIMEZONE);
+                        let scheduled_time;
+                        if (now_hn.hour() >= 8 && now_hn.hour() < 19) {
+                            scheduled_time = moment().add(10, 'seconds');
+                        } else {
+                            scheduled_time = now_hn.add(1, 'day').hour(8).minute(0).second(0);
                         }
-                        break;
+                        const scheduled_for_timestamp = scheduled_time.unix();
+                        const sql = `INSERT INTO Whatsapp_Queue_Local (task_type, related_id, chat_id, message_body, scheduled_for) VALUES (?, ?, ?, ?, ?)`;
+                        db.run(sql, [task_type, related_id, chat_id, message_body, scheduled_for_timestamp]);
+                    }
+                    break;
             }
         } catch (e) {
             console.error("Error procesando mensaje de WebSocket:", e);
@@ -2489,20 +2504,20 @@ async function initializeWhatsappClient() {
 
     // Generar un ID de sesión único basado en la hora actual
     const sessionId = `session_${Date.now()}`;
-    
+
     // Obtener proxy para esta sesión
     const proxyConfig = getUniqueProxyForSession(sessionId);
-    
+
     // Configurar Puppeteer con proxy si está disponible
     const puppeteerOptions = {};
-    
+
     if (proxyConfig) {
         const { server, username, password } = proxyConfig;
         const auth = username && password ? `${username}:${password}@` : '';
         const proxyUrl = `http://${auth}${server}`;
-        
+
         console.log(`🌐 Usando proxy: ${server}`);
-        
+
         puppeteerOptions.args = [
             `--proxy-server=${proxyUrl}`,
             '--no-sandbox',
@@ -2514,7 +2529,7 @@ async function initializeWhatsappClient() {
             '--single-process',
             '--disable-gpu'
         ];
-        
+
         // Configuración adicional para autenticación de proxy
         if (username && password) {
             puppeteerOptions.args.push(`--proxy-auth=${username}:${password}`);
@@ -2546,7 +2561,7 @@ async function initializeWhatsappClient() {
     // 2. Adjuntamos TODOS los listeners de eventos al objeto 'client'
     client.on('qr', async (qr) => {
         console.log('QR Recibido.');
-        
+
         try {
             // Generar imagen QR como base64
             const qrImageBase64 = await qrcode.toDataURL(qr, {
@@ -2557,16 +2572,16 @@ async function initializeWhatsappClient() {
                     light: '#FFFFFF'
                 }
             });
-            
+
             // Mostrar QR en terminal también
             console.log('🔑 Código QR generado');
             qrcodeTerminal.generate(qr, { small: true });
-            
+
             // Enviar imagen base64 al frontend
             if (crmSocket) {
-                crmSocket.send(JSON.stringify({ 
-                    type: 'qr', 
-                    data: qrImageBase64 
+                crmSocket.send(JSON.stringify({
+                    type: 'qr',
+                    data: qrImageBase64
                 }));
             }
         } catch (error) {
@@ -2588,16 +2603,16 @@ async function initializeWhatsappClient() {
             const userChats = chats.filter(chat => !chat.isGroup && chat.id.user);
             db.serialize(() => {
                 // AÑADE ESTE BLOQUE TEMPORALMENTE EN bridge.js DENTRO DE db.serialize
-            console.log("⏳ MIGRACIÓN DE ESTADO: Corrigiendo estados 'identified_affiliate' antiguos...");
-            db.run("UPDATE conversations SET status = 'AFFILIATE_LOGGED_IN' WHERE status = 'identified_affiliate'", function(err) {
-                if (err) {
-                console.error("❌ Error en la migración de estado:", err.message);
-                } else if (this.changes > 0) {
-                console.log(`✅ Migración de estado completada. ${this.changes} registros actualizados.`);
-                } else {
-                console.log("✅ No se encontraron estados antiguos para migrar.");
-                }
-            });
+                console.log("⏳ MIGRACIÓN DE ESTADO: Corrigiendo estados 'identified_affiliate' antiguos...");
+                db.run("UPDATE conversations SET status = 'AFFILIATE_LOGGED_IN' WHERE status = 'identified_affiliate'", function (err) {
+                    if (err) {
+                        console.error("❌ Error en la migración de estado:", err.message);
+                    } else if (this.changes > 0) {
+                        console.log(`✅ Migración de estado completada. ${this.changes} registros actualizados.`);
+                    } else {
+                        console.log("✅ No se encontraron estados antiguos para migrar.");
+                    }
+                });
                 const stmt = db.prepare(`INSERT INTO conversations (chat_id, contact_name, last_message_timestamp) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET contact_name = excluded.contact_name, last_message_timestamp = MAX(last_message_timestamp, excluded.last_message_timestamp)`);
                 for (const chat of userChats) {
                     stmt.run(chat.id._serialized, chat.name || chat.id.user, chat.timestamp || 0);
@@ -2615,8 +2630,8 @@ async function initializeWhatsappClient() {
                 method: 'POST',
                 headers: { 'X-API-Key': process.env.CRM_INTERNAL_API_KEY }
             }).then(res => res.json())
-              .then(data => console.log(`[Auto-Sync] Respuesta de resincronización: ${data.tasks_resent || 0} tareas reenviadas.`))
-              .catch(err => console.error("[Auto-Sync] ❌ Error durante la resincronización automática:", err.message));
+                .then(data => console.log(`[Auto-Sync] Respuesta de resincronización: ${data.tasks_resent || 0} tareas reenviadas.`))
+                .catch(err => console.error("[Auto-Sync] ❌ Error durante la resincronización automática:", err.message));
 
         } catch (error) {
             console.error("❌ Error durante la sincronización inicial de chats:", error);
@@ -2627,7 +2642,7 @@ async function initializeWhatsappClient() {
         console.log('❌ Cliente de WhatsApp desconectado:', reason);
         if (crmSocket) crmSocket.send(JSON.stringify({ type: 'status', message: 'Desconectado', error: true }));
     });
-    
+
     client.on('message', (msg) => {
         if (!msg.hasMedia) {
             archiveAndAnalyze(msg, false);
@@ -2661,11 +2676,11 @@ const archiveAndAnalyze = async (msg, fromMe) => {
         if (messageBody) {
             await new Promise((resolve, reject) => {
                 db.run(`INSERT INTO messages (chat_id, sender, body, timestamp, from_me) VALUES (?, ?, ?, ?, ?)`,
-                       [chatId, fromMe ? 'me' : 'user', messageBody, msg.timestamp, fromMe], 
-                       err => err ? reject(err) : resolve());
+                    [chatId, fromMe ? 'me' : 'user', messageBody, msg.timestamp, fromMe],
+                    err => err ? reject(err) : resolve());
             });
         }
-    
+
         const upsertConversationSql = `
             INSERT INTO conversations (chat_id, contact_name, last_message_timestamp, status, unread_count)
             VALUES (?, ?, ?, 'new_visitor', 1)
@@ -2675,18 +2690,18 @@ const archiveAndAnalyze = async (msg, fromMe) => {
                 unread_count = CASE WHEN ? THEN unread_count ELSE unread_count + 1 END;
         `;
         await new Promise((resolve, reject) => {
-            db.run(upsertConversationSql, [chatId, contactName, msg.timestamp, fromMe], function(err) {
-                 if (err) return reject(err);
-                 if (this.changes > 0 && !fromMe) {
-                     console.log(`[New Conversation] Detectado primer mensaje de ${chatId}.`);
-                     db.run("UPDATE conversations SET status = 'AWAITING_AFFILIATION_CONFIRM' WHERE chat_id = ?", [chatId]);
-                 }
-                 resolve();
+            db.run(upsertConversationSql, [chatId, contactName, msg.timestamp, fromMe], function (err) {
+                if (err) return reject(err);
+                if (this.changes > 0 && !fromMe) {
+                    console.log(`[New Conversation] Detectado primer mensaje de ${chatId}.`);
+                    db.run("UPDATE conversations SET status = 'AWAITING_AFFILIATION_CONFIRM' WHERE chat_id = ?", [chatId]);
+                }
+                resolve();
             });
         });
 
         await new Promise(resolve => db.run('COMMIT', resolve));
-        
+
         // Notificar a la UI del CRM en tiempo real (sin cambios)
         if (crmSocket && crmSocket.readyState === 1) { // <-- ¡ERROR CORREGIDO AQUÍ!
             const conversationData = await new Promise((resolve, reject) => {
@@ -2755,10 +2770,10 @@ async function processAnalysisQueue() {
                 const notificationType = 'human_intervention_required';
                 const insertQuery = `INSERT INTO notifications (chat_id, contact_name, type, summary, timestamp) VALUES (?, ?, ?, ?, ?)`;
                 const insertParams = [chatId, conversation.contact_name, notificationType, analysis.summary, Math.floor(Date.now() / 1000)];
-                
-                db.run(insertQuery, insertParams, function(err) {
+
+                db.run(insertQuery, insertParams, function (err) {
                     if (err) return console.error(`[Analysis Worker] Error guardando notificación para ${chatId}:`, err);
-                    
+
                     // Notificar a la UI del CRM en tiempo real
                     const newNotificationData = { id: this.lastID, chat_id: chatId, contact_name: conversation.contact_name, type: notificationType, summary: analysis.summary };
                     if (crmSocket && crmSocket.readyState === 1) { // <-- ¡ERROR CORREGIDO AQUÍ TAMBIÉN!
@@ -2786,7 +2801,7 @@ setInterval(processAnalysisQueue, 15 * 1000);
  */
 function startApp() {
     const PORT = process.env.PORT || 3000;
-    
+
     // 1. Crear el servidor HTTP a partir de la app de Express
     const server = require('http').createServer(app);
 
@@ -2796,12 +2811,12 @@ function startApp() {
     // 3. Iniciar el servidor para que escuche peticiones
     server.listen(PORT, () => {
         console.log(`✅ Servidor Express y WebSocket escuchando en http://localhost:${PORT}`);
-        
+
         // 4. Realizar la prueba de conectividad
         fetch('https://www.google.com', { method: 'HEAD' })
             .then(res => console.log(res.ok ? "✅ Prueba de conectividad a internet exitosa." : "❌ Prueba de conectividad fallida."))
             .catch(err => console.error("❌ FALLO CRÍTICO de fetch:", err.message));
-        
+
         // 5. Finalmente, inicializar el cliente de WhatsApp
         initializeWhatsappClient();
     });
