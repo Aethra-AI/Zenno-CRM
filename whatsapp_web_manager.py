@@ -9,6 +9,7 @@ una solución híbrida según la configuración del tenant.
 import requests
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import mysql.connector
@@ -24,10 +25,11 @@ class WhatsAppWebManager:
     def __init__(self):
         self.node_bridge_url = "http://localhost:3000"  # URL del bridge.js
         self.db_config = {
-            'host': 'localhost',
-            'database': 'reclutamiento_db',
-            'user': 'root',
-            'password': 'admin123'
+            'host': os.getenv('DB_HOST', 'localhost'),
+            'database': os.getenv('DB_NAME', 'reclutamiento_db'),
+            'user': os.getenv('DB_USER', 'root'),
+            'password': os.getenv('DB_PASSWORD', ''),
+            'port': int(os.getenv('DB_PORT', 3306))
         }
     
     def get_tenant_config(self, tenant_id: int) -> Optional[Dict]:
