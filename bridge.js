@@ -2510,31 +2510,48 @@ async function initializeWhatsappClient() {
     // Obtener proxy para esta sesión
     const proxyConfig = getUniqueProxyForSession(sessionId);
 
-    // Configurar Puppeteer con proxy si está disponible
-    const puppeteerOptions = {};
+    // Configurar opciones de Puppeteer
+    const puppeteerConfig = {
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--disable-gpu'
+        ]
+    };
 
+    // Configuración de path de Chromium para entornos Linux/Server (Oracle Cloud)
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+        puppeteerConfig.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    } else if (process.platform === 'linux') {
+        const commonPaths = ['/usr/bin/chromium-browser', '/usr/bin/chromium', '/snap/bin/chromium'];
+        for (const p of commonPaths) {
+            if (fs.existsSync(p)) {
+                console.log(`🐧 Usando Chromium en: ${p}`);
+                puppeteerConfig.executablePath = p;
+                break;
+            }
+        }
+    }
+
+    if (!puppeteerConfig.executablePath) {
+        console.log('ℹ️  Usando Chromium empaquetado con Puppeteer');
+    }
+
+    // Configurar Proxy si existe
     if (proxyConfig) {
         const { server, username, password } = proxyConfig;
         const auth = username && password ? `${username}:${password}@` : '';
         const proxyUrl = `http://${auth}${server}`;
 
         console.log(`🌐 Usando proxy: ${server}`);
+        puppeteerConfig.args.push(`--proxy-server=${proxyUrl}`);
 
-        puppeteerOptions.args = [
-            `--proxy-server=${proxyUrl}`,
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu'
-        ];
-
-        // Configuración adicional para autenticación de proxy
         if (username && password) {
-            puppeteerOptions.args.push(`--proxy-auth=${username}:${password}`);
+            puppeteerConfig.args.push(`--proxy-auth=${username}:${password}`);
         }
     } else {
         console.log('⚠️  No se configuró ningún proxy. Usando conexión directa.');
@@ -2546,17 +2563,7 @@ async function initializeWhatsappClient() {
             clientId: 'crm-whatsapp-client',
             dataPath: './sessions',
         }),
-        puppeteer: {
-            headless: true,
-            ...puppeteerOptions,
-            args: [
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process', // Puede ayudar en VMs con poca RAM
-                '--disable-gpu'
-            ]
-        }
+        puppeteer: puppeteerConfig
     });
 
 
