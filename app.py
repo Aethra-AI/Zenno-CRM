@@ -13022,7 +13022,7 @@ def get_whatsapp_web_session_status():
         tenant_id = get_current_tenant_id()
         result = get_whatsapp_web_status(tenant_id)
         
-        return jsonify(result), 200 if result['status'] == 'success' else 400
+        return jsonify(result), 200 if result['status'] in ['success', 'no_session'] else 400
         
     except Exception as e:
         app.logger.error(f"Error obteniendo estado Web: {str(e)}")
