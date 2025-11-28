@@ -165,8 +165,9 @@ class WhatsAppWebManager:
                 'X-Tenant-ID': str(tenant_id)
             }
             
+            # Consultar estado al bridge (Node.js) usando el nuevo endpoint
             response = requests.get(
-                f"{self.node_bridge_url}/api/session/{session_id}/status",
+                f"{self.node_bridge_url}/api/whatsapp/session/status",
                 headers=headers,
                 timeout=10
             )
