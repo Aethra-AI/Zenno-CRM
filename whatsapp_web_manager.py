@@ -177,11 +177,18 @@ class WhatsAppWebManager:
                 # El nuevo endpoint devuelve { success: true, session: { ... } }
                 session_data = result.get('session') or {}
                 
+                qr_code = session_data.get('qrCode')
+                logger.info(f"Bridge response status: {session_data.get('status')}")
+                logger.info(f"QR Code present: {bool(qr_code)}")
+                if qr_code:
+                    logger.info(f"QR Code length: {len(qr_code)}")
+                    logger.info(f"QR Code start: {qr_code[:30]}")
+                
                 return {
                     "status": "success",
                     "session_status": session_data.get('status'),
                     "is_ready": session_data.get('isReady', False),
-                    "qr_code": session_data.get('qrCode'),
+                    "qr_code": qr_code,
                     "tenant_id": tenant_id,
                     "session_id": session_id
                 }
