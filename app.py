@@ -12487,10 +12487,14 @@ def handle_whatsapp_config():
                     'config': config
                 }), 200
             else:
+                # Si no hay configuración, devolver valores por defecto para Web.js
                 return jsonify({
-                    'success': False,
-                    'message': 'Configuración no encontrada'
-                }), 404
+                    'success': True,
+                    'config': {
+                        'wa_api_type': 'web_js',
+                        'wa_active': True
+                    }
+                }), 200
         
         elif request.method == 'POST':
             # Crear nueva configuración
