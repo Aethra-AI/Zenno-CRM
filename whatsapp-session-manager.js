@@ -12,10 +12,10 @@ class WhatsAppSessionManager {
     constructor() {
         // Mapa de sesiones activas: Map<tenantId, SessionInfo>
         this.activeSessions = new Map();
-        
+
         // Mapa de WebSocket connections por tenant
         this.tenantWebSockets = new Map();
-        
+
         // Configuración de sesiones
         this.sessionConfig = {
             puppeteerOptions: {
@@ -39,7 +39,7 @@ class WhatsAppSessionManager {
                 ]
             }
         };
-        
+
         // Crear directorio de sesiones si no existe
         this.ensureSessionsDirectory();
     }
@@ -125,10 +125,10 @@ class WhatsAppSessionManager {
 
         } catch (error) {
             console.error(`[${tenantId}] ❌ Error al inicializar sesión:`, error);
-            
+
             // Limpiar la sesión en caso de error
             this.activeSessions.delete(tenantId);
-            
+
             return {
                 success: false,
                 sessionId: tenantId,
@@ -150,8 +150,6 @@ class WhatsAppSessionManager {
         // Evento: Código QR generado
         client.on('qr', async (qr) => {
             console.log(`[${tenantId}] 🔑 Código QR generado`);
-            sessionInfo.status = 'qr_ready';
-            
             try {
                 // Generar imagen QR como base64
                 const qrImageBase64 = await qrcode.toDataURL(qr, {
@@ -162,8 +160,10 @@ class WhatsAppSessionManager {
                         light: '#FFFFFF'
                     }
                 });
-                
+
                 sessionInfo.qrCode = qrImageBase64;
+                sessionInfo.status = 'qr_ready';
+
                 this.notifyTenantWebSocket(tenantId, {
                     type: 'qr_ready',
                     qrCode: qrImageBase64,
@@ -173,6 +173,8 @@ class WhatsAppSessionManager {
                 console.error(`[${tenantId}] Error generando QR como imagen:`, error);
                 // Fallback: usar QR como texto
                 sessionInfo.qrCode = qr;
+                sessionInfo.status = 'qr_ready';
+
                 this.notifyTenantWebSocket(tenantId, {
                     type: 'qr_ready',
                     qrCode: qr,
@@ -207,7 +209,7 @@ class WhatsAppSessionManager {
             sessionInfo.status = 'ready';
             sessionInfo.isReady = true;
             sessionInfo.lastActivity = new Date();
-            
+
             this.notifyTenantWebSocket(tenantId, {
                 type: 'ready',
                 message: 'WhatsApp conectado y listo'
@@ -226,7 +228,7 @@ class WhatsAppSessionManager {
                 type: 'disconnected',
                 message: `Desconectado: ${reason}`
             });
-            
+
             // Limpiar sesión después de desconexión
             this.cleanupSession(tenantId);
         });
@@ -301,11 +303,11 @@ class WhatsAppSessionManager {
      */
     async sendMessage(tenantId, chatId, message) {
         const sessionInfo = this.activeSessions.get(tenantId);
-        
+
         if (!sessionInfo) {
             throw new Error(`No se encontró una sesión activa para el tenant: ${tenantId}`);
         }
-        
+
         if (!sessionInfo.isReady) {
             throw new Error(`La sesión del tenant ${tenantId} no está lista. Estado: ${sessionInfo.status}`);
         }
@@ -313,10 +315,10 @@ class WhatsAppSessionManager {
         try {
             // Formatear chatId si es necesario
             const formattedChatId = chatId.endsWith('@c.us') ? chatId : `${chatId}@c.us`;
-            
+
             // Enviar el mensaje
             const sentMessage = await sessionInfo.client.sendMessage(formattedChatId, message);
-            
+
             // Actualizar última actividad
             sessionInfo.lastActivity = new Date();
 
@@ -367,7 +369,7 @@ class WhatsAppSessionManager {
      */
     getSessionStatus(tenantId) {
         const sessionInfo = this.activeSessions.get(tenantId);
-        
+
         if (!sessionInfo) {
             return null;
         }
@@ -389,7 +391,7 @@ class WhatsAppSessionManager {
      */
     getAllSessions() {
         const sessions = [];
-        
+
         for (const [tenantId, sessionInfo] of this.activeSessions) {
             sessions.push({
                 tenantId,
@@ -400,7 +402,7 @@ class WhatsAppSessionManager {
                 totalChats: sessionInfo.messageHistory.size
             });
         }
-        
+
         return sessions;
     }
 
@@ -411,20 +413,20 @@ class WhatsAppSessionManager {
      */
     async closeSession(tenantId) {
         const sessionInfo = this.activeSessions.get(tenantId);
-        
+
         if (!sessionInfo) {
             return false;
         }
 
         try {
             console.log(`[${tenantId}] 🧹 Cerrando sesión WhatsApp`);
-            
+
             // Destruir el cliente
             await sessionInfo.client.destroy();
-            
+
             // Limpiar la sesión
             this.activeSessions.delete(tenantId);
-            
+
             // Notificar al WebSocket del tenant
             this.notifyTenantWebSocket(tenantId, {
                 type: 'session_closed',
@@ -475,7 +477,7 @@ class WhatsAppSessionManager {
      */
     notifyTenantWebSocket(tenantId, data) {
         const ws = this.tenantWebSockets.get(tenantId);
-        
+
         if (ws && ws.readyState === 1) { // WebSocket.OPEN
             try {
                 ws.send(JSON.stringify({
@@ -498,7 +500,7 @@ class WhatsAppSessionManager {
      */
     getChatHistory(tenantId, chatId) {
         const sessionInfo = this.activeSessions.get(tenantId);
-        
+
         if (!sessionInfo) {
             return [];
         }
@@ -513,13 +515,13 @@ class WhatsAppSessionManager {
      */
     getTenantChats(tenantId) {
         const sessionInfo = this.activeSessions.get(tenantId);
-        
+
         if (!sessionInfo) {
             return [];
         }
 
         const chats = [];
-        
+
         for (const [chatId, messages] of sessionInfo.messageHistory) {
             const lastMessage = messages[messages.length - 1];
             chats.push({

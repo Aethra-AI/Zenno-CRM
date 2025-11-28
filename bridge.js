@@ -232,15 +232,17 @@ function setupClientEventHandlers(client, sessionId) {
 
     client.on('qr', async (qr) => {
         console.log(`[${sessionId}] 🔑 Escanea el código QR`);
-        session.status = 'qr_ready';
         try {
             // Convertir QR a imagen base64 para el frontend
             const qrImageBase64 = await qrcode.toDataURL(qr);
             session.qrCode = qrImageBase64;
+            session.status = 'qr_ready';
             notifyStatusUpdate(sessionId, 'qr_ready', 'Por favor, escanea el código QR');
         } catch (err) {
             console.error(`[${sessionId}] Error generando imagen QR:`, err);
             session.qrCode = qr; // Fallback a raw string
+            session.status = 'qr_ready';
+            notifyStatusUpdate(sessionId, 'qr_ready', 'Por favor, escanea el código QR');
         }
     });
 
