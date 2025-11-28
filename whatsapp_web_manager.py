@@ -174,11 +174,14 @@ class WhatsAppWebManager:
             
             if response.status_code == 200:
                 result = response.json()
+                # El nuevo endpoint devuelve { success: true, session: { ... } }
+                session_data = result.get('session') or {}
+                
                 return {
                     "status": "success",
-                    "session_status": result.get('status'),
-                    "is_ready": result.get('isReady', False),
-                    "qr_code": result.get('qrCode'),
+                    "session_status": session_data.get('status'),
+                    "is_ready": session_data.get('isReady', False),
+                    "qr_code": session_data.get('qrCode'),
                     "tenant_id": tenant_id,
                     "session_id": session_id
                 }
