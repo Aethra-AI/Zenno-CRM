@@ -230,11 +230,18 @@ function setupClientEventHandlers(client, sessionId) {
     const session = activeSessions.get(sessionId);
     if (!session) return;
 
-    client.on('qr', (qr) => {
+    client.on('qr', async (qr) => {
         console.log(`[${sessionId}] 🔑 Escanea el código QR`);
         session.status = 'qr_ready';
-        session.qrCode = qr;
-        notifyStatusUpdate(sessionId, 'qr_ready', 'Por favor, escanea el código QR');
+        try {
+            // Convertir QR a imagen base64 para el frontend
+            const qrImageBase64 = await qrcode.toDataURL(qr);
+            session.qrCode = qrImageBase64;
+            notifyStatusUpdate(sessionId, 'qr_ready', 'Por favor, escanea el código QR');
+        } catch (err) {
+            console.error(`[${sessionId}] Error generando imagen QR:`, err);
+            session.qrCode = qr; // Fallback a raw string
+        }
     });
 
     client.on('authenticated', () => {
@@ -924,7 +931,8 @@ app.get('/api/session/:sessionId/status', (req, res) => {
         proxy: session.proxy,
         tenantId: session.tenantId,
         lastActivity: session.lastActivity.toISOString(),
-        isReady: session.status === 'ready'
+        isReady: session.status === 'ready',
+        qrCode: session.qrCode
     });
 });
 
