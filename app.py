@@ -16398,6 +16398,220 @@ def register_candidate_from_web():
         }), 500
 
 # =====================
+# Public API: Búsqueda y Validación de Candidatos para WhatsApp/AI Agent
+# =====================
+
+@app.route('/public-api/v1/candidates/search', methods=['GET'])
+@public_api_key_required
+def search_candidates_public():
+    """
+    Busca candidatos por nombre o identidad desde API pública.
+    
+    Reutiliza la función _internal_search_candidates con seguridad adicional:
+    - Multi-tenant automático desde API Key
+    - Validación de permisos
+    - Filtrado de información sensible
+    
+    Parámetros de query:
+        q (str): Término de búsqueda (nombre o identidad)
+        limit (int, opcional): Máximo de resultados (default: 20, max: 50)
+    
+    Returns:
+        JSON con lista de candidatos (sin info sensible)
+    """
+    try:
+        # Multi-tenant automático desde API Key
+        tenant_id = g.api_key_data['tenant_id']
+        
+        # Validar permisos de la API Key
+        if not g.api_key_data.get('permisos', {}).get('candidates'):
+            app.logger.warning(f"API Key sin permisos de candidates. Tenant: {tenant_id}")
+            return jsonify({
+                'success': False,
+                'error': 'API Key no tiene permisos para consultar candidatos'
+            }), 403
+        
+        # Obtener parámetros de búsqueda
+        term = request.args.get('q', '').strip()
+        if not term:
+            return jsonify({
+                'success': False,
+                'error': 'El parámetro "q" es requerido'
+            }), 400
+        
+        # Límite de resultados
+        try:
+            limit = int(request.args.get('limit', 20))
+            limit = min(limit, 50)  # Máximo 50 resultados
+        except ValueError:
+            limit = 20
+        
+        app.logger.info(f"🔍 Búsqueda pública de candidatos: '{term}' (Tenant: {tenant_id}, Limit: {limit})")
+        
+        # REUTILIZAR función interna existente
+        results = _internal_search_candidates(
+            term=term,
+            tenant_id=tenant_id,  # Forzar tenant de la API Key
+            limit=limit,
+            offset=0,
+            user_id=None  # No hay usuario específico en API pública
+        )
+        
+        # FILTRAR información sensible - solo datos básicos
+        safe_results = []
+        for candidate in results:
+            safe_results.append({
+                'id_afiliado': candidate.get('id'),  # ID interno para referencia
+                'nombre_completo': candidate.get('name'),
+                'ciudad': candidate.get('location'),
+                'estado': candidate.get('status', 'Activo'),
+                'experiencia': candidate.get('experience'),
+                'cargo_solicitado': candidate.get('position'),
+                'fecha_registro': candidate.get('createdAt').isoformat() if candidate.get('createdAt') else None
+                # NO incluir: teléfono, email, identidad, observaciones, etc.
+            })
+        
+        app.logger.info(f"✅ Búsqueda pública completada: {len(safe_results)} candidatos encontrados")
+        
+        return jsonify({
+            'success': True,
+            'data': safe_results,
+            'total': len(safe_results),
+            'query': term
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error en búsqueda pública de candidatos: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'Error interno al buscar candidatos'
+        }), 500
+
+
+@app.route('/public-api/v1/candidates/validate', methods=['GET'])
+@public_api_key_required
+def validate_candidate_public():
+    """
+    Valida si un candidato existe en el sistema (API pública).
+    
+    Busca por número de identidad O por nombre completo.
+    Reutiliza la lógica de validación interna con seguridad pública.
+    
+    Parámetros de query:
+        identity (str, opcional): Número de identidad (con o sin guiones)
+        name (str, opcional): Nombre completo del candidato
+        
+    Al menos uno de los dos parámetros es requerido.
+    
+    Returns:
+        JSON con exists=true/false y datos básicos del candidato si existe
+    """
+    try:
+        # Multi-tenant automático desde API Key
+        tenant_id = g.api_key_data['tenant_id']
+        
+        # Validar permisos de la API Key
+        if not g.api_key_data.get('permisos', {}).get('candidates'):
+            app.logger.warning(f"API Key sin permisos de candidates. Tenant: {tenant_id}")
+            return jsonify({
+                'success': False,
+                'error': 'API Key no tiene permisos para validar candidatos'
+            }), 403
+        
+        # Obtener parámetros
+        identity = request.args.get('identity', '').replace('-', '').replace(' ', '').strip()
+        name = request.args.get('name', '').strip()
+        
+        if not identity and not name:
+            return jsonify({
+                'success': False,
+                'error': 'Debe proporcionar "identity" o "name"'
+            }), 400
+        
+        app.logger.info(f"🔍 Validación pública de candidato: identity={identity}, name={name} (Tenant: {tenant_id})")
+        
+        # REUTILIZAR lógica de búsqueda
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({
+                'success': False,
+                'error': 'Error de conexión a base de datos'
+            }), 500
+            
+        cursor = conn.cursor(dictionary=True)
+        
+        try:
+            if identity:
+                # Búsqueda exacta por identidad
+                cursor.execute("""
+                    SELECT 
+                        id_afiliado, 
+                        nombre_completo, 
+                        ciudad, 
+                        estado,
+                        experiencia,
+                        cargo_solicitado,
+                        fecha_registro
+                    FROM Afiliados
+                    WHERE identidad = %s AND tenant_id = %s
+                    LIMIT 1
+                """, (identity, tenant_id))
+            else:
+                # Búsqueda aproximada por nombre
+                cursor.execute("""
+                    SELECT 
+                        id_afiliado, 
+                        nombre_completo, 
+                        ciudad, 
+                        estado,
+                        experiencia,
+                        cargo_solicitado,
+                        fecha_registro
+                    FROM Afiliados
+                    WHERE nombre_completo LIKE %s AND tenant_id = %s
+                    LIMIT 1
+                """, (f"%{name}%", tenant_id))
+            
+            result = cursor.fetchone()
+            
+            if result:
+                app.logger.info(f"✅ Candidato encontrado: {result['nombre_completo']} (ID: {result['id_afiliado']})")
+                
+                return jsonify({
+                    'success': True,
+                    'exists': True,
+                    'candidate': {
+                        'id_afiliado': result['id_afiliado'],
+                        'nombre_completo': result['nombre_completo'],
+                        'ciudad': result['ciudad'],
+                        'estado': result.get('estado', 'Activo'),
+                        'experiencia': result.get('experiencia'),
+                        'cargo_solicitado': result.get('cargo_solicitado'),
+                        'fecha_registro': result['fecha_registro'].isoformat() if result.get('fecha_registro') else None
+                        # NO incluir: teléfono, email, identidad, etc.
+                    }
+                })
+            else:
+                app.logger.info(f"❌ Candidato no encontrado")
+                
+                return jsonify({
+                    'success': True,
+                    'exists': False,
+                    'message': 'No se encontró un candidato con los datos proporcionados'
+                })
+        
+        finally:
+            cursor.close()
+            conn.close()
+        
+    except Exception as e:
+        app.logger.error(f"Error en validación pública de candidato: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': 'Error interno al validar candidato'
+        }), 500
+
+# =====================
 # Permisos: Endpoints Admin (Roles/Users)
 # =====================
 

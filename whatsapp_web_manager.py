@@ -184,9 +184,16 @@ class WhatsAppWebManager:
                     logger.info(f"QR Code length: {len(qr_code)}")
                     logger.info(f"QR Code start: {qr_code[:30]}")
                 
+                # Fallback: Si dice que está listo para QR pero no hay código,
+                # forzamos estado 'initializing' para que el frontend siga esperando
+                final_status = session_data.get('status')
+                if final_status == 'qr_ready' and not qr_code:
+                    logger.warning(f"Status is qr_ready but QR code is missing. Forcing initializing.")
+                    final_status = 'initializing'
+                
                 return {
                     "status": "success",
-                    "session_status": session_data.get('status'),
+                    "session_status": final_status,
                     "is_ready": session_data.get('isReady', False),
                     "qr_code": qr_code,
                     "tenant_id": tenant_id,
