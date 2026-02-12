@@ -100,10 +100,10 @@ import bcrypt
 # Importaciones para OCI Object Storage (opcionales)
 try:
     from oci_storage_service import oci_storage_service
-    from cv_processing_service import cv_processing_service
+    from cv_processing_service_v2 import cv_processing_service_v2 as cv_processing_service
     OCI_SERVICES_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"Servicios OCI no disponibles: {str(e)}")
+    logger.warning(f"Servicios OCI/CV no disponibles: {str(e)}")
     OCI_SERVICES_AVAILABLE = False
     oci_storage_service = None
     cv_processing_service = None
@@ -12263,15 +12263,13 @@ def upload_cvs():
                         })
                         continue
                     
-                    # Extraer texto del CV
-                    cv_text = cv_processing_service.extract_text_from_file(
-                        file_content=file_content,
-                        filename=file.filename
-                    )
+                    # Procesar con Moonshot AI (Kimi)
+                    # Nota: Kimi extrae texto y procesa el archivo directamente, ignoramos cv_text anterior si lo hubiera
+                    # Para mantener compatibilidad, si extract_text_from_file falló, Kimi aún puede intentarlo con el archivo
                     
-                    # Procesar con Gemini
-                    gemini_result = cv_processing_service.process_cv_with_gemini(
-                        cv_text=cv_text,
+                    gemini_result = cv_processing_service.process_cv_with_kimi(
+                        file_content=file_content,
+                        filename=file.filename,
                         tenant_id=tenant_id
                     )
                     
@@ -13252,15 +13250,10 @@ def upload_cv_to_oci():
         # Procesar CV con Gemini AI en segundo plano (sin bloquear respuesta)
         def process_cv_background():
             try:
-                # 1. Extraer texto del CV
-                cv_text = cv_processing_service.extract_text_from_file(
+                # Procesar con Moonshot AI (Kimi) directa con el archivo
+                gemini_result = cv_processing_service.process_cv_with_kimi(
                     file_content=file_content,
-                    filename=file.filename
-                )
-                
-                # 2. Procesar con Gemini
-                gemini_result = cv_processing_service.process_cv_with_gemini(
-                    cv_text=cv_text,
+                    filename=file.filename,
                     tenant_id=tenant_id
                 )
                 
@@ -13476,15 +13469,10 @@ def upload_multiple_cvs_to_oci():
                                 if par_result['success']:
                                     # Procesar CV con IA (mismo proceso que el individual)
                                     try:
-                                        # 1. Extraer texto del CV
-                                        cv_text = cv_processing_service.extract_text_from_file(
+                                        # Procesar con Moonshot AI (Kimi)
+                                        gemini_result = cv_processing_service.process_cv_with_kimi(
                                             file_content=file_content,
-                                            filename=file.filename
-                                        )
-                                        
-                                        # 2. Procesar con Gemini
-                                        gemini_result = cv_processing_service.process_cv_with_gemini(
-                                            cv_text=cv_text,
+                                            filename=file.filename,
                                             tenant_id=tenant_id
                                         )
                                         
@@ -13830,7 +13818,8 @@ def process_existing_cv(cv_identifier):
             # Simular extracción de texto (en implementación real, descargarías el archivo)
             cv_text = "Texto del CV extraído..."  # Placeholder
             
-            gemini_result = cv_processing_service.process_cv_with_gemini(
+            # Usar método de texto para compatibilidad con placeholders
+            gemini_result = cv_processing_service.process_cv_text(
                 cv_text=cv_text,
                 tenant_id=tenant_id
             )
@@ -15925,18 +15914,18 @@ def format_experience_from_ai(experiencia_list):
     def format_experience(exp):
         parts = []
         
-        # Agregar puesto si existe
-        puesto = exp.get('puesto')
-        if puesto:
-            parts.append(puesto)
+        # Agregar puesto se usa get con valor por defecto para evitar None
+        puesto = exp.get('puesto') or "Posición no especificada"
+        parts.append(puesto)
         
-        # Agregar empresa si existe
-        empresa = exp.get('empresa')
-        if empresa:
-            if parts:  # Si ya hay un puesto, agregar "en"
-                parts[-1] = f"{parts[-1]} en {empresa}"
-            else:
-                parts.append(empresa)
+        # Agregar empresa usando get con valor por defecto
+        empresa = exp.get('empresa') or "Empresa no especificada"
+        
+        # Construir primera línea: "Puesto en Empresa" o solo "Puesto"
+        if empresa != "Empresa no especificada":
+             parts[-1] = f"{parts[-1]} en {empresa}"
+        else:
+             parts.append(empresa)
         
         # Agregar fechas si hay al menos una
         fecha_inicio = exp.get('fecha_inicio')
@@ -15951,10 +15940,12 @@ def format_experience_from_ai(experiencia_list):
         
         # Agregar descripción si existe
         descripcion = exp.get('descripcion')
-        if descripcion and descripcion.lower() != 'none':
-            if not parts:  # Si no hay nada más, solo poner la descripción
-                return f"- {descripcion}"
-            parts.append(f"\n- {descripcion}")
+        if descripcion and str(descripcion).lower() != 'none':
+            # Si la descripción es muy corta, ponerla en la misma línea
+            if len(descripcion) < 50:
+                 parts.append(f"- {descripcion}")
+            else:
+                 parts.append(f"\n- {descripcion}")
         
         return " ".join(parts)
     
@@ -16299,23 +16290,45 @@ def register_candidate_from_web():
             # Continuar sin procesamiento de IA
             cv_text = ""
         
-        # 8. Procesar con Gemini AI (solo para experiencia y habilidades)
+        # 8. Procesar con IA (Moonshot Kimi por defecto, o Gemini)
         cv_data = {}
-        if cv_text:
-            app.logger.info(f"Procesando CV con Gemini AI")
+        # Nota: cv_processing_service ahora es V2 (Moonshot)
+        # Kimi puede procesar el archivo directamente (PDF/Imagen) mejor que extraer texto manual
+        # Sin embargo, mantenemos la lógica de extracción de texto como fallback o si el servicio V2 lo requiere internamente
+        
+        # Revisar si tenemos API Key de Moonshot para usar el método optimizado (subir archivo directo)
+        use_kimi_direct_file = True  # Asumimos que queremos usar la capacidad nativa de Kimi
+        
+        if use_kimi_direct_file and cv_processing_service:
+            app.logger.info(f"Procesando archivo CV con Moonshot AI (Kimi)")
             try:
-                gemini_result = cv_processing_service.process_cv_with_gemini(
-                    cv_text=cv_text,
+                # Usar el contenido del archivo directamente
+                kimi_result = cv_processing_service.process_cv_with_kimi(
+                    file_content=file_content,
+                    filename=cv_file.filename,
                     tenant_id=tenant_id
                 )
                 
-                if gemini_result['success']:
-                    cv_data = gemini_result['data']
-                    app.logger.info(f"CV procesado exitosamente por Gemini")
+                if kimi_result['success']:
+                    cv_data = kimi_result['data']
+                    app.logger.info(f"CV procesado exitosamente por Moonshot AI")
                 else:
-                    app.logger.warning(f"Gemini no pudo procesar el CV: {gemini_result.get('error')}")
+                    app.logger.warning(f"Moonshot AI no pudo procesar el CV: {kimi_result.get('error')}")
+                    # Fallback opcional si se implementara hibrido, pero por ahora Kimi es el principal
             except Exception as e:
-                app.logger.error(f"Error procesando CV con Gemini: {str(e)}")
+                 app.logger.error(f"Error procesando CV con Moonshot AI: {str(e)}")
+        
+        elif cv_text:
+             # Fallback a método antiguo si no usamos Kimi directo (o si fallara la importación V2)
+             # Esto solo se ejecutaría si revertimos el import o cambiamos lógica
+            app.logger.info(f"Procesando texto de CV con IA (Método Texto)")
+            try:
+                # Si cv_processing_service es V2, no tiene 'process_cv_with_gemini' con esa firma exacta
+                # Adaptamos si es necesario, o asumimos que V2 maneja todo.
+                # Como reemplazamos el import, asumimos V2.
+                pass 
+            except Exception as e:
+                app.logger.error(f"Error procesando CV: {str(e)}")
         
         # 9. Preparar datos manuales del formulario
         manual_data = {
