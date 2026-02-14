@@ -242,6 +242,77 @@ class CVProcessingServiceV2:
             logger.error(f"Error procesando imágenes con Kimi: {str(e)}")
             return {'success': False, 'error': str(e)}
 
+    def process_cv_text(self, cv_text: str, tenant_id: int) -> Dict[str, Any]:
+        """
+        Procesar CV desde texto extraído usando NVIDIA API (Kimi)
+        """
+        if not self.moonshot_api_key:
+            return {'success': False, 'error': 'MOONSHOT_API_KEY no configurada'}
+            
+        if not cv_text or len(cv_text.strip()) < 50:
+            return {'success': False, 'error': 'Texto del CV insuficiente para procesar'}
+            
+        try:
+            prompt = f"""
+            Eres un experto en Recursos Humanos. Analiza este CV y extrae la información en JSON estricto.
+            
+            INSTRUCCIONES:
+            1. Extrae y estructura TODA la información del CV.
+            2. Usa null para datos faltantes.
+            3. Devuelve SOLO JSON válido, sin texto adicional.
+            
+            ESQUEMA JSON:
+            {{
+                "personal_info": {{ "nombre_completo": "string", "email": "string", "telefono": "string", "ciudad": "string", "pais": "string" }},
+                "experiencia": [ {{ "empresa": "string", "puesto": "string", "fecha_inicio": "string", "fecha_fin": "string", "descripcion": "string", "habilidades": ["string"] }} ],
+                "educacion": [ {{ "institucion": "string", "titulo": "string", "fecha_inicio": "string", "fecha_fin": "string", "grado": "string" }} ],
+                "habilidades": {{ "tecnicas": [], "blandas": [], "idiomas": [{{ "idioma": "string", "nivel": "string" }}] }},
+                "resumen": "string"
+            }}
+            
+            TEXTO DEL CV:
+            {cv_text}
+            """
+            
+            url = f"{self.base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.moonshot_api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+            
+            data = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 4096,
+                "stream": False
+            }
+            
+            response = requests.post(url, headers=headers, json=data, timeout=120)
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['choices'][0]['message'].get('content', '')
+                
+                if not content:
+                    return {'success': False, 'error': f"Respuesta vacía de NVIDIA API. Finish reason: {result['choices'][0]['finish_reason']}"}
+                
+                # Limpiar markdown
+                content = content.replace("```json", "").replace("```", "").strip()
+                
+                try:
+                    extracted_data = json.loads(content)
+                    return {'success': True, 'data': extracted_data}
+                except json.JSONDecodeError:
+                    return {'success': False, 'error': f"Error parseando JSON: {content[:100]}..."}
+            else:
+                return {'success': False, 'error': f"Error NVIDIA API ({response.status_code}): {response.text}"}
+                
+        except Exception as e:
+            logger.error(f"Error procesando texto con Kimi: {str(e)}")
+            return {'success': False, 'error': str(e)}
+
 
     def validate_cv_data(self, cv_data: Union[Dict[str, Any], List[Any]]) -> Dict[str, Any]:
         """
