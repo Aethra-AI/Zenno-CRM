@@ -61,17 +61,21 @@ class CVProcessingService:
         # Filtrar APIs válidas
         self.gemini_api_keys = [key for key in self.gemini_api_keys if key]
         
-        # Usar el modelo gemini-2.0-flash
+        # Configuración de NVIDIA NIM (Moonshot Kimi)
+        self.nvidia_api_key = os.getenv('MOONSHOT_API_KEY')
+        self.nvidia_api_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        self.nvidia_model = "moonshotai/kimi-k2.5"
+        
+        # Usar el modelo gemini-2.0-flash para fallback
         self.gemini_api_url = os.getenv('GEMINI_API_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent')
         
-        # Rate limiting: 60 peticiones por minuto por API (Gemini 2.0 Flash)
-        self.rate_limit_per_api = 60
-        self.rate_limit_window = 60  # segundos
+        if self.nvidia_api_key:
+            logger.info("NVIDIA NIM (Moonshot Kimi) configurado como proveedor principal")
         
         if not self.gemini_api_keys:
-            logger.warning("No se encontraron APIs de Gemini en variables de entorno")
+            logger.warning("No se encontraron APIs de Gemini para respaldo")
         else:
-            logger.info(f"Inicializado con {len(self.gemini_api_keys)} APIs de Gemini disponibles")
+            logger.info(f"Configuradas {len(self.gemini_api_keys)} APIs de Gemini para respaldo")
     
     def extract_text_from_pdf(self, file_content: bytes) -> str:
         """
@@ -154,18 +158,106 @@ class CVProcessingService:
             logger.error(f"Error extrayendo texto del archivo {filename}: {str(e)}")
             raise
     
-    def process_cv_with_gemini(self, cv_text: str, tenant_id: int, api_index: int = 0) -> Dict[str, Any]:
+    def process_cv_with_ai(self, cv_text: str, tenant_id: int, api_index: int = 0) -> Dict[str, Any]:
         """
-        Procesar CV con Gemini AI para extraer información estructurada
-        
-        Args:
-            cv_text: Texto del CV
-            tenant_id: ID del tenant
-            api_index: Índice de la API a usar (0, 1, 2)
+        Procesar CV con IA (NVIDIA NIM por defecto, Gemini como fallback)
+        """
+        # 1. Intentar con NVIDIA NIM primero
+        if self.nvidia_api_key:
+            logger.info(f"Intentando procesar CV con NVIDIA NIM ({self.nvidia_model})...")
+            nvidia_result = self._process_with_nvidia(cv_text)
+            if nvidia_result.get('success'):
+                logger.info("✅ CV procesado exitosamente con NVIDIA NIM")
+                return nvidia_result
             
-        Returns:
-            Dict con información estructurada del candidato
-        """
+            logger.warning(f"⚠️ NVIDIA NIM falló: {nvidia_result.get('error')}. Intentando fallback a Gemini...")
+        
+        # 2. Fallback a Gemini
+        return self._process_with_gemini(cv_text, tenant_id, api_index)
+
+    def _process_with_nvidia(self, cv_text: str) -> Dict[str, Any]:
+        """Procesamiento interno usando NVIDIA NIM"""
+        try:
+            prompt = self._get_cv_prompt(cv_text)
+            
+            headers = {
+                "Authorization": f"Bearer {self.nvidia_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": self.nvidia_model,
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.1,
+                "top_p": 0.7,
+                "max_tokens": 4096
+            }
+            
+            response = requests.post(self.nvidia_api_url, headers=headers, json=payload, timeout=180)
+            
+            if response.status_code != 200:
+                return {"success": False, "error": f"NVIDIA API Error {response.status_code}: {response.text}"}
+            
+            response_data = response.json()
+            content = response_data['choices'][0]['message']['content'].strip()
+            
+            # Limpiar posibles bloques de código markdown
+            if content.startswith('```json'): content = content[7:-3].strip()
+            elif content.startswith('```'): content = content[3:-3].strip()
+            
+            parsed_data = json.loads(content)
+            return {"success": True, "data": parsed_data}
+            
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_cv_prompt(self, cv_text: str) -> str:
+        """Generar el prompt estándar para procesamiento de CV"""
+        return f"""
+            Eres un asistente experto en análisis de CVs. 
+            Tu tarea es analizar el siguiente CV y extraer la información en el formato JSON especificado.
+            Responde ÚNICAMENTE con el objeto JSON válido, sin texto adicional antes o después.
+            
+            ESQUEMA REQUERIDO:
+            {{
+                "personal_info": {{
+                    "nombre_completo": "string",
+                    "email": "string",
+                    "telefono": "string",
+                    "ciudad": "string",
+                    "pais": "string"
+                }},
+                "experiencia": [{{
+                    "empresa": "string",
+                    "posicion": "string",
+                    "fecha_inicio": "string (YYYY-MM-DD)",
+                    "fecha_fin": "string (YYYY-MM-DD o 'actual')",
+                    "descripcion": "string (logros)",
+                    "habilidades": ["string"]
+                }}],
+                "educacion": [{{
+                    "institucion": "string",
+                    "titulo": "string",
+                    "fecha_inicio": "string",
+                    "fecha_fin": "string",
+                    "grado": "string"
+                }}],
+                "habilidades": {{
+                    "tecnicas": ["string"],
+                    "blandas": ["string"],
+                    "idiomas": [{{ "idioma": "string", "nivel": "string" }}]
+                }},
+                "resumen": "string"
+            }}
+            
+            CV A ANALIZAR:
+            {cv_text}
+            """
+
+    def _process_with_gemini(self, cv_text: str, tenant_id: int, api_index: int = 0) -> Dict[str, Any]:
+        """Procesamiento interno usando Gemini (anterior process_cv_with_ai)"""
         try:
             if not self.gemini_api_keys:
                 raise ValueError("No hay APIs de Gemini configuradas")
@@ -206,7 +298,7 @@ class CVProcessingService:
                 },
                 "experiencia": [{
                     "empresa": "string (obligatorio)",
-                    "puesto": "string (obligatorio)",
+                    "posicion": "string (obligatorio)",
                     "fecha_inicio": "string (formato YYYY-MM-DD, estimar si no está claro)",
                     "fecha_fin": "string (formato YYYY-MM-DD o 'actual' si aún trabaja allí)",
                     "descripcion": "string (3-5 puntos destacando logros y responsabilidades)",
@@ -242,7 +334,7 @@ class CVProcessingService:
                 "experiencia": [
                     {{
                         "empresa": "Empresa Tecnológica SA",
-                        "puesto": "Desarrollador Senior",
+                        "posicion": "Desarrollador Senior",
                         "fecha_inicio": "2020-01-01",
                         "fecha_fin": "actual",
                         "descripcion": "Desarrollo de aplicaciones web con React y Node.js. Liderazgo de equipo de 5 desarrolladores. Implementación de prácticas ágiles.",
@@ -364,7 +456,7 @@ class CVProcessingService:
                     if 'experiencia' in parsed_response:
                         logger.info(f"Experiencia extraída: {len(parsed_response['experiencia'])} trabajos")
                         for i, exp in enumerate(parsed_response.get('experiencia', []), 1):
-                            logger.info(f"  Trabajo {i}: {exp.get('puesto', 'Sin puesto')} en {exp.get('empresa', 'Sin empresa')}")
+                            logger.info(f"  Trabajo {i}: {exp.get('posicion', 'Sin puesto')} en {exp.get('empresa', 'Sin empresa')}")
                     
                     # Registrar habilidades extraídas
                     if 'habilidades' in parsed_response:
@@ -695,7 +787,7 @@ class CVProcessingService:
                 if delay > 0:
                     time.sleep(delay)
                 
-                result = self.process_cv_with_gemini(cv_text, tenant_id, api_index)
+                result = self.process_cv_with_ai(cv_text, tenant_id, api_index)
                 return index, result
                     
             except Exception as e:
