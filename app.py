@@ -15209,8 +15209,8 @@ def save_cv_to_database(tenant_id, candidate_id, cv_identifier, original_filenam
         def format_experience(exp):
             parts = []
             
-            # Agregar puesto/posicion si existe
-            puesto = exp.get('posicion') or exp.get('puesto')
+            # Agregar puesto si existe
+            puesto = exp.get('puesto')
             if puesto:
                 parts.append(puesto)
             
@@ -15925,8 +15925,8 @@ def format_experience_from_ai(experiencia_list):
     def format_experience(exp):
         parts = []
         
-        # Agregar puesto/posicion si existe
-        puesto = exp.get('posicion') or exp.get('puesto')
+        # Agregar puesto si existe
+        puesto = exp.get('puesto')
         if puesto:
             parts.append(puesto)
         
