@@ -12270,7 +12270,7 @@ def upload_cvs():
                     )
                     
                     # Procesar con Gemini
-                    gemini_result = cv_processing_service.process_cv_with_ai(
+                    gemini_result = cv_processing_service.process_cv_with_gemini(
                         cv_text=cv_text,
                         tenant_id=tenant_id
                     )
@@ -13259,7 +13259,7 @@ def upload_cv_to_oci():
                 )
                 
                 # 2. Procesar con Gemini
-                gemini_result = cv_processing_service.process_cv_with_ai(
+                gemini_result = cv_processing_service.process_cv_with_gemini(
                     cv_text=cv_text,
                     tenant_id=tenant_id
                 )
@@ -13483,7 +13483,7 @@ def upload_multiple_cvs_to_oci():
                                         )
                                         
                                         # 2. Procesar con Gemini
-                                        gemini_result = cv_processing_service.process_cv_with_ai(
+                                        gemini_result = cv_processing_service.process_cv_with_gemini(
                                             cv_text=cv_text,
                                             tenant_id=tenant_id
                                         )
@@ -13830,7 +13830,7 @@ def process_existing_cv(cv_identifier):
             # Simular extracción de texto (en implementación real, descargarías el archivo)
             cv_text = "Texto del CV extraído..."  # Placeholder
             
-            gemini_result = cv_processing_service.process_cv_with_ai(
+            gemini_result = cv_processing_service.process_cv_with_gemini(
                 cv_text=cv_text,
                 tenant_id=tenant_id
             )
@@ -16304,7 +16304,7 @@ def register_candidate_from_web():
         if cv_text:
             app.logger.info(f"Procesando CV con Gemini AI")
             try:
-                gemini_result = cv_processing_service.process_cv_with_ai(
+                gemini_result = cv_processing_service.process_cv_with_gemini(
                     cv_text=cv_text,
                     tenant_id=tenant_id
                 )
