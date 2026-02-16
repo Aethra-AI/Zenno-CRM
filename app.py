@@ -16302,7 +16302,7 @@ def register_candidate_from_web():
         # 8. Procesar con Gemini AI (solo para experiencia y habilidades)
         cv_data = {}
         if cv_text:
-            app.logger.info(f"Procesando CV con Gemini AI")
+            app.logger.info(f"Procesando CV con Gemini AI. Longitud del texto: {len(cv_text)} caracteres")
             try:
                 gemini_result = cv_processing_service.process_cv_with_gemini(
                     cv_text=cv_text,
@@ -16310,8 +16310,19 @@ def register_candidate_from_web():
                 )
                 
                 if gemini_result['success']:
-                    cv_data = gemini_result['data']
-                    app.logger.info(f"CV procesado exitosamente por Gemini")
+                    raw_data = gemini_result['data']
+                    app.logger.info(f"CV procesado exitosamente por Gemini. Datos crudos recibidos.")
+                    
+                    # VALIDAR DATOS ANTES DE USARLOS
+                    validation_result = cv_processing_service.validate_cv_data(raw_data)
+                    
+                    if validation_result['success']:
+                        cv_data = validation_result['validated_data']
+                        app.logger.info("Datos de CV validados y normalizados exitosamente")
+                    else:
+                        app.logger.warning(f"Error en validación de datos del CV: {validation_result.get('error')}")
+                        # Intentar usar datos crudos como fallback o dejar vacío
+                        cv_data = raw_data if isinstance(raw_data, dict) else {}
                 else:
                     app.logger.warning(f"Gemini no pudo procesar el CV: {gemini_result.get('error')}")
             except Exception as e:
