@@ -12269,8 +12269,8 @@ def upload_cvs():
                         filename=file.filename
                     )
                     
-                    # Procesar con Gemini
-                    gemini_result = cv_processing_service.process_cv_with_gemini(
+                    # Procesar CV con NVIDIA AI
+                    gemini_result = cv_processing_service.process_cv_with_nvidia(
                         cv_text=cv_text,
                         tenant_id=tenant_id
                     )
@@ -13258,16 +13258,16 @@ def upload_cv_to_oci():
                     filename=file.filename
                 )
                 
-                # 2. Procesar con Gemini
-                gemini_result = cv_processing_service.process_cv_with_gemini(
+                # Procesar CV con NVIDIA AI
+                nvidia_result = cv_processing_service.process_cv_with_nvidia(
                     cv_text=cv_text,
                     tenant_id=tenant_id
                 )
                 
-                if gemini_result['success']:
+                if nvidia_result['success']:
                     # Validar datos procesados
                     validation_result = cv_processing_service.validate_cv_data(
-                        gemini_result['data']
+                        nvidia_result['data']
                     )
                     
                     if validation_result['success']:
@@ -13482,8 +13482,8 @@ def upload_multiple_cvs_to_oci():
                                             filename=file.filename
                                         )
                                         
-                                        # 2. Procesar con Gemini
-                                        gemini_result = cv_processing_service.process_cv_with_gemini(
+                                        # Procesar CV con NVIDIA AI
+                                        gemini_result = cv_processing_service.process_cv_with_nvidia(
                                             cv_text=cv_text,
                                             tenant_id=tenant_id
                                         )
@@ -16302,9 +16302,9 @@ def register_candidate_from_web():
         # 8. Procesar con Gemini AI (solo para experiencia y habilidades)
         cv_data = {}
         if cv_text:
-            app.logger.info(f"Procesando CV con Gemini AI. Longitud del texto: {len(cv_text)} caracteres")
+            app.logger.info(f"Procesando CV con NVIDIA AI (Kimi). Longitud del texto: {len(cv_text)} caracteres")
             try:
-                gemini_result = cv_processing_service.process_cv_with_gemini(
+                gemini_result = cv_processing_service.process_cv_with_nvidia(
                     cv_text=cv_text,
                     tenant_id=tenant_id
                 )

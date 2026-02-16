@@ -101,7 +101,7 @@ class CVProcessingService:
     
     def extract_text_from_docx(self, file_content: bytes) -> str:
         """
-        Extraer texto de archivo DOCX
+        Extraer texto de archivo DOCX, incluyendo párrafos y tablas
         
         Args:
             file_content: Contenido del archivo DOCX
@@ -114,12 +114,25 @@ class CVProcessingService:
                 raise ImportError("python-docx no está instalado")
             
             doc = Document(BytesIO(file_content))
-            text = ""
+            text_parts = []
             
+            # 1. Extraer de párrafos (cuerpo principal)
             for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
+                if paragraph.text.strip():
+                    text_parts.append(paragraph.text)
             
-            return text.strip()
+            # 2. Extraer de tablas (común en CVs)
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        for paragraph in cell.paragraphs:
+                            text = paragraph.text.strip()
+                            if text:
+                                text_parts.append(text)
+                                
+            full_text = "\n".join(text_parts)
+            logger.info(f"Extracción DOCX: {len(full_text)} caracteres encontrados en párrafos y {len(doc.tables)} tablas")
+            return full_text
             
         except Exception as e:
             logger.error(f"Error extrayendo texto de DOCX: {str(e)}")
@@ -304,12 +317,38 @@ class CVProcessingService:
                 if response.status_code != 200:
                     error_msg = f"Error en Gemini API ({response.status_code}): {response.text}"
                     logger.error(error_msg)
-                    return {
-                        'success': False,
-                        'error': error_msg,
-                        'response_status': response.status_code,
-                        'response_text': response.text[:1000]  # Primeros 1000 caracteres del error
-                    }
+                    
+                    # RETRY LOGIC FOR 429 (Too Many Requests)
+                    if response.status_code == 429:
+                        logger.warning("Rate limit excedido (429). Intentando reintento con backoff...")
+                        time.sleep(5)  # Esperar 5 segundos
+                        # Reintento simple (idealmente debería ser un bucle o recursivo, pero esto ayuda)
+                        try:
+                            response = requests.post(
+                                f"{self.gemini_api_url}?key={selected_api_key}",
+                                headers=headers,
+                                json=data,
+                                timeout=120
+                            )
+                            if response.status_code == 200:
+                                logger.info("Reintento exitoso!")
+                            else:
+                                logger.error(f"Reintento falló con status {response.status_code}")
+                                return {
+                                    'success': False,
+                                    'error': f"Rate limit persistente: {response.text}",
+                                    'response_status': response.status_code
+                                }
+                        except Exception as retry_e:
+                            logger.error(f"Error en reintento: {retry_e}")
+
+                    if response.status_code != 200: # Si sigue fallando
+                         return {
+                            'success': False,
+                            'error': error_msg,
+                            'response_status': response.status_code,
+                            'response_text': response.text[:1000]
+                        }
                 
                 # Procesar respuesta JSON
                 response_data = response.json()
@@ -446,6 +485,150 @@ class CVProcessingService:
             
         except Exception as e:
             logger.error(f"Error procesando CV con Gemini: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def process_cv_with_nvidia(self, cv_text: str, tenant_id: int) -> Dict[str, Any]:
+        """
+        Procesar CV con NVIDIA API (MoonshotAI Kimi-k2.5) para extraer información estructurada
+        Reemplaza a Gemini para mejorar estabilidad y rate limits.
+        
+        Args:
+            cv_text: Texto del CV
+            tenant_id: ID del tenant
+            
+        Returns:
+            Dict con información estructurada del candidato
+        """
+        nvidia_api_key = os.getenv('NVIDIA_API_KEY', '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')
+        nvidia_api_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+        
+        try:
+            logger.info("Iniciando procesamiento de CV con NVIDIA API (Kimi k2.5)")
+            
+            # Reutilizar el prompt detallado de Gemini para consistencia
+            prompt = f"""
+            Eres un asistente experto en análisis de CVs con amplia experiencia en recursos humanos. 
+            Tu tarea es analizar meticulosamente el siguiente CV y extraer TODA la información relevante.
+            
+            INSTRUCCIONES DETALLADAS:
+            1. Lee TODO el contenido del CV sin omitir secciones
+            2. Extrae TODA la información relevante, especialmente experiencia y habilidades
+            3. Para la experiencia, asegúrate de incluir TODOS los trabajos con sus respectivos detalles
+            4. Para habilidades, extrae tanto habilidades técnicas como blandas, incluyendo tecnologías, herramientas y metodologías
+            5. Sigue ESTRICTAMENTE el esquema JSON proporcionado
+            6. Si un campo no aplica, usa null
+            7. No incluyas ningún texto fuera del JSON (ni markdown, ni ```json)
+            
+            ESQUEMA REQUERIDO:
+            {json.dumps({
+                "personal_info": {
+                    "nombre_completo": "string | null",
+                    "email": "string | null",
+                    "telefono": "string | null",
+                    "ciudad": "string | null",
+                    "pais": "string | null",
+                    "linkedin": "string | null",
+                    "portfolio": "string | null"
+                },
+                "experiencia": [{
+                    "empresa": "string (obligatorio)",
+                    "puesto": "string (obligatorio)",
+                    "fecha_inicio": "string (formato YYYY-MM-DD, estimar si no está claro)",
+                    "fecha_fin": "string (formato YYYY-MM-DD o 'actual' si aún trabaja allí)",
+                    "descripcion": "string (3-5 puntos destacando logros y responsabilidades)",
+                    "habilidades": ["string (habilidades específicas usadas en este trabajo)"]
+                }],
+                "educacion": [{
+                    "institucion": "string",
+                    "titulo": "string (ej: 'Ingeniería en Sistemas')",
+                    "fecha_inicio": "string (YYYY-MM)",
+                    "fecha_fin": "string (YYYY-MM o 'actual')",
+                    "grado": "string (ej: 'Licenciatura', 'Maestría')"
+                }],
+                "habilidades": {
+                    "tecnicas": ["string (ej: 'Python', 'React', 'SQL')"],
+                    "blandas": ["string (ej: 'Liderazgo', 'Trabajo en equipo')"],
+                    "idiomas": [{
+                        "idioma": "string",
+                        "nivel": "string (básico/intermedio/avanzado/nativo)"
+                    }]
+                },
+                "resumen": "string (resumen profesional de 3-4 oraciones)"
+            }, indent=2, ensure_ascii=False)}
+            
+            CV A ANALIZAR:
+            {cv_text}
+            
+            IMPORTANTE: Devuelve SOLO el JSON válido.
+            """
+            
+            headers = {
+                "Authorization": f"Bearer {nvidia_api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "moonshotai/kimi-k2.5",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 4096,
+                "temperature": 0.1,
+                "top_p": 0.9,
+                "stream": False
+            }
+            
+            logger.info(f"Enviando solicitud a NVIDIA API (Kimi k2.5) con prompt de {len(prompt)} caracteres")
+            
+            response = requests.post(nvidia_api_url, headers=headers, json=payload, timeout=120)
+            
+            logger.info(f"Respuesta de NVIDIA - Status: {response.status_code}")
+            
+            if response.status_code != 200:
+                error_msg = f"Error en NVIDIA API ({response.status_code}): {response.text}"
+                logger.error(error_msg)
+                return {
+                    'success': False,
+                    'error': error_msg,
+                    'response_status': response.status_code
+                }
+                
+            response_json = response.json()
+            
+            # Extraer contenido (OpenAI format)
+            if 'choices' in response_json and len(response_json['choices']) > 0:
+                content = response_json['choices'][0]['message']['content']
+                logger.info("Contenido recibido de NVIDIA API")
+                
+                # Limpiar markdown si existe
+                clean_content = content.replace("```json", "").replace("```", "").strip()
+                
+                try:
+                    parsed_data = json.loads(clean_content)
+                    logger.info("Respuesta de NVIDIA parseada correctamente como JSON")
+                    return {
+                        'success': True,
+                        'data': parsed_data,
+                        'raw_response': content[:500]
+                    }
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error parseando JSON de NVIDIA: {e}. Contenido: {clean_content[:200]}...")
+                    return {
+                        'success': False,
+                        'error': f"JSON inválido de NVIDIA: {str(e)}",
+                        'raw_response': content
+                    }
+            else:
+                return {
+                    'success': False,
+                    'error': "Respuesta de NVIDIA sin 'choices'",
+                    'raw_response': str(response_json)
+                }
+                
+        except Exception as e:
+            logger.error(f"Excepción en process_cv_with_nvidia: {str(e)}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e)
