@@ -16732,7 +16732,7 @@ def proxy_agent_chat():
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
-    agent_url = f"http://esc-agent-tenant-{tenant_id}:18791/chat"
+    agent_url = f"http://localhost:{19000 + tenant_id}/chat"
     
     try:
         response = requests.post(agent_url, json={"message": message}, timeout=60)

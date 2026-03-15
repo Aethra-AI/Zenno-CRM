@@ -5,6 +5,10 @@
     "thinking": "balanced",
     "model": "${BRAIN_MODEL}"
   },
+  "server": {
+    "enabled": true,
+    "port": 18791
+  },
   "identity": {
     "name": "Asistente de Reclutamiento",
     "creature": "Empleado Digital ESC",
