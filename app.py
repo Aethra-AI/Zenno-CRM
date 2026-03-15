@@ -16737,7 +16737,8 @@ def proxy_agent_chat():
     try:
         payload = {
             "model": "main",
-            "messages": [{"role": "user", "content": message}]
+            "messages": [{"role": "user", "content": message}],
+            "user": f"tenant-{tenant_id}"
         }
         headers = {
             "Authorization": "Bearer esc-agent-token-secure-v2",

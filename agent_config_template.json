@@ -10,8 +10,8 @@
     "controlUi": {
       "allowedOrigins": ["*"]
     },
-    "capabilities": {
-      "httpApi": "all"
+    "openai": {
+      "enabled": true
     }
   },
   "agents": {
