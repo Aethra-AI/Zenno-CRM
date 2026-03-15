@@ -1,0 +1,33 @@
+# Configuración Maestra para Agente ESC por Tenant
+# Este archivo será inyectado por el orquestador Docker
+
+agent:
+  id: "esc-tenant-agent"
+  label: "Asistente ESC"
+  thinking: "balanced"
+  model: "google/gemini-2.0-flash-001" # O el modelo que definas como estándar
+
+identity:
+  name: "Asistente de Reclutamiento"
+  creature: "Empleado Digital ESC"
+  vibe: "Profesional, proactivo y amable"
+  emoji: "🏢"
+
+# Canales por defecto (se configurarán vía comandos por el usuario)
+channels:
+  whatsapp:
+    enabled: true
+    # La sesión se guardará en /app/data/whatsapp_session
+  
+# Skills instaladas por defecto
+skills:
+  - name: "esc-crm-integration"
+    location: "./skills/esc-crm-integration"
+    config:
+      url: "${ESC_CRM_URL}"
+      api_key: "${ESC_TENANT_API_KEY}"
+
+# Memoria persistente
+memory:
+  path: "./memory"
+  soul: "./skills/esc-crm-integration/SOUL.md"

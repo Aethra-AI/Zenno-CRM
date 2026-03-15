@@ -1,0 +1,51 @@
+# Dockerfile para Instancias de Clawdbot ESC
+# Propiedad de ESC (Expertos en Selección y Contratación)
+
+FROM node:20-slim
+
+# Instalar dependencias para Clawdbot y Playwright (necesario para WhatsApp)
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxext6 \
+    libxfixes3 \
+    librandr2 \
+    libgbm1 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libpango-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Crear directorio de la app
+WORKDIR /app
+
+# Instalar Clawdbot globalmente
+RUN npm install -g clawdbot
+
+# Copiar archivos base
+COPY agent_config_template.yaml /app/config.yaml
+COPY skills/ /app/skills/
+COPY requirements_agent.txt /app/
+
+# Instalar dependencias Python de las skills
+RUN pip3 install -r requirements_agent.txt
+
+# Directorio para persistencia (Memoria y Sesiones)
+RUN mkdir -p /app/memory /app/data
+VOLUME ["/app/memory", "/app/data"]
+
+# Exponer puerto para chat externo (si se requiere)
+EXPOSE 18791
+
+# Comando de arranque
+# Se espera que las API Keys (LLM y CRM) se pasen como env vars
+CMD ["clawdbot", "start", "--config", "/app/config.yaml"]
