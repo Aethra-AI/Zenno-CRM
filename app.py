@@ -16732,11 +16732,11 @@ def proxy_agent_chat():
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
-    agent_url = f"http://localhost:{19000 + tenant_id}/v1/chat/completions"
+    agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     
     try:
         payload = {
-            "model": "balanced",
+            "model": "main",
             "messages": [{"role": "user", "content": message}]
         }
         headers = {

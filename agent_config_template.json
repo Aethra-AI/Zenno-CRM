@@ -5,8 +5,8 @@
     }
   },
   "gateway": {
-    "mode": "remote",
-    "bind": "0.0.0.0",
+    "mode": "local",
+    "bind": "lan",
     "port": 18789,
     "auth": {
       "mode": "token",
