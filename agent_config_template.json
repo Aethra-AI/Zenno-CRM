@@ -9,9 +9,6 @@
     },
     "controlUi": {
       "allowedOrigins": ["*"]
-    },
-    "multiplex": {
-      "openai": true
     }
   },
   "agents": {
@@ -31,8 +28,7 @@
         "skills": [
           "esc-crm-integration",
           "pollination"
-        ],
-        "allowedChannels": ["webchat", "openai"]
+        ]
       }
     ]
   },
