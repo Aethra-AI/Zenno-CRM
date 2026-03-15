@@ -1,28 +1,21 @@
 {
   "gateway": {
+    "port": 18789,
     "mode": "local",
     "bind": "lan",
-    "port": 18789,
+    "controlUi": {
+      "allowedOrigins": [
+        "*"
+      ]
+    },
     "auth": {
       "mode": "token",
       "token": "esc-agent-token-secure-v2"
-    },
-    "controlUi": {
-      "allowedOrigins": ["*"]
-    },
-    "routing": "per-sender",
-    "rpc": {
-      "enabled": true
     }
   },
   "channels": {
-    "api": {
-      "enabled": true,
-      "allow_from": ["*"]
-    },
     "custom_api": {
-      "enabled": true,
-      "allow_from": ["*"]
+      "enabled": true
     }
   },
   "agents": {
@@ -34,15 +27,15 @@
     "list": [
       {
         "id": "main",
+        "skills": [
+          "esc-crm-integration",
+          "pollination"
+        ],
         "identity": {
           "name": "Asistente de Reclutamiento",
           "theme": "Profesional, proactivo y amable",
           "emoji": "🏢"
-        },
-        "skills": [
-          "esc-crm-integration",
-          "pollination"
-        ]
+        }
       }
     ]
   },

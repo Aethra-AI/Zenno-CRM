@@ -16740,7 +16740,7 @@ def proxy_agent_chat():
     
     try:
         payload = {
-            "channel": "api",
+            "channel": "custom_api",
             "sender_id": f"tenant-{tenant_id}",
             "text": message,
             "metadata": {"role": "admin"}
