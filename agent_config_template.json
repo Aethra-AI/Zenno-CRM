@@ -3,7 +3,7 @@
     "id": "esc-tenant-agent",
     "label": "Asistente ESC",
     "thinking": "balanced",
-    "model": "kimi-k2.5"
+    "model": "${BRAIN_MODEL}"
   },
   "identity": {
     "name": "Asistente de Reclutamiento",
