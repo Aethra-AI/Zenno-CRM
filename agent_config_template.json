@@ -10,7 +10,9 @@
     "controlUi": {
       "allowedOrigins": ["*"]
     },
-    "multiplex": ["openai"]
+    "multiplex": {
+      "openai": true
+    }
   },
   "agents": {
     "defaults": {
