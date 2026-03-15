@@ -4,7 +4,7 @@ import logging
 import json
 
 # Configuración del orquestador
-AGENT_IMAGE_NAME = "esc-agent-image"
+AGENT_IMAGE_NAME = "openclaw-tenant-agent"
 BASE_DATA_PATH = "/opt/esc-crm/agents-data" # Ruta en la VM para persistencia
 DOCKER_NETWORK = "esc-network"
 
@@ -36,7 +36,7 @@ class AgentOrchestrator:
             logger.error(f"Error construyendo imagen: {result.stderr}")
             return False
 
-    def deploy_agent(self, tenant_id, tenant_api_key, llm_api_key, crm_url):
+    def deploy_agent(self, tenant_id, tenant_api_key, llm_api_key, crm_url, pollination_key=None):
         """
         Despliega o reinicia el agente único para un Tenant.
         """
@@ -55,10 +55,14 @@ class AgentOrchestrator:
             "docker", "run", "-d",
             "--name", container_name,
             "--network", DOCKER_NETWORK,
+            "--memory", "1g",
+            "--cpus", "0.3",
             "-v", f"{tenant_data_path}:/app/data",
             "-e", f"OPENAI_API_KEY={llm_api_key}",
             "-e", f"ESC_TENANT_API_KEY={tenant_api_key}",
             "-e", f"ESC_CRM_URL={crm_url}",
+            "-e", f"POLLINATION_API_KEY={pollination_key or ''}",
+            "-e", f"BRAIN_MODEL=kimi-k2.5",
             "--restart", "unless-stopped",
             AGENT_IMAGE_NAME
         ]

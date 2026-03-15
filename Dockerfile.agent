@@ -28,8 +28,8 @@ RUN apt-get update && apt-get install -y \
 # Crear directorio de la app
 WORKDIR /app
 
-# Instalar Clawdbot globalmente
-RUN npm install -g clawdbot
+# Instalar OpenClaw globalmente
+RUN npm install -g openclaw
 
 # Copiar archivos base
 COPY agent_config_template.yaml /app/config.yaml

@@ -26,8 +26,13 @@ skills:
     config:
       url: "${ESC_CRM_URL}"
       api_key: "${ESC_TENANT_API_KEY}"
+  - name: "pollination"
+    location: "./skills/pollination"
+    config:
+      api_key: "${POLLINATION_API_KEY}"
 
-# Memoria persistente
+agent:
+  model: "kimi-k2.5"
 memory:
   path: "./memory"
   soul: "./skills/esc-crm-integration/SOUL.md"
