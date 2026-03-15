@@ -1,12 +1,9 @@
 {
   "api": {
-    "openai": {
-      "enabled": true
-    }
+    "enabled": true
   },
   "gateway": {
-    "mode": "local",
-    "bind": "lan",
+    "bind": "0.0.0.0",
     "port": 18789,
     "auth": {
       "mode": "token",
@@ -17,35 +14,29 @@
     "defaults": {
       "model": {
         "primary": "${BRAIN_MODEL}"
-      },
-      "thinking": "balanced"
+      }
     },
     "list": [
       {
         "id": "main",
         "identity": {
           "name": "Asistente de Reclutamiento",
-          "creature": "Empleado Digital ESC",
-          "vibe": "Profesional, proactivo y amable",
+          "theme": "Profesional, proactivo y amable",
           "emoji": "🏢"
         },
         "skills": [
-          {
-            "name": "esc-crm-integration",
-            "location": "./skills/esc-crm-integration",
-            "config": {
-              "url": "${ESC_CRM_URL}",
-              "api_key": "${ESC_TENANT_API_KEY}"
-            }
+          "esc-crm-integration",
+          "pollination"
+        ],
+        "config": {
+          "esc-crm-integration": {
+            "url": "${ESC_CRM_URL}",
+            "api_key": "${ESC_TENANT_API_KEY}"
           },
-          {
-            "name": "pollination",
-            "location": "./skills/pollination",
-            "config": {
-              "api_key": "${POLLINATION_API_KEY}"
-            }
+          "pollination": {
+            "api_key": "${POLLINATION_API_KEY}"
           }
-        ]
+        }
       }
     ]
   }
