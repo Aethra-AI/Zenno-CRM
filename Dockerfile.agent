@@ -50,4 +50,5 @@ ENV OPENCLAW_CONFIG_PATH=/app/config.json
 EXPOSE 18791
 
 # Comando de arranque
-CMD ["openclaw", "gateway", "run"]
+# Usamos la forma de cadena para asegurar que el PATH se resuelva correctamente y evitar que el entrypoint de Node lo interprete como un archivo local.
+CMD openclaw gateway run
