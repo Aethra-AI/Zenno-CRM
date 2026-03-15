@@ -41,10 +41,21 @@ class AgentOrchestrator:
             logger.error(f"Error construyendo imagen: {result.stderr}")
             return False
 
+    def _image_exists(self):
+        """Verifica si la imagen del agente existe localmente"""
+        result = subprocess.run(["docker", "images", "-q", AGENT_IMAGE_NAME], capture_output=True, text=True)
+        return len(result.stdout.strip()) > 0
+
     def deploy_agent(self, tenant_id, tenant_api_key, llm_api_key, crm_url, pollination_key=None):
         """
         Despliega o reinicia el agente único para un Tenant.
         """
+        # 0. Asegurar que la imagen existe
+        if not self._image_exists():
+            logger.info(f"Imagen {AGENT_IMAGE_NAME} no encontrada. Intentando construir...")
+            if not self.build_base_image():
+                return False, "No se pudo construir la imagen base del agente."
+
         container_name = f"esc-agent-tenant-{tenant_id}"
         tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}")
         os.makedirs(tenant_data_path, exist_ok=True)
