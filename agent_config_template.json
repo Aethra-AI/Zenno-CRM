@@ -30,18 +30,18 @@
           "pollination"
         ]
       }
-    ],
-    "skills": {
-      "entries": {
-        "esc-crm-integration": {
-          "enabled": true,
-          "url": "${ESC_CRM_URL}",
-          "api_key": "${ESC_TENANT_API_KEY}"
-        },
-        "pollination": {
-          "enabled": true,
-          "api_key": "${POLLINATION_API_KEY}"
-        }
+    ]
+  },
+  "skills": {
+    "entries": {
+      "esc-crm-integration": {
+        "enabled": true,
+        "url": "${ESC_CRM_URL}",
+        "api_key": "${ESC_TENANT_API_KEY}"
+      },
+      "pollination": {
+        "enabled": true,
+        "api_key": "${POLLINATION_API_KEY}"
       }
     }
   }
