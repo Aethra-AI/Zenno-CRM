@@ -10,8 +10,12 @@
     "controlUi": {
       "allowedOrigins": ["*"]
     },
-    "openai": {
-      "enabled": true
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        }
+      }
     }
   },
   "agents": {
@@ -31,7 +35,10 @@
         "skills": [
           "esc-crm-integration",
           "pollination"
-        ]
+        ],
+        "capabilities": {
+          "chat": true
+        }
       }
     ]
   },

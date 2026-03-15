@@ -16734,6 +16734,8 @@ def proxy_agent_chat():
 
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     
+    app.logger.info(f"Enviando mensaje al agente en: {agent_url}")
+    
     try:
         payload = {
             "model": "main",
@@ -16744,7 +16746,9 @@ def proxy_agent_chat():
             "Authorization": "Bearer esc-agent-token-secure-v2",
             "x-openclaw-agent-id": "main"
         }
+        app.logger.info(f"Payload: {json.dumps(payload)}")
         response = requests.post(agent_url, json=payload, headers=headers, timeout=60)
+        app.logger.info(f"Respuesta del agente (Status {response.status_code}): {response.text[:200]}")
         res_json = response.json()
         
         # Extraer respuesta en formato OpenAI
