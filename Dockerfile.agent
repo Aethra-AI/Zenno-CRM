@@ -46,6 +46,7 @@ VOLUME ["/app/memory", "/app/data"]
 
 # Configuración del Gateway
 ENV OPENCLAW_CONFIG_PATH=/app/config.json
+ENV HOME=/app
 
 # Exponer puerto para el Gateway de OpenClaw
 EXPOSE 18789

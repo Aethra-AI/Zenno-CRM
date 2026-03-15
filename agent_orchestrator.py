@@ -78,6 +78,8 @@ class AgentOrchestrator:
             "-e", "NODE_OPTIONS=--max-old-space-size=768",
             "-e", "NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache",
             "-e", "OPENCLAW_NO_RESPAWN=1",
+            "-e", "OPENCLAW_STATE_PATH=/app/data",
+            "-e", "HOME=/app",
             "-e", f"OPENAI_API_KEY={llm_api_key}",
             "-e", f"ESC_TENANT_API_KEY={tenant_api_key}",
             "-e", f"ESC_CRM_URL={crm_url}",
