@@ -1,0 +1,75 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.3.13",
+    "lastTouchedAt": "2026-03-15T22:41:27.821Z"
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "moonshot/${BRAIN_MODEL}"
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "skills": [
+          "esc-crm-integration",
+          "pollination"
+        ],
+        "identity": {
+          "name": "Asistente de Reclutamiento",
+          "theme": "Profesional, proactivo y amable",
+          "emoji": "🏢"
+        }
+      }
+    ]
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {},
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": [
+        "*"
+      ]
+    },
+    "auth": {
+      "mode": "token",
+      "token": "esc-agent-token-secure-v2"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        },
+        "responses": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "skills": {
+    "entries": {
+      "esc-crm-integration": {
+        "enabled": true,
+        "config": {
+          "url": "${ESC_CRM_URL}",
+          "api_key": "${ESC_TENANT_API_KEY}"
+        }
+      },
+      "pollination": {
+        "enabled": true,
+        "config": {
+          "api_key": "${POLLINATION_API_KEY}"
+        }
+      }
+    }
+  }
+}

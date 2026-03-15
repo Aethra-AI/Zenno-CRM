@@ -16732,31 +16732,32 @@ def proxy_agent_chat():
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
-    # Endpoint nativo de recepción de mensajes RPC
-    agent_url = f"http://127.0.0.1:{19000 + tenant_id}/api/v1/message"
+    agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
     
-    app.logger.info(f"Enviando mensaje al Gateway (API Nativa) en: {agent_url}")
+    app.logger.info(f"Enviando mensaje al Agente (API OpenAI) en: {agent_url}")
     
     try:
         payload = {
-            "channel": "custom_api",
-            "sender_id": f"tenant-{tenant_id}",
-            "text": message,
-            "metadata": {"role": "admin"}
+            "model": "main",
+            "messages": [{"role": "user", "content": message}],
+            "user": f"tenant-{tenant_id}"
         }
         headers = {
             "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "x-openclaw-agent-id": "main"
         }
         
         response = requests.post(agent_url, json=payload, headers=headers, timeout=60)
-        app.logger.info(f"Respuesta del Gateway (Status {response.status_code}): {response.text[:200]}")
+        app.logger.info(f"Respuesta del Agente (Status {response.status_code}): {response.text[:200]}")
         
         if response.status_code == 200:
             res_json = response.json()
-            bot_text = res_json.get('text', '')
-            return jsonify({"response": bot_text}), 200
+            if 'choices' in res_json and len(res_json['choices']) > 0:
+                bot_text = res_json['choices'][0]['message']['content']
+                return jsonify({"response": bot_text}), 200
+            return jsonify({"response": "Respuesta vacía del agente"}), 500
         else:
             return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
 
