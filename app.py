@@ -16738,6 +16738,7 @@ def proxy_agent_chat():
         response = requests.post(agent_url, json={"message": message}, timeout=60)
         return jsonify(response.json()), response.status_code
     except Exception as e:
+        logger.error(f"Error en proxy_agent_chat: {str(e)}")
         return jsonify({"error": "El agente no responde. Asegúrate de haberlo activado."}), 503
 
 @app.route('/api/agents/status', methods=['GET'])

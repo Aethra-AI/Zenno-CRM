@@ -80,6 +80,7 @@ class AgentOrchestrator:
             "-e", f"ESC_CRM_URL={crm_url}",
             "-e", f"POLLINATION_API_KEY={pollination_key or ''}",
             "-e", f"BRAIN_MODEL=kimi-k2.5",
+            "-e", "OPENCLAW_GATEWAY_HOST=0.0.0.0",
             "--restart", "unless-stopped",
             AGENT_IMAGE_NAME
         ]
