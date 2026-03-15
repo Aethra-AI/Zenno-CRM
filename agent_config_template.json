@@ -1,7 +1,4 @@
 {
-  "api": {
-    "enabled": true
-  },
   "gateway": {
     "mode": "local",
     "bind": "lan",
@@ -17,7 +14,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "${BRAIN_MODEL}"
+        "primary": "moonshot/${BRAIN_MODEL}"
       }
     },
     "list": [
@@ -31,17 +28,21 @@
         "skills": [
           "esc-crm-integration",
           "pollination"
-        ],
-        "config": {
-          "esc-crm-integration": {
-            "url": "${ESC_CRM_URL}",
-            "api_key": "${ESC_TENANT_API_KEY}"
-          },
-          "pollination": {
-            "api_key": "${POLLINATION_API_KEY}"
-          }
+        ]
+      }
+    ],
+    "skills": {
+      "entries": {
+        "esc-crm-integration": {
+          "enabled": true,
+          "url": "${ESC_CRM_URL}",
+          "api_key": "${ESC_TENANT_API_KEY}"
+        },
+        "pollination": {
+          "enabled": true,
+          "api_key": "${POLLINATION_API_KEY}"
         }
       }
-    ]
+    }
   }
 }
