@@ -1,0 +1,40 @@
+{
+  "agent": {
+    "id": "esc-tenant-agent",
+    "label": "Asistente ESC",
+    "thinking": "balanced",
+    "model": "kimi-k2.5"
+  },
+  "identity": {
+    "name": "Asistente de Reclutamiento",
+    "creature": "Empleado Digital ESC",
+    "vibe": "Profesional, proactivo y amable",
+    "emoji": "🏢"
+  },
+  "channels": {
+    "whatsapp": {
+      "enabled": true
+    }
+  },
+  "skills": [
+    {
+      "name": "esc-crm-integration",
+      "location": "./skills/esc-crm-integration",
+      "config": {
+        "url": "${ESC_CRM_URL}",
+        "api_key": "${ESC_TENANT_API_KEY}"
+      }
+    },
+    {
+      "name": "pollination",
+      "location": "./skills/pollination",
+      "config": {
+        "api_key": "${POLLINATION_API_KEY}"
+      }
+    }
+  ],
+  "memory": {
+    "path": "./memory",
+    "soul": "./skills/esc-crm-integration/SOUL.md"
+  }
+}
