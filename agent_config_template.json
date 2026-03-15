@@ -7,7 +7,8 @@
   },
   "gateway": {
     "host": "0.0.0.0",
-    "port": 18791
+    "port": 18789,
+    "openai": true
   },
   "identity": {
     "name": "Asistente de Reclutamiento",

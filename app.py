@@ -16732,11 +16732,22 @@ def proxy_agent_chat():
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
-    agent_url = f"http://localhost:{19000 + tenant_id}/chat"
+    agent_url = f"http://localhost:{19000 + tenant_id}/v1/chat/completions"
     
     try:
-        response = requests.post(agent_url, json={"message": message}, timeout=60)
-        return jsonify(response.json()), response.status_code
+        payload = {
+            "model": "balanced",
+            "messages": [{"role": "user", "content": message}]
+        }
+        response = requests.post(agent_url, json=payload, timeout=60)
+        res_json = response.json()
+        
+        # Extraer respuesta en formato OpenAI
+        if 'choices' in res_json and len(res_json['choices']) > 0:
+            bot_text = res_json['choices'][0]['message']['content']
+            return jsonify({"response": bot_text}), 200
+            
+        return jsonify(res_json), response.status_code
     except Exception as e:
         logger.error(f"Error en proxy_agent_chat: {str(e)}")
         return jsonify({"error": "El agente no responde. Asegúrate de haberlo activado."}), 503

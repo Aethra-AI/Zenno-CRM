@@ -71,7 +71,7 @@ class AgentOrchestrator:
             "docker", "run", "-d",
             "--name", container_name,
             "--network", DOCKER_NETWORK,
-            "-p", f"{19000 + tenant_id}:18791",
+            "-p", f"{19000 + tenant_id}:18789",
             "--memory", "1g",
             "--cpus", "0.3",
             "-v", f"{tenant_data_path}:/app/data",

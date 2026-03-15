@@ -47,8 +47,8 @@ VOLUME ["/app/memory", "/app/data"]
 # Configuración del Gateway
 ENV OPENCLAW_CONFIG_PATH=/app/config.json
 
-# Exponer puerto para chat externo (si se requiere)
-EXPOSE 18791
+# Exponer puerto para el Gateway de OpenClaw
+EXPOSE 18789
 
 # Comando de arranque explícito usando el binario local
 CMD ["./node_modules/.bin/openclaw", "gateway", "run"]
