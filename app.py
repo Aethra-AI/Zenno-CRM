@@ -16739,7 +16739,10 @@ def proxy_agent_chat():
             "model": "balanced",
             "messages": [{"role": "user", "content": message}]
         }
-        response = requests.post(agent_url, json=payload, timeout=60)
+        headers = {
+            "Authorization": "Bearer esc-agent-token-secure-v2"
+        }
+        response = requests.post(agent_url, json=payload, headers=headers, timeout=60)
         res_json = response.json()
         
         # Extraer respuesta en formato OpenAI
