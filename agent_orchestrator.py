@@ -5,7 +5,8 @@ import json
 
 # Configuración del orquestador
 AGENT_IMAGE_NAME = "openclaw-tenant-agent"
-BASE_DATA_PATH = "/opt/esc-crm/agents-data" # Ruta en la VM para persistencia
+# Priorizar variable de entorno, de lo contrario usar carpeta local
+BASE_DATA_PATH = os.getenv("ESC_AGENTS_DATA_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents-data"))
 DOCKER_NETWORK = "esc-network"
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,11 @@ class AgentOrchestrator:
     
     def __init__(self):
         # Asegurar que el directorio de datos existe
-        os.makedirs(BASE_DATA_PATH, exist_ok=True)
+        try:
+            os.makedirs(BASE_DATA_PATH, exist_ok=True)
+            logger.info(f"Directorio de datos del agente listo en: {BASE_DATA_PATH}")
+        except Exception as e:
+            logger.error(f"CRÍTICO: No se pudo crear el directorio de datos {BASE_DATA_PATH}: {e}")
         # Crear red de docker si no existe
         try:
             subprocess.run(["docker", "network", "create", DOCKER_NETWORK], capture_output=True)
