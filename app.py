@@ -16740,7 +16740,8 @@ def proxy_agent_chat():
             "messages": [{"role": "user", "content": message}]
         }
         headers = {
-            "Authorization": "Bearer esc-agent-token-secure-v2"
+            "Authorization": "Bearer esc-agent-token-secure-v2",
+            "x-openclaw-agent-id": "main"
         }
         response = requests.post(agent_url, json=payload, headers=headers, timeout=60)
         res_json = response.json()

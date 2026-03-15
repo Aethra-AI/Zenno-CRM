@@ -9,6 +9,9 @@
     },
     "controlUi": {
       "allowedOrigins": ["*"]
+    },
+    "capabilities": {
+      "httpApi": "all"
     }
   },
   "agents": {
