@@ -107,16 +107,6 @@ from public_api_service import public_api_service
 # --- AGENT ORCHESTRATION ---
 from agent_orchestrator import orchestrator
 
-# --- AUTO-SETUP ON STARTUP ---
-with app.app_context():
-    try:
-        print("🚀 Verificando imagen maestra de agentes...")
-        # Intentamos construir la imagen al iniciar por si no existe
-        # (Esto solo tarda si hay cambios o es la primera vez)
-        orchestrator.build_base_image()
-    except Exception as e:
-        print(f"⚠️ Error en auto-setup de agentes: {e}")
-
 # --- DATABASE MIGRATIONS ---
 from database_migrations import run_database_migrations
 
@@ -14194,4 +14184,14 @@ def post_public_application():
 
 # --- PUNTO DE ENTRADA PARA EJECUTAR EL SERVIDOR (SIN CAMBIOS) ---
 if __name__ == '__main__':
+    # --- AUTO-SETUP ON STARTUP ---
+    try:
+        print("🚀 Verificando imagen maestra de agentes...")
+        # Intentamos construir la imagen al iniciar por si no existe
+        # (Esto solo tarda si hay cambios o es la primera vez)
+        # Lo hacemos fuera del context de app porque no lo requiere
+        orchestrator.build_base_image()
+    except Exception as e:
+        print(f"⚠️ Error en auto-setup de agentes: {e}")
+        
     app.run(host='0.0.0.0', port=5000, debug=True)
