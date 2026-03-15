@@ -34,6 +34,7 @@ RUN npm install openclaw
 
 # Copiar archivos base
 COPY agent_config_template.json /app/config.json
+COPY access_template.json /app/access.json
 COPY skills/ /app/skills/
 COPY requirements_agent.txt /app/
 
@@ -52,4 +53,4 @@ ENV HOME=/app
 EXPOSE 18789
 
 # Comando de arranque: primero intenta corregir la config y luego arranca el gateway
-CMD ["/bin/sh", "-c", "./node_modules/.bin/openclaw doctor --fix && ./node_modules/.bin/openclaw gateway run"]
+CMD ["/bin/sh", "-c", "mkdir -p /app/.openclaw && cp /app/access.json /app/.openclaw/access.json && ./node_modules/.bin/openclaw doctor --fix && ./node_modules/.bin/openclaw gateway run"]

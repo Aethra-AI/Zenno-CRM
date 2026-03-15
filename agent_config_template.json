@@ -9,6 +9,20 @@
     },
     "controlUi": {
       "allowedOrigins": ["*"]
+    },
+    "routing": "per-sender",
+    "rpc": {
+      "enabled": true
+    }
+  },
+  "channels": {
+    "api": {
+      "enabled": true,
+      "allow_from": ["*"]
+    },
+    "custom_api": {
+      "enabled": true,
+      "allow_from": ["*"]
     }
   },
   "agents": {

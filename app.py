@@ -16724,8 +16724,7 @@ def deploy_tenant_agent_endpoint():
 @app.route('/api/agents/chat', methods=['POST'])
 @token_required
 def proxy_agent_chat():
-    """Proxy para enviar mensajes del chat web al agente del tenant vía WebSocket (Nativo v2)"""
-    import websocket
+    """Proxy para enviar mensajes al agente vía canal API nativo (Fase 3: Reforzada)"""
     tenant_id = get_current_tenant_id()
     data = request.get_json()
     message = data.get('message')
@@ -16733,59 +16732,37 @@ def proxy_agent_chat():
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
-    ws_url = f"ws://127.0.0.1:{19000 + tenant_id}"
+    # Endpoint nativo de recepción de mensajes RPC
+    agent_url = f"http://127.0.0.1:{19000 + tenant_id}/api/v1/message"
     token = "esc-agent-token-secure-v2"
     
-    app.logger.info(f"Conectando al agente vía WebSocket en: {ws_url}")
+    app.logger.info(f"Enviando mensaje al Gateway (API Nativa) en: {agent_url}")
     
     try:
-        # 1. Establecer conexión WebSocket
-        ws = websocket.create_connection(ws_url, timeout=30)
-        
-        # 2. Autenticación (Protocolo nativo de OpenClaw)
-        auth_payload = {
-            "type": "auth",
-            "token": token
+        payload = {
+            "channel": "api",
+            "sender_id": f"tenant-{tenant_id}",
+            "text": message,
+            "metadata": {"role": "admin"}
         }
-        ws.send(json.dumps(auth_payload))
-        
-        # 3. Enviar el mensaje (Protocolo nativo Turn)
-        turn_payload = {
-            "type": "agent",
-            "agentId": "main",
-            "message": message,
-            "sessionKey": f"crm-session-{tenant_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
         }
-        ws.send(json.dumps(turn_payload))
         
-        # 4. Esperar respuesta final
-        bot_text = ""
-        while True:
-            result = ws.recv()
-            if not result: break
-            
-            msg_data = json.loads(result)
-            
-            # OpenClaw envía fragmentos (tokens) o el mensaje completo según el evento
-            if msg_data.get("type") == "text":
-                bot_text += msg_data.get("text", "")
-            
-            # El evento 'done' o 'stop' indica que terminó de hablar
-            if msg_data.get("type") in ["done", "stop", "error"]:
-                if msg_data.get("type") == "error":
-                    app.logger.error(f"Error de agente en WS: {msg_data.get('text')}")
-                break
+        response = requests.post(agent_url, json=payload, headers=headers, timeout=60)
+        app.logger.info(f"Respuesta del Gateway (Status {response.status_code}): {response.text[:200]}")
         
-        ws.close()
-        
-        if bot_text:
-            return jsonify({"response": bot_text.strip()}), 200
+        if response.status_code == 200:
+            res_json = response.json()
+            bot_text = res_json.get('text', '')
+            return jsonify({"response": bot_text}), 200
         else:
-            return jsonify({"error": "El agente no devolvió texto."}), 500
+            return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
 
     except Exception as e:
-        app.logger.error(f"Error en conexión WebSocket: {str(e)}")
-        return jsonify({"error": "No se pudo conectar con el motor del agente vía WebSocket."}), 503
+        app.logger.error(f"Error en comunicación nativa: {str(e)}")
+        return jsonify({"error": "No se pudo establecer el túnel con el motor del agente."}), 503
 
 @app.route('/api/agents/status', methods=['GET'])
 @token_required

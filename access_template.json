@@ -1,0 +1,10 @@
+{
+  "permissions": [
+    {
+      "sender_id": "*",
+      "allowed_skills": ["*"],
+      "allowed_channels": ["api", "custom_api", "webchat"],
+      "can_provision_channels": true
+    }
+  ]
+}
