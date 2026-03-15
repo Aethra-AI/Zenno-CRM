@@ -1,45 +1,47 @@
 {
-  "agent": {
-    "id": "esc-tenant-agent",
-    "label": "Asistente ESC",
-    "thinking": "balanced",
-    "model": "${BRAIN_MODEL}"
-  },
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18789,
-    "openai": true
-  },
-  "identity": {
-    "name": "Asistente de Reclutamiento",
-    "creature": "Empleado Digital ESC",
-    "vibe": "Profesional, proactivo y amable",
-    "emoji": "🏢"
-  },
-  "channels": {
-    "whatsapp": {
+  "api": {
+    "openai": {
       "enabled": true
     }
   },
-  "skills": [
-    {
-      "name": "esc-crm-integration",
-      "location": "./skills/esc-crm-integration",
-      "config": {
-        "url": "${ESC_CRM_URL}",
-        "api_key": "${ESC_TENANT_API_KEY}"
-      }
+  "server": {
+    "host": "0.0.0.0",
+    "port": 18789
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "${BRAIN_MODEL}"
+      },
+      "thinking": "balanced"
     },
-    {
-      "name": "pollination",
-      "location": "./skills/pollination",
-      "config": {
-        "api_key": "${POLLINATION_API_KEY}"
+    "list": [
+      {
+        "id": "main",
+        "identity": {
+          "name": "Asistente de Reclutamiento",
+          "creature": "Empleado Digital ESC",
+          "vibe": "Profesional, proactivo y amable",
+          "emoji": "🏢"
+        },
+        "skills": [
+          {
+            "name": "esc-crm-integration",
+            "location": "./skills/esc-crm-integration",
+            "config": {
+              "url": "${ESC_CRM_URL}",
+              "api_key": "${ESC_TENANT_API_KEY}"
+            }
+          },
+          {
+            "name": "pollination",
+            "location": "./skills/pollination",
+            "config": {
+              "api_key": "${POLLINATION_API_KEY}"
+            }
+          }
+        ]
       }
-    }
-  ],
-  "memory": {
-    "path": "./memory",
-    "soul": "./skills/esc-crm-integration/SOUL.md"
+    ]
   }
 }

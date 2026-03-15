@@ -50,5 +50,5 @@ ENV OPENCLAW_CONFIG_PATH=/app/config.json
 # Exponer puerto para el Gateway de OpenClaw
 EXPOSE 18789
 
-# Comando de arranque explícito usando el binario local
-CMD ["./node_modules/.bin/openclaw", "gateway", "run"]
+# Comando de arranque: primero intenta corregir la config y luego arranca el gateway
+CMD ["/bin/sh", "-c", "./node_modules/.bin/openclaw doctor --fix && ./node_modules/.bin/openclaw gateway run"]
