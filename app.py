@@ -16753,7 +16753,19 @@ def get_agent_status():
             ["docker", "inspect", "-f", "{{.State.Status}}", container_name],
             capture_output=True, text=True
         )
-        status = result.stdout.strip() if result.returncode == 0 else "inactive"
+        docker_status = result.stdout.strip() if result.returncode == 0 else "inactive"
+        
+        # Mapeo de estados de Docker a estados de la UI
+        status_map = {
+            "running": "running",
+            "created": "starting",
+            "restarting": "starting",
+            "paused": "inactive",
+            "exited": "inactive",
+            "dead": "error"
+        }
+        status = status_map.get(docker_status, "inactive")
+        
         return jsonify({"tenant_id": tenant_id, "status": status}), 200
     except:
         return jsonify({"status": "error"}), 500
