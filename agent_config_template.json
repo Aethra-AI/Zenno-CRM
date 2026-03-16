@@ -23,7 +23,7 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "moonshot/${BRAIN_MODEL}"
+        "primary": "moonshot/moonshotai/kimi-k2.5"
       }
     },
     "list": [
@@ -40,6 +40,21 @@
         ]
       }
     ]
+  },
+  "models": {
+    "providers": {
+      "moonshot": {
+        "baseUrl": "https://integrate.api.nvidia.com/v1",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "moonshotai/kimi-k2.5",
+            "name": "Kimi K2.5 (Nvidia)",
+            "reasoning": true
+          }
+        ]
+      }
+    }
   },
   "skills": {
     "entries": {
