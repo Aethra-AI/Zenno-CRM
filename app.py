@@ -16749,7 +16749,7 @@ def proxy_agent_chat():
             "x-openclaw-agent-id": "main"
         }
         
-        response = requests.post(agent_url, json=payload, headers=headers, timeout=60)
+        response = requests.post(agent_url, json=payload, headers=headers, timeout=180)
         app.logger.info(f"Respuesta del Agente (Status {response.status_code}): {response.text[:200]}")
         
         if response.status_code == 200:
