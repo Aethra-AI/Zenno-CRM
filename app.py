@@ -16721,27 +16721,90 @@ def deploy_tenant_agent_endpoint():
     finally:
         conn.close()
 
+# --- ✨ FUNCIONES PARA PERSISTENCIA DE CHAT AGENTE (IDE UX) ✨ ---
+
+def get_or_create_agent_session(user_id, tenant_id, session_id=None, title=None):
+    """Obtiene una sesión existente o crea una nueva para el historial tipo IDE"""
+    conn = get_db_connection()
+    if not conn: return session_id or str(uuid.uuid4())
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if session_id:
+            cursor.execute("SELECT id_session FROM AgentSessions WHERE id_session = %s AND tenant_id = %s", (session_id, tenant_id))
+            session = cursor.fetchone()
+            if session:
+                return session['id_session']
+        
+        # Crear nueva si no existe o no se proporcionó
+        new_id = session_id or str(uuid.uuid4())
+        new_title = title or f"Conversación {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        
+        # Determinar tipo (Keneth es admin)
+        cursor.execute("SELECT r.nombre FROM Users u JOIN Roles r ON u.rol_id = r.id WHERE u.id = %s", (user_id,))
+        role_res = cursor.fetchone()
+        chat_type = 'admin' if role_res and role_res['nombre'] == 'Administrador' else 'user'
+        
+        cursor.execute("""
+            INSERT INTO AgentSessions (id_session, tenant_id, user_id, titulo, tipo)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (new_id, tenant_id, user_id, new_title, chat_type))
+        conn.commit()
+        return new_id
+    except Exception as e:
+        logger.error(f"Error gestionando sesión chat: {e}")
+        return session_id or str(uuid.uuid4())
+    finally:
+        cursor.close()
+        conn.close()
+
+def save_agent_chat_message(session_id, tenant_id, role, content):
+    """Guarda un mensaje (usuario o asistente) en la base de datos"""
+    conn = get_db_connection()
+    if not conn: return
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO AgentMessages (id_session, tenant_id, rol, contenido)
+            VALUES (%s, %s, %s, %s)
+        """, (session_id, tenant_id, role, content))
+        conn.commit()
+    except Exception as e:
+        logger.error(f"Error guardando mensaje chat: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
 @app.route('/api/agents/chat', methods=['POST'])
 @token_required
 def proxy_agent_chat():
-    """Proxy para enviar mensajes al agente vía canal API nativo (Fase 3: Reforzada)"""
+    """Proxy para enviar mensajes al Agente vía API OpenAI con persistencia SQL"""
     tenant_id = get_current_tenant_id()
+    user_id = g.current_user.get('user_id')
     data = request.get_json()
     message = data.get('message')
+    client_session_id = data.get('session_id') # Opcional desde el frontend
 
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
+    # 1. Gestionar Sesión en SQL
+    db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id)
+    
+    # 2. Guardar mensaje del usuario
+    save_agent_chat_message(db_session_id, tenant_id, 'user', message)
+
+    # URL oficial del endpoint de Chat Completions habilitado en el Gateway
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
     
-    app.logger.info(f"Enviando mensaje al Agente (API OpenAI) en: {agent_url}")
+    app.logger.info(f"Enviando mensaje al Agente (IDE Mode) en: {agent_url} [Session: {db_session_id}]")
     
     try:
+        # 3. Llamada al Agente (usando db_session_id para aislamiento de memoria en Docker)
         payload = {
             "model": "main",
             "messages": [{"role": "user", "content": message}],
-            "user": f"tenant-{tenant_id}"
+            "user": db_session_id
         }
         headers = {
             "Authorization": f"Bearer {token}",
@@ -16750,20 +16813,69 @@ def proxy_agent_chat():
         }
         
         response = requests.post(agent_url, json=payload, headers=headers, timeout=180)
-        app.logger.info(f"Respuesta del Agente (Status {response.status_code}): {response.text[:200]}")
         
         if response.status_code == 200:
             res_json = response.json()
             if 'choices' in res_json and len(res_json['choices']) > 0:
                 bot_text = res_json['choices'][0]['message']['content']
-                return jsonify({"response": bot_text}), 200
+                
+                # 4. Guardar respuesta del asistente en SQL
+                save_agent_chat_message(db_session_id, tenant_id, 'assistant', bot_text)
+                
+                return jsonify({
+                    "response": bot_text,
+                    "session_id": db_session_id
+                }), 200
             return jsonify({"response": "Respuesta vacía del agente"}), 500
         else:
             return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
 
     except Exception as e:
-        app.logger.error(f"Error en comunicación nativa: {str(e)}")
-        return jsonify({"error": "No se pudo establecer el túnel con el motor del agente."}), 503
+        app.logger.error(f"Error en comunicación con el agente: {str(e)}")
+        return jsonify({"error": "No se pudo establecer conexión con el motor del agente."}), 503
+
+@app.route('/api/agents/sessions', methods=['GET'])
+@token_required
+def get_agent_sessions():
+    """Obtiene la lista de conversaciones pasadas del usuario (Para el Sidebar tipo IDE)"""
+    tenant_id = get_current_tenant_id()
+    user_id = g.current_user.get('user_id')
+    
+    conn = get_db_connection()
+    if not conn: return jsonify([]), 500
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT id_session, titulo, ultima_actividad, tipo 
+            FROM AgentSessions 
+            WHERE tenant_id = %s AND user_id = %s 
+            ORDER BY ultima_actividad DESC
+        """, (tenant_id, user_id))
+        return jsonify(cursor.fetchall()), 200
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/api/agents/sessions/<session_id>/messages', methods=['GET'])
+@token_required
+def get_agent_session_messages(session_id):
+    """Obtiene el historial de mensajes de una sesión específica"""
+    tenant_id = get_current_tenant_id()
+    
+    conn = get_db_connection()
+    if not conn: return jsonify([]), 500
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT rol, contenido, fecha 
+            FROM AgentMessages 
+            WHERE id_session = %s AND tenant_id = %s 
+            ORDER BY fecha ASC
+        """, (session_id, tenant_id))
+        return jsonify(cursor.fetchall()), 200
+    finally:
+        cursor.close()
+        conn.close()
 
 @app.route('/api/agents/status', methods=['GET'])
 @token_required
