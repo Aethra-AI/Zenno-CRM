@@ -16816,6 +16816,53 @@ def save_multimodal_files_for_agent(tenant_id, message_list):
                 except Exception as e:
                     app.logger.error(f"Error guardando imagen para agente: {e}")
 
+def save_multimodal_files_for_agent(tenant_id, message_list):
+    """Extrae archivos de un mensaje multimodal y los guarda en el workspace del agente"""
+    if not isinstance(message_list, list):
+        return []
+    
+    # Ruta física en el host que está montada en el contenedor
+    # El orquestador usa BASE_DATA_PATH/tenant_{id} -> /app/data
+    tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}")
+    workspace_path = os.path.join(tenant_data_path, "workspace")
+    os.makedirs(workspace_path, exist_ok=True)
+    
+    saved_files = []
+    for block in message_list:
+        if block.get('type') == 'image_url':
+            url = block.get('image_url', {}).get('url', '')
+            if url.startswith('data:image/'):
+                try:
+                    header, encoded = url.split(",", 1)
+                    ext = header.split(";")[0].split("/")[1]
+                    data = base64.b64decode(encoded)
+                    
+                    filename = f"image_{int(time.time())}.{ext}"
+                    filepath = os.path.join(workspace_path, filename)
+                    
+                    with open(filepath, "wb") as f:
+                        f.write(data)
+                    
+                    saved_files.append({"name": filename, "type": "imagen"})
+                except Exception as e:
+                    app.logger.error(f"Error guardando imagen para agente: {e}")
+        elif block.get('type') == 'file':
+            file_data = block.get('file', {})
+            url = file_data.get('url', '')
+            if url.startswith('data:'):
+                try:
+                    header, encoded = url.split(",", 1)
+                    data = base64.b64decode(encoded)
+                    filename = file_data.get('name', f"file_{int(time.time())}")
+                    filepath = os.path.join(workspace_path, filename)
+                    with open(filepath, "wb") as f:
+                        f.write(data)
+                    saved_files.append({"name": filename, "type": "archivo"})
+                except Exception as e:
+                    app.logger.error(f"Error guardando archivo para agente: {e}")
+                    
+    return saved_files
+
 @app.route('/api/agents/chat', methods=['POST'])
 @token_required
 def proxy_agent_chat():
@@ -16829,7 +16876,7 @@ def proxy_agent_chat():
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
-    # Lógica de Sesión Única Persistente (Estilo Discord)
+    # Lógica de Sesión Única Persistente
     if client_session_id == 'default-persistent':
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -16841,9 +16888,14 @@ def proxy_agent_chat():
     else:
         db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id)
     
-    # Guardar en DB para persistencia visual en el chat
+    # Guardar en DB
     save_agent_chat_message(db_session_id, tenant_id, 'user', message)
     
+    # 📁 PREPARAR ARCHIVOS FISICOS (Respaldo para modelos sin visión base64 o fallos de Gateway)
+    saved_files = []
+    if isinstance(message, list):
+        saved_files = save_multimodal_files_for_agent(tenant_id, message)
+
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
     
@@ -16851,24 +16903,33 @@ def proxy_agent_chat():
     target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
     
     try:
-        # 🟢 ENVÍO NATIVO (Sin prefijos ni trucos): Entregamos el mensaje tal cual viene del frontend
-        # Si contiene imágenes (base64), se pasan directamente en el bloque multimodal de OpenAI
+        # 🟢 CONSTRUCCIÓN DEL MENSAJE PARA EL AGENTE
+        # Usamos texto plano + Notificación de archivos para máxima compatibilidad
+        if isinstance(message, list):
+            # Extraer solo el texto del usuario
+            user_text = next((b['text'] for b in message if b['type'] == 'text'), "")
+            if saved_files:
+                file_list = ", ".join([f"{f['name']} ({f['type']})" for f in saved_files])
+                prompt_ready = f"[SISTEMA: El usuario ha subido los siguientes archivos a tu workspace: {file_list}. Usa tus herramientas para analizarlos si es necesario.]\n\n{user_text}"
+            else:
+                prompt_ready = user_text
+        else:
+            prompt_ready = str(message)
+
         payload = {
             "model": target_agent_id,
-            "messages": [{"role": "user", "content": message}],
+            "messages": [{"role": "user", "content": prompt_ready}],
             "user": str(db_session_id),
-            "temperature": 0.7,
-            "stream": False
+            "temperature": 0.7
         }
+        
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "x-openclaw-agent-id": target_agent_id
         }
         
-        app.logger.info(f"Enviando mensaje nativo al Agente {target_agent_id}. Multimodal: {isinstance(message, list)}")
-        
-        # Aumentamos el timeout a 300s por si la imagen es pesada o Kimi está lento
+        app.logger.info(f"Llamando al Agente en {agent_url} para la sesión {db_session_id}")
         response = requests.post(agent_url, json=payload, headers=headers, timeout=300)
         
         if response.status_code == 200:
@@ -16877,7 +16938,7 @@ def proxy_agent_chat():
                 bot_text = res_json['choices'][0]['message']['content']
                 save_agent_chat_message(db_session_id, tenant_id, 'assistant', bot_text)
                 return jsonify({"response": bot_text, "session_id": db_session_id}), 200
-            return jsonify({"response": "Respuesta vacía del motor de IA."}), 500
+            return jsonify({"response": "Respuesta vacía del agente"}), 500
         else:
             app.logger.error(f"Error del Agente ({response.status_code}): {response.text}")
             return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
