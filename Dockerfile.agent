@@ -1,7 +1,7 @@
 # Dockerfile para Instancias de Clawdbot ESC
 # Propiedad de ESC (Expertos en Selección y Contratación)
 
-FROM node:22-slim
+FROM node:22
 
 # Instalar dependencias para Clawdbot y Playwright (necesario para WhatsApp)
 RUN apt-get update && apt-get install -y \
