@@ -16784,35 +16784,34 @@ def proxy_agent_chat():
     tenant_id = get_current_tenant_id()
     user_id = g.current_user.get('user_id')
     data = request.get_json()
-    message = data.get('message') # Puede ser string o lista de content blocks
-    client_session_id = data.get('session_id') # Opcional desde el frontend
-    session_title = data.get('title') # Opcional para nombrar la sesión
+    message = data.get('message')
+    client_session_id = data.get('session_id')
 
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
-    # 1. Gestionar Sesión en SQL
-    db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id, session_title)
+    # Lógica de Sesión Única Persistente (Estilo Discord)
+    if client_session_id == 'default-persistent':
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id_session FROM AgentSessions WHERE user_id = %s AND tenant_id = %s ORDER BY ultima_actividad DESC LIMIT 1", (user_id, tenant_id))
+        existing = cursor.fetchone()
+        db_session_id = existing['id_session'] if existing else get_or_create_agent_session(user_id, tenant_id, title=f"Chat Principal - {user_id}")
+        cursor.close()
+        conn.close()
+    else:
+        db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id)
     
-    # 2. Guardar mensaje del usuario
     save_agent_chat_message(db_session_id, tenant_id, 'user', message)
 
-    # URL oficial del endpoint de Chat Completions habilitado en el Gateway
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
     
-    # Lógica de Ruteo Inteligente
     user_role = g.current_user.get('rol')
     target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
     
-    app.logger.info(f"Ruteando mensaje (IDE): Rol={user_role} -> Agente={target_agent_id} [Session: {db_session_id}]")
-    
     try:
-        # 3. Llamada al Agente
-        # Si message es una lista, la pasamos directamente como content
-        # Si es string, la envolvemos
-        content_payload = message if isinstance(message, (list, dict)) else message
-        
+        content_payload = message
         payload = {
             "model": target_agent_id,
             "messages": [{"role": "user", "content": content_payload}],
@@ -16830,17 +16829,15 @@ def proxy_agent_chat():
             res_json = response.json()
             if 'choices' in res_json and len(res_json['choices']) > 0:
                 bot_text = res_json['choices'][0]['message']['content']
-                
-                # 4. Guardar respuesta del asistente en SQL
                 save_agent_chat_message(db_session_id, tenant_id, 'assistant', bot_text)
-                
-                return jsonify({
-                    "response": bot_text,
-                    "session_id": db_session_id
-                }), 200
+                return jsonify({"response": bot_text, "session_id": db_session_id}), 200
             return jsonify({"response": "Respuesta vacía del agente"}), 500
         else:
             return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
+
+    except Exception as e:
+        app.logger.error(f"Error en comunicación con el agente: {str(e)}")
+        return jsonify({"error": "No se pudo establecer conexión con el motor del agente."}), 503
 
     except Exception as e:
         app.logger.error(f"Error en comunicación con el agente: {str(e)}")
@@ -16871,19 +16868,34 @@ def get_agent_sessions():
 @app.route('/api/agents/sessions/<session_id>/messages', methods=['GET'])
 @token_required
 def get_agent_session_messages(session_id):
-    """Obtiene el historial de mensajes de una sesión específica"""
+    """Obtiene el historial de mensajes de una sesión específica o la persistente por defecto"""
     tenant_id = get_current_tenant_id()
+    user_id = g.current_user.get('user_id')
     
     conn = get_db_connection()
     if not conn: return jsonify([]), 500
     cursor = conn.cursor(dictionary=True)
     try:
+        # Lógica para sesión persistente por defecto
+        if session_id == 'default-persistent':
+            cursor.execute("""
+                SELECT id_session FROM AgentSessions 
+                WHERE user_id = %s AND tenant_id = %s 
+                ORDER BY ultima_actividad DESC LIMIT 1
+            """, (user_id, tenant_id))
+            res = cursor.fetchone()
+            if not res:
+                return jsonify([]), 200
+            target_id = res['id_session']
+        else:
+            target_id = session_id
+
         cursor.execute("""
             SELECT rol, contenido, fecha 
             FROM AgentMessages 
             WHERE id_session = %s AND tenant_id = %s 
             ORDER BY fecha ASC
-        """, (session_id, tenant_id))
+        """, (target_id, tenant_id))
         return jsonify(cursor.fetchall()), 200
     finally:
         cursor.close()
