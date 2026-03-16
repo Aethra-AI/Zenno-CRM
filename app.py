@@ -16845,8 +16845,14 @@ def proxy_agent_chat():
     save_agent_chat_message(db_session_id, tenant_id, 'user', message)
     
     # 📁 PREPARAR ARCHIVOS PARA EL AGENTE (Workspace físico)
+    files_info = []
     if isinstance(message, list):
         save_multimodal_files_for_agent(tenant_id, message)
+        for block in message:
+            if block.get('type') == 'image_url':
+                files_info.append("una imagen")
+            elif block.get('type') == 'file':
+                files_info.append(f"el archivo {block.get('file', {}).get('name', 'adjunto')}")
 
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
@@ -16855,13 +16861,20 @@ def proxy_agent_chat():
     target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
     
     try:
-        # Asegurar que el payload de contenido sea el correcto para el agente
+        # Enriquecer el mensaje para que el agente sepa que hay archivos
         content_payload = message
-        
-        # Log para depuración de imágenes
-        if isinstance(message, list):
-            app.logger.info(f"Enviando mensaje multimodal al agente {target_agent_id}. Bloques: {len(message)}")
-        
+        if files_info:
+            prefix = f"[SISTEMA: El usuario ha adjuntado {', '.join(files_info)}. Estos archivos han sido guardados en tu workspace para que los analices si es necesario.]\n\n"
+            if isinstance(message, list):
+                # Insertar como primer bloque de texto
+                text_block = next((b for b in content_payload if b['type'] == 'text'), None)
+                if text_block:
+                    text_block['text'] = prefix + text_block['text']
+                else:
+                    content_payload.insert(0, {"type": "text", "text": prefix})
+            else:
+                content_payload = prefix + str(message)
+
         payload = {
             "model": target_agent_id,
             "messages": [{"role": "user", "content": content_payload}],
@@ -16873,7 +16886,7 @@ def proxy_agent_chat():
             "x-openclaw-agent-id": target_agent_id
         }
         
-        app.logger.info(f"Llamando al Agente en {agent_url} para la sesión {db_session_id}")
+        app.logger.info(f"Llamando al Agente en {agent_url} con soporte de archivos.")
         response = requests.post(agent_url, json=payload, headers=headers, timeout=180)
         
         if response.status_code == 200:
