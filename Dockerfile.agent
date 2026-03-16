@@ -42,8 +42,8 @@ COPY requirements_agent.txt /app/
 RUN pip3 install --break-system-packages -r requirements_agent.txt
 
 # Directorio para persistencia (Memoria y Sesiones)
-RUN mkdir -p /app/memory /app/data /app/.openclaw/agents/main/sessions /var/tmp/openclaw-compile-cache
-RUN ln -s /app/data /app/.openclaw/workspace
+RUN mkdir -p /app/memory /app/data /app/.openclaw/agents/main/sessions /var/tmp/openclaw-compile-cache /app/.openclaw/workspace
+RUN ln -sf /app/data /app/.openclaw/workspace
 RUN chmod -R 777 /app/.openclaw /app/data /app/memory
 
 # Configuración del Gateway

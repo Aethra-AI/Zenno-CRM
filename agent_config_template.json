@@ -26,7 +26,8 @@
         "primary": "moonshot/moonshotai/kimi-k2.5"
       },
       "subagents": {
-        "maxConcurrent": 10
+        "maxConcurrent": 10,
+        "cleanup": "keep"
       }
     },
     "list": [

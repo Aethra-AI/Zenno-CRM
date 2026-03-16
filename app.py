@@ -16789,11 +16789,11 @@ except ImportError:
 from io import BytesIO
 
 def save_multimodal_files_for_agent(tenant_id, message_list):
-    """Extrae archivos de un mensaje multimodal y los guarda en la raíz del workspace del agente"""
+    """Extrae archivos de un mensaje multimodal y los guarda en la raíz del workspace del agente (/app/data)"""
     if not isinstance(message_list, list):
         return []
     
-    # Ruta física en el host que está montada como /app/data en el contenedor
+    # BASE_DATA_PATH/tenant_{id} es lo que se monta en /app/data del contenedor
     tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}")
     os.makedirs(tenant_data_path, exist_ok=True)
     
@@ -16806,16 +16806,11 @@ def save_multimodal_files_for_agent(tenant_id, message_list):
                     header, encoded = url.split(",", 1)
                     ext = header.split(";")[0].split("/")[1]
                     data = base64.b64decode(encoded)
-                    
-                    # Nombre corto y limpio para que el agente lo identifique fácil
                     filename = f"chat_img_{int(time.time())}.{ext}"
                     filepath = os.path.join(tenant_data_path, filename)
-                    
                     with open(filepath, "wb") as f:
                         f.write(data)
-                    
                     saved_files.append({"name": filename, "type": "imagen"})
-                    app.logger.info(f"Imagen guardada en raíz: {filename}")
                 except Exception as e:
                     app.logger.error(f"Error guardando imagen: {e}")
         elif block.get('type') == 'file':
@@ -16832,7 +16827,6 @@ def save_multimodal_files_for_agent(tenant_id, message_list):
                     saved_files.append({"name": filename, "type": "archivo"})
                 except Exception as e:
                     app.logger.error(f"Error guardando archivo: {e}")
-                    
     return saved_files
 
 @app.route('/api/agents/chat', methods=['POST'])
@@ -16860,10 +16854,10 @@ def proxy_agent_chat():
     else:
         db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id)
     
-    # Guardar en DB
+    # 1. Guardar en DB para el historial visual del usuario
     save_agent_chat_message(db_session_id, tenant_id, 'user', message)
     
-    # 📁 PREPARAR ARCHIVOS FISICOS (Respaldo para modelos sin visión base64 o fallos de Gateway)
+    # 2. Guardar archivos físicamente para que el Agente los use con sus herramientas
     saved_files = []
     if isinstance(message, list):
         saved_files = save_multimodal_files_for_agent(tenant_id, message)
@@ -16875,22 +16869,26 @@ def proxy_agent_chat():
     target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
     
     try:
-        # 🟢 CONSTRUCCIÓN DEL MENSAJE PARA EL AGENTE
-        # Usamos texto plano + Notificación de archivos para máxima compatibilidad
-        if isinstance(message, list):
-            # Extraer solo el texto del usuario
-            user_text = next((b['text'] for b in message if b['type'] == 'text'), "")
-            if saved_files:
-                file_list = ", ".join([f"{f['name']} ({f['type']})" for f in saved_files])
-                prompt_ready = f"[SISTEMA: El usuario ha subido los siguientes archivos a tu workspace: {file_list}. Usa tus herramientas para analizarlos si es necesario.]\n\n{user_text}"
+        # 🟢 CONSTRUCCIÓN DEL PAYLOAD NATIVO
+        # Enviamos el mensaje multimodal tal cual, pero si hay archivos físicos, le damos los nombres para que el agente NO alucine.
+        content_payload = message
+        if saved_files:
+            file_list = ", ".join([f"{f['name']}" for f in saved_files])
+            prefix = f"[SISTEMA: El usuario ha subido los archivos: {file_list}. Han sido guardados en tu workspace para que los analices si es necesario.]\n\n"
+            
+            if isinstance(message, list):
+                # Inyectar prefijo en el primer bloque de texto
+                text_block = next((b for b in content_payload if b['type'] == 'text'), None)
+                if text_block:
+                    text_block['text'] = prefix + text_block['text']
+                else:
+                    content_payload.insert(0, {"type": "text", "text": prefix})
             else:
-                prompt_ready = user_text
-        else:
-            prompt_ready = str(message)
+                content_payload = prefix + str(message)
 
         payload = {
             "model": target_agent_id,
-            "messages": [{"role": "user", "content": prompt_ready}],
+            "messages": [{"role": "user", "content": content_payload}],
             "user": str(db_session_id),
             "temperature": 0.7
         }
@@ -16914,6 +16912,10 @@ def proxy_agent_chat():
         else:
             app.logger.error(f"Error del Agente ({response.status_code}): {response.text}")
             return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
+
+    except Exception as e:
+        app.logger.error(f"Error en comunicación con el agente: {str(e)}")
+        return jsonify({"error": "No se pudo establecer conexión con el motor del agente."}), 503
 
     except Exception as e:
         app.logger.error(f"Error en comunicación con el agente: {str(e)}")
