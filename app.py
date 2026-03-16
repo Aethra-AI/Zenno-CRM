@@ -16779,7 +16779,13 @@ def save_agent_chat_message(session_id, tenant_id, role, content):
         conn.close()
 
 import base64
-from PIL import Image
+try:
+    from PIL import Image
+    PILLOW_AVAILABLE = True
+except ImportError:
+    PILLOW_AVAILABLE = False
+    app.logger.warning("Librería Pillow no instalada. El procesamiento de imágenes avanzado no estará disponible.")
+
 from io import BytesIO
 
 def save_multimodal_files_for_agent(tenant_id, message_list):
