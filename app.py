@@ -16797,19 +16797,24 @@ def proxy_agent_chat():
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
     
-    app.logger.info(f"Enviando mensaje al Agente (IDE Mode) en: {agent_url} [Session: {db_session_id}]")
+    # Lógica de Ruteo Inteligente (Módulo 3)
+    # Keneth (Admin) habla con 'main', los demás con su propia identidad de sesión
+    user_role = g.current_user.get('rol')
+    target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
+    
+    app.logger.info(f"Ruteando mensaje: Rol={user_role} -> Agente={target_agent_id} [Session: {db_session_id}]")
     
     try:
-        # 3. Llamada al Agente (usando db_session_id para aislamiento de memoria en Docker)
+        # 3. Llamada al Agente
         payload = {
-            "model": "main",
+            "model": target_agent_id, # El CRM pide el sub-agente específico
             "messages": [{"role": "user", "content": message}],
             "user": db_session_id
         }
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
-            "x-openclaw-agent-id": "main"
+            "x-openclaw-agent-id": target_agent_id
         }
         
         response = requests.post(agent_url, json=payload, headers=headers, timeout=180)
