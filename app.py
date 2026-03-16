@@ -16841,19 +16841,9 @@ def proxy_agent_chat():
     else:
         db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id)
     
-    # Guardar en DB
+    # Guardar en DB para persistencia visual en el chat
     save_agent_chat_message(db_session_id, tenant_id, 'user', message)
     
-    # 📁 PREPARAR ARCHIVOS PARA EL AGENTE (Workspace físico)
-    files_info = []
-    if isinstance(message, list):
-        save_multimodal_files_for_agent(tenant_id, message)
-        for block in message:
-            if block.get('type') == 'image_url':
-                files_info.append("una imagen")
-            elif block.get('type') == 'file':
-                files_info.append(f"el archivo {block.get('file', {}).get('name', 'adjunto')}")
-
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
     
@@ -16861,24 +16851,14 @@ def proxy_agent_chat():
     target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
     
     try:
-        # Enriquecer el mensaje para que el agente sepa que hay archivos
-        content_payload = message
-        if files_info:
-            prefix = f"[SISTEMA: El usuario ha adjuntado {', '.join(files_info)}. Estos archivos han sido guardados en tu workspace para que los analices si es necesario.]\n\n"
-            if isinstance(message, list):
-                # Insertar como primer bloque de texto
-                text_block = next((b for b in content_payload if b['type'] == 'text'), None)
-                if text_block:
-                    text_block['text'] = prefix + text_block['text']
-                else:
-                    content_payload.insert(0, {"type": "text", "text": prefix})
-            else:
-                content_payload = prefix + str(message)
-
+        # 🟢 ENVÍO NATIVO (Sin prefijos ni trucos): Entregamos el mensaje tal cual viene del frontend
+        # Si contiene imágenes (base64), se pasan directamente en el bloque multimodal de OpenAI
         payload = {
             "model": target_agent_id,
-            "messages": [{"role": "user", "content": content_payload}],
-            "user": str(db_session_id)
+            "messages": [{"role": "user", "content": message}],
+            "user": str(db_session_id),
+            "temperature": 0.7,
+            "stream": False
         }
         headers = {
             "Authorization": f"Bearer {token}",
@@ -16886,8 +16866,10 @@ def proxy_agent_chat():
             "x-openclaw-agent-id": target_agent_id
         }
         
-        app.logger.info(f"Llamando al Agente en {agent_url} con soporte de archivos.")
-        response = requests.post(agent_url, json=payload, headers=headers, timeout=180)
+        app.logger.info(f"Enviando mensaje nativo al Agente {target_agent_id}. Multimodal: {isinstance(message, list)}")
+        
+        # Aumentamos el timeout a 300s por si la imagen es pesada o Kimi está lento
+        response = requests.post(agent_url, json=payload, headers=headers, timeout=300)
         
         if response.status_code == 200:
             res_json = response.json()
@@ -16895,7 +16877,7 @@ def proxy_agent_chat():
                 bot_text = res_json['choices'][0]['message']['content']
                 save_agent_chat_message(db_session_id, tenant_id, 'assistant', bot_text)
                 return jsonify({"response": bot_text, "session_id": db_session_id}), 200
-            return jsonify({"response": "Respuesta vacía del agente"}), 500
+            return jsonify({"response": "Respuesta vacía del motor de IA."}), 500
         else:
             app.logger.error(f"Error del Agente ({response.status_code}): {response.text}")
             return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
