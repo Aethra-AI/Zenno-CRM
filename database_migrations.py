@@ -57,6 +57,14 @@ class DatabaseMigrations:
             'description': 'Crear tabla para sesiones de WhatsApp Web',
             'execute': self._migration_005_create_whatsapp_web_sessions
         })
+
+        # Migración 6: Sistema de Persistencia de Chat para Agentes (IDE UX)
+        self.migrations.append({
+            'id': 6,
+            'name': 'create_agent_chat_persistence_tables',
+            'description': 'Crear tablas AgentSessions y AgentMessages para historial centralizado tipo IDE',
+            'execute': self._migration_006_agent_sessions
+        })
     
     def _create_migrations_table(self, conn):
         """Crear tabla para trackear migraciones ejecutadas"""
@@ -536,6 +544,62 @@ class DatabaseMigrations:
         conn.commit()
         cursor.close()
         logger.info("   ✅ Tabla WhatsApp_Web_Sessions creada exitosamente")
+
+    def _migration_006_agent_sessions(self, conn):
+        """
+        Migración 006: Sistema de Persistencia de Chat para Agentes (IDE UX)
+        Crea las tablas necesarias para el historial centralizado y multi-dispositivo
+        """
+        cursor = conn.cursor()
+        
+        logger.info("   📦 Creando tablas de persistencia de Agentes...")
+        
+        # 1. Tabla de Sesiones (Conversaciones)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS AgentSessions (
+                id_session VARCHAR(255) PRIMARY KEY COMMENT 'ID único de la conversación (UUID)',
+                tenant_id INT NOT NULL COMMENT 'ID del Tenant (Aislamiento)',
+                user_id INT NOT NULL COMMENT 'ID del Usuario dueño del chat',
+                
+                titulo VARCHAR(255) DEFAULT 'Nueva Conversación' COMMENT 'Nombre visible en el historial',
+                tipo ENUM('admin', 'user') DEFAULT 'user' COMMENT 'Tipo de conversación',
+                
+                fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+                ultima_actividad DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_tenant_user (tenant_id, user_id),
+                INDEX idx_ultima_actividad (ultima_actividad),
+                
+                FOREIGN KEY (tenant_id) REFERENCES Tenants(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES Users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='Sesiones de chat individuales para el historial tipo IDE'
+        """)
+        
+        # 2. Tabla de Mensajes (Historial detallado)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS AgentMessages (
+                id_mensaje BIGINT AUTO_INCREMENT PRIMARY KEY,
+                id_session VARCHAR(255) NOT NULL,
+                tenant_id INT NOT NULL COMMENT 'Para filtrado rápido sin JOIN',
+                
+                rol ENUM('user', 'assistant', 'system') NOT NULL,
+                contenido LONGTEXT NOT NULL,
+                
+                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                INDEX idx_session_date (id_session, fecha),
+                INDEX idx_tenant_msg (tenant_id),
+                
+                FOREIGN KEY (id_session) REFERENCES AgentSessions(id_session) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES Tenants(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='Historial de mensajes centralizado para acceso multi-dispositivo'
+        """)
+        
+        conn.commit()
+        cursor.close()
+        logger.info("   ✅ Tablas AgentSessions y AgentMessages creadas exitosamente")
 
 # Función helper para ejecutar migraciones desde app.py
 def run_database_migrations(db_config):
