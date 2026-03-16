@@ -16763,10 +16763,13 @@ def save_agent_chat_message(session_id, tenant_id, role, content):
     if not conn: return
     cursor = conn.cursor()
     try:
+        # Si el contenido no es string (ej: es un objeto multimodal), lo convertimos a JSON
+        save_content = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        
         cursor.execute("""
             INSERT INTO AgentMessages (id_session, tenant_id, rol, contenido)
             VALUES (%s, %s, %s, %s)
-        """, (session_id, tenant_id, role, content))
+        """, (session_id, tenant_id, role, save_content))
         conn.commit()
     except Exception as e:
         logger.error(f"Error guardando mensaje chat: {e}")
@@ -16777,18 +16780,19 @@ def save_agent_chat_message(session_id, tenant_id, role, content):
 @app.route('/api/agents/chat', methods=['POST'])
 @token_required
 def proxy_agent_chat():
-    """Proxy para enviar mensajes al Agente vía API OpenAI con persistencia SQL"""
+    """Proxy para enviar mensajes al Agente vía API OpenAI con persistencia SQL y soporte multimodal"""
     tenant_id = get_current_tenant_id()
     user_id = g.current_user.get('user_id')
     data = request.get_json()
-    message = data.get('message')
+    message = data.get('message') # Puede ser string o lista de content blocks
     client_session_id = data.get('session_id') # Opcional desde el frontend
+    session_title = data.get('title') # Opcional para nombrar la sesión
 
     if not message:
         return jsonify({"error": "Mensaje requerido"}), 400
 
     # 1. Gestionar Sesión en SQL
-    db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id)
+    db_session_id = get_or_create_agent_session(user_id, tenant_id, client_session_id, session_title)
     
     # 2. Guardar mensaje del usuario
     save_agent_chat_message(db_session_id, tenant_id, 'user', message)
@@ -16797,18 +16801,21 @@ def proxy_agent_chat():
     agent_url = f"http://127.0.0.1:{19000 + tenant_id}/v1/chat/completions"
     token = "esc-agent-token-secure-v2"
     
-    # Lógica de Ruteo Inteligente (Módulo 3)
-    # Keneth (Admin) habla con 'main', los demás con su propia identidad de sesión
+    # Lógica de Ruteo Inteligente
     user_role = g.current_user.get('rol')
     target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
     
-    app.logger.info(f"Ruteando mensaje: Rol={user_role} -> Agente={target_agent_id} [Session: {db_session_id}]")
+    app.logger.info(f"Ruteando mensaje (IDE): Rol={user_role} -> Agente={target_agent_id} [Session: {db_session_id}]")
     
     try:
         # 3. Llamada al Agente
+        # Si message es una lista, la pasamos directamente como content
+        # Si es string, la envolvemos
+        content_payload = message if isinstance(message, (list, dict)) else message
+        
         payload = {
-            "model": target_agent_id, # El CRM pide el sub-agente específico
-            "messages": [{"role": "user", "content": message}],
+            "model": target_agent_id,
+            "messages": [{"role": "user", "content": content_payload}],
             "user": db_session_id
         }
         headers = {
