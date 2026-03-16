@@ -7,6 +7,7 @@
 *.log
 
 # Carpetas innecesarias
+venv/
 sessions/
 temp_uploads/
 temp_jobs/
