@@ -16789,43 +16789,13 @@ except ImportError:
 from io import BytesIO
 
 def save_multimodal_files_for_agent(tenant_id, message_list):
-    """Extrae archivos de un mensaje multimodal y los guarda en el workspace del agente"""
-    if not isinstance(message_list, list):
-        return
-    
-    tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}", "workspace")
-    os.makedirs(tenant_data_path, exist_ok=True)
-    
-    for block in message_list:
-        if block.get('type') == 'image_url':
-            url = block.get('image_url', {}).get('url', '')
-            if url.startswith('data:image/'):
-                try:
-                    # Extraer base64
-                    header, encoded = url.split(",", 1)
-                    ext = header.split(";")[0].split("/")[1]
-                    data = base64.b64decode(encoded)
-                    
-                    filename = f"upload_{int(time.time())}_{secrets.token_hex(4)}.{ext}"
-                    filepath = os.path.join(tenant_data_path, filename)
-                    
-                    with open(filepath, "wb") as f:
-                        f.write(data)
-                    
-                    app.logger.info(f"Imagen guardada en workspace del agente: {filename}")
-                except Exception as e:
-                    app.logger.error(f"Error guardando imagen para agente: {e}")
-
-def save_multimodal_files_for_agent(tenant_id, message_list):
-    """Extrae archivos de un mensaje multimodal y los guarda en el workspace del agente"""
+    """Extrae archivos de un mensaje multimodal y los guarda en la raíz del workspace del agente"""
     if not isinstance(message_list, list):
         return []
     
-    # Ruta física en el host que está montada en el contenedor
-    # El orquestador usa BASE_DATA_PATH/tenant_{id} -> /app/data
+    # Ruta física en el host que está montada como /app/data en el contenedor
     tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}")
-    workspace_path = os.path.join(tenant_data_path, "workspace")
-    os.makedirs(workspace_path, exist_ok=True)
+    os.makedirs(tenant_data_path, exist_ok=True)
     
     saved_files = []
     for block in message_list:
@@ -16837,15 +16807,17 @@ def save_multimodal_files_for_agent(tenant_id, message_list):
                     ext = header.split(";")[0].split("/")[1]
                     data = base64.b64decode(encoded)
                     
-                    filename = f"image_{int(time.time())}.{ext}"
-                    filepath = os.path.join(workspace_path, filename)
+                    # Nombre corto y limpio para que el agente lo identifique fácil
+                    filename = f"chat_img_{int(time.time())}.{ext}"
+                    filepath = os.path.join(tenant_data_path, filename)
                     
                     with open(filepath, "wb") as f:
                         f.write(data)
                     
                     saved_files.append({"name": filename, "type": "imagen"})
+                    app.logger.info(f"Imagen guardada en raíz: {filename}")
                 except Exception as e:
-                    app.logger.error(f"Error guardando imagen para agente: {e}")
+                    app.logger.error(f"Error guardando imagen: {e}")
         elif block.get('type') == 'file':
             file_data = block.get('file', {})
             url = file_data.get('url', '')
@@ -16853,13 +16825,13 @@ def save_multimodal_files_for_agent(tenant_id, message_list):
                 try:
                     header, encoded = url.split(",", 1)
                     data = base64.b64decode(encoded)
-                    filename = file_data.get('name', f"file_{int(time.time())}")
-                    filepath = os.path.join(workspace_path, filename)
+                    filename = file_data.get('name', f"chat_file_{int(time.time())}")
+                    filepath = os.path.join(tenant_data_path, filename)
                     with open(filepath, "wb") as f:
                         f.write(data)
                     saved_files.append({"name": filename, "type": "archivo"})
                 except Exception as e:
-                    app.logger.error(f"Error guardando archivo para agente: {e}")
+                    app.logger.error(f"Error guardando archivo: {e}")
                     
     return saved_files
 
