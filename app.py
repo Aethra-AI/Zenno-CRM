@@ -5656,20 +5656,25 @@ def get_dashboard_metrics():
         cursor.execute(sql, tuple(params))
         vacantes_por_estado = cursor.fetchall()
         
-        # 4. Tasa de conversión (postulaciones → contrataciones) - filtrado por usuario
+        # 4. Tasa de conversión (postulaciones → contrataciones) - filtrado por usuario y candidato
         sql = """
             SELECT 
                 COUNT(DISTINCT p.id_postulacion) as total_postulaciones,
                 COUNT(DISTINCT c.id_contratado) as total_contrataciones
             FROM Postulaciones p
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
             LEFT JOIN Contratados c ON p.id_afiliado = c.id_afiliado AND p.id_vacante = c.id_vacante AND c.tenant_id = %s
-            WHERE p.tenant_id = %s AND v.tenant_id = %s
+            WHERE p.tenant_id = %s AND v.tenant_id = %s AND a.tenant_id = %s
         """
-        params = [tenant_id, tenant_id, tenant_id]
+        params = [tenant_id, tenant_id, tenant_id, tenant_id]
         if vacancy_condition:
             sql += f" AND ({vacancy_condition})"
             params.extend(vacancy_params)
+        if candidate_condition:
+            sql += f" AND ({candidate_condition})"
+            params.extend(candidate_params)
+        
         cursor.execute(sql, tuple(params))
         conversion_data = cursor.fetchone()
         tasa_conversion = (conversion_data['total_contrataciones'] / conversion_data['total_postulaciones'] * 100) if conversion_data['total_postulaciones'] > 0 else 0
@@ -5777,7 +5782,7 @@ def get_dashboard_metrics():
                     cliente_clean[key] = 0
             top_clientes.append(cliente_clean)
         
-        # 9. Efectividad por usuario (FILTRADO POR USUARIO) 🔐
+        # 9. Efectividad por usuario (FILTRADO POR USUARIO Y CANDIDATO) 🔐
         sql = """
             SELECT 
                 %s as usuario,
@@ -5785,17 +5790,22 @@ def get_dashboard_metrics():
                 COUNT(DISTINCT co.id_contratado) as total_contrataciones
             FROM Postulaciones p
             JOIN Vacantes v ON p.id_vacante = v.id_vacante
+            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
             LEFT JOIN Contratados co ON p.id_afiliado = co.id_afiliado AND p.id_vacante = co.id_vacante
-            WHERE p.tenant_id = %s AND v.tenant_id = %s AND (co.tenant_id = %s OR co.tenant_id IS NULL)
+            WHERE p.tenant_id = %s AND v.tenant_id = %s AND a.tenant_id = %s AND (co.tenant_id = %s OR co.tenant_id IS NULL)
         """
-        params_efectividad = [user_data.get('nombre', 'Usuario'), tenant_id, tenant_id, tenant_id]
+        params_efectividad = [user_data.get('nombre', 'Usuario'), tenant_id, tenant_id, tenant_id, tenant_id]
         if vacancy_condition:
             sql += f" AND ({vacancy_condition})"
             params_efectividad.extend(vacancy_params)
+        if candidate_condition:
+            sql += f" AND ({candidate_condition})"
+            params_efectividad.extend(candidate_params)
+            
         cursor.execute(sql, tuple(params_efectividad))
         efectividad_usuario = cursor.fetchone()
         
-        # 10. Tasa de éxito por tipo de vacante (FILTRADO POR USUARIO) 🔐
+        # 10. Tasa de éxito por tipo de vacante (FILTRADO POR USUARIO Y CANDIDATO) 🔐
         sql = """
             SELECT 
                 v.cargo_solicitado,
@@ -5807,14 +5817,19 @@ def get_dashboard_metrics():
                     ELSE 0
                 END as tasa_exito
             FROM Vacantes v
-            LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante
-            LEFT JOIN Contratados co ON v.id_vacante = co.id_vacante
-            WHERE v.tenant_id = %s AND (p.tenant_id = %s OR p.tenant_id IS NULL) AND (co.tenant_id = %s OR co.tenant_id IS NULL)
+            JOIN Postulaciones p ON v.id_vacante = p.id_vacante
+            JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
+            LEFT JOIN Contratados co ON v.id_vacante = co.id_vacante AND co.id_afiliado = a.id_afiliado
+            WHERE v.tenant_id = %s AND p.tenant_id = %s AND a.tenant_id = %s AND (co.tenant_id = %s OR co.tenant_id IS NULL)
         """
-        params_tasa = [tenant_id, tenant_id, tenant_id]
+        params_tasa = [tenant_id, tenant_id, tenant_id, tenant_id]
         if vacancy_condition:
             sql += f" AND ({vacancy_condition})"
             params_tasa.extend(vacancy_params)
+        if candidate_condition:
+            sql += f" AND ({candidate_condition})"
+            params_tasa.extend(candidate_params)
+            
         sql += """
             GROUP BY v.id_vacante, v.cargo_solicitado
             HAVING total_postulaciones > 0
@@ -6107,7 +6122,8 @@ def get_candidates():
             params.append(status)
         
         # Obtener total de registros
-        count_query = query.replace("SELECT \n                a.id_afiliado, \n                a.nombre_completo as nombre, \n                a.email, \n                a.telefono, \n                a.ciudad, \n                a.fecha_registro, \n                a.estado, \n                a.experiencia,\n                a.grado_academico,\n                a.puntuacion as score,\n                a.disponibilidad_rotativos,\n                a.cv_url,\n                a.linkedin,\n                a.portfolio,\n                a.skills,\n                a.observaciones,\n                a.transporte_propio,\n                a.cargo_solicitado,\n                a.fuente_reclutamiento,\n                a.fecha_nacimiento,\n                a.ultimo_contacto,\n                (SELECT COUNT(*) FROM Postulaciones p WHERE p.id_afiliado = a.id_afiliado) as total_aplicaciones,\n                (SELECT GROUP_CONCAT(DISTINCT c.empresa SEPARATOR ', ') \n                 FROM Postulaciones p \n                 JOIN Vacantes v ON p.id_vacante = v.id_vacante \n                 JOIN Clientes c ON v.id_cliente = c.id_cliente \n                 WHERE p.id_afiliado = a.id_afiliado) as empresas_aplicadas", "SELECT COUNT(*) as total")
+        # Solución robusta: Envolver el query original como una subquery en lugar de reemplazar strings frágiles.
+        count_query = f"SELECT COUNT(*) as total FROM ({query}) AS sub"
         cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
         
