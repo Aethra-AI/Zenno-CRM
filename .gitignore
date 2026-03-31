@@ -1,20 +1,61 @@
-# Archivos sensibles
+# Archivos sensibles (Claves, Certificados y Entornos)
 *.key
 *.pem
 *.ppk
 .env
-*.db
-*.log
+.env.*
+!.env.example
 
-# Carpetas innecesarias
+# Bases de datos locales
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+*.log.*
+logs/
+
+# Entornos virtuales y librerías (Dependencias)
 venv/
+env/
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+
+# Archivos propios del Agente de IA y Data persistente
+agents-data/
+.claude/
+.agent/
+.gemini/
+
+# Carpetas de datos locales (sesiones, subidas, trabajos temporales)
 sessions/
 temp_uploads/
 temp_jobs/
-__pycache__/
-node_modules/
+uploads/
+tmp/
 
-# Archivos de sistema
+# Builds y compilados
+build/
+build*/
+dist/
+target/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Cosas de Docker temporales o locales (Opcional)
+docker-compose.override.yml
+
+# Archivos de sistema, editores de código y Backups
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.bak
 *.tmp
 *.backup
+backups/

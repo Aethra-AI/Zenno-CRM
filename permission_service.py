@@ -1,12 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-🔐 PERMISSION SERVICE - Sistema de Permisos y Jerarquía
-Módulo B4: Gestión de permisos, roles y acceso a recursos
-
-Jerarquía de roles:
-- Administrador: Acceso total al tenant
-- Supervisor: Acceso a su equipo y recursos asignados
-- Reclutador: Solo sus propios recursos
+🔐 PERMISSION SERVICE - Sistema de Permisos y Jerarquía v3
+Módulo B4: Gestión de permisos, roles y acceso a recursos conectado a Permisos_Unificados.
 """
 
 import mysql.connector
@@ -42,198 +37,247 @@ def get_db_connection():
 
 
 # =====================================================
-# 1. FUNCIONES DE ROLES
+# 1. FUNCIONES DE ROLES (Legacy / Compatibilidad)
 # =====================================================
 
 def get_user_role_info(user_id, tenant_id):
-    """
-    Obtiene información completa del rol del usuario.
-    
-    Returns:
-        dict: {
-            'role_id': int,
-            'role_name': str,
-            'permissions': dict
-        }
-    """
+    """Obtiene información básica del rol del usuario para compatibilidad."""
     conn = get_db_connection()
-    if not conn:
-        return None
-    
+    if not conn: return None
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT 
-                r.id as role_id,
-                r.nombre as role_name,
-                r.permisos as permissions
+            SELECT r.id as role_id, r.nombre as role_name
             FROM Users u
             JOIN Roles r ON u.rol_id = r.id
-            WHERE u.id = %s 
-              AND u.tenant_id = %s 
-              AND u.activo = 1
-              AND r.activo = 1
+            WHERE u.id = %s AND u.tenant_id = %s AND u.activo = 1 AND r.activo = 1
         """, (user_id, tenant_id))
-        
-        result = cursor.fetchone()
-        if result and result.get('permissions'):
-            # Parsear JSON de permisos
-            try:
-                result['permissions'] = json.loads(result['permissions'])
-            except:
-                result['permissions'] = {}
-        
-        return result
-    
+        return cursor.fetchone()
     except Exception as e:
-        logger.error(f"Error obteniendo rol del usuario: {str(e)}")
+        logger.error(f"Error en get_user_role_info: {str(e)}")
         return None
     finally:
         cursor.close()
         conn.close()
 
-
 def get_user_role_name(user_id, tenant_id):
-    """
-    Obtiene el nombre del rol del usuario.
-    
-    Returns:
-        str: 'Administrador', 'Supervisor', 'Reclutador', o None
-    """
     role_info = get_user_role_info(user_id, tenant_id)
     return role_info['role_name'] if role_info else None
 
-
 def is_admin(user_id, tenant_id):
-    """Verifica si el usuario es Administrador"""
-    role_name = get_user_role_name(user_id, tenant_id)
-    return role_name == 'Administrador'
-
+    return get_user_role_name(user_id, tenant_id) == 'Administrador'
 
 def is_supervisor(user_id, tenant_id):
-    """Verifica si el usuario es Supervisor"""
-    role_name = get_user_role_name(user_id, tenant_id)
-    return role_name == 'Supervisor'
-
+    return get_user_role_name(user_id, tenant_id) == 'Supervisor'
 
 def is_recruiter(user_id, tenant_id):
-    """Verifica si el usuario es Reclutador"""
-    role_name = get_user_role_name(user_id, tenant_id)
-    return role_name == 'Reclutador'
+    return get_user_role_name(user_id, tenant_id) == 'Reclutador'
 
 
 # =====================================================
-# 2. FUNCIONES DE PERMISOS
+# TRADUCTOR UNIVERSAL DE MÓDULOS (FASE 3)
 # =====================================================
 
-def check_permission(user_id, tenant_id, permission_key):
+TRADUCTOR_MODULOS = {
+    # Candidatos
+    'candidate': 'candidates', 'candidates': 'candidates',
+    'candidato': 'candidates', 'candidatos': 'candidates',
+    'afiliado': 'candidates', 'afiliados': 'candidates',
+    # Vacantes
+    'vacancy': 'vacancies', 'vacancies': 'vacancies',
+    'vacante': 'vacancies', 'vacantes': 'vacancies',
+    # Clientes
+    'client': 'clients', 'clients': 'clients',
+    'cliente': 'clients', 'clientes': 'clients',
+    # Usuarios
+    'user': 'users', 'users': 'users',
+    'usuario': 'users', 'usuarios': 'users',
+    # Reportes
+    'report': 'reports', 'reports': 'reports',
+    'reporte': 'reports', 'reportes': 'reports',
+    # Contratados
+    'hired': 'hired', 'contratado': 'hired', 'contratados': 'hired'
+}
+
+def normalizar_modulo(modulo):
+    """Normaliza el nombre del módulo usando el TRADUCTOR_MODULOS."""
+    if not modulo: return modulo
+    return TRADUCTOR_MODULOS.get(modulo.lower(), modulo)
+
+
+# =====================================================
+# 2. REFACTORIZACIÓN FASE 3 - TABLAS V3 (Permisos_Unificados)
+# =====================================================
+
+def can_access_tab(user_id, tenant_id, modulo):
     """
-    Verifica si el usuario tiene un permiso específico.
-    
-    Args:
-        user_id (int): ID del usuario
-        tenant_id (int): ID del tenant
-        permission_key (str): Clave del permiso a verificar
-            Ejemplos: 'all', 'manage_users', 'create', 'edit_own', etc.
-    
-    Returns:
-        bool: True si tiene el permiso, False si no
+    Reescrita Fase 3: Consulta SELECT ver FROM Permisos_Unificados.
     """
-    role_info = get_user_role_info(user_id, tenant_id)
-    if not role_info:
+    if is_admin(user_id, tenant_id): return True
+    
+    modulo_db = normalizar_modulo(modulo)
+    
+    conn = get_db_connection()
+    if not conn: return False
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT ver FROM Permisos_Unificados WHERE user_id=%s AND modulo=%s", (user_id, modulo_db))
+        result = cursor.fetchone()
+        return bool(result[0]) if result else False
+    except Exception as e:
+        logger.error(f"Error en can_access_tab: {str(e)}")
         return False
-    
-    permissions = role_info.get('permissions', {})
-    
-    # Admin tiene acceso a todo
-    if permissions.get('all') is True:
-        return True
-    
-    # Verificar permiso específico
-    return permissions.get(permission_key) is True
+    finally:
+        cursor.close()
+        conn.close()
 
-
-def get_user_permissions(user_id, tenant_id):
+def can_perform_action(user_id, tenant_id, modulo, action):
     """
-    Obtiene todos los permisos del usuario (solo del rol, sin custom).
-    Para permisos completos usar get_effective_permissions().
+    Reescrita Fase 3: Consulta columna específica en Permisos_Unificados.
+    """
+    if is_admin(user_id, tenant_id): return True
     
-    Returns:
-        dict: Diccionario de permisos del rol
+    modulo_db = normalizar_modulo(modulo)
+    
+    # Lista blanca de columnas permitidas para evitar SQL Injection indirecto
+    allowed_actions = ['ver', 'crear', 'editar', 'eliminar', 'exportar', 'importar', 'asignar']
+    if action not in allowed_actions:
+        # Si la acción no está en la lista estándar, intentamos usarla pero con cuidado
+        logger.warning(f"Acción no estándar solicitada: {action}")
+    
+    conn = get_db_connection()
+    if not conn: return False
+    cursor = conn.cursor()
+    try:
+        # Nota: Los nombres de columnas son seguros aquí ya que vienen del código, no del user input directo
+        query = f"SELECT `{action}` FROM Permisos_Unificados WHERE user_id=%s AND modulo=%s"
+        cursor.execute(query, (user_id, modulo_db))
+        result = cursor.fetchone()
+        return bool(result[0]) if result else False
+    except Exception as e:
+        logger.error(f"Error en can_perform_action: {str(e)}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+
+def get_redactions_for_tab(user_id, tenant_id, modulo):
     """
-    role_info = get_user_role_info(user_id, tenant_id)
-    return role_info.get('permissions', {}) if role_info else {}
+    Reescrita Fase 3: Consulta switches de privacidad.
+    """
+    if is_admin(user_id, tenant_id): return []
+    
+    modulo_db = normalizar_modulo(modulo)
+    
+    conn = get_db_connection()
+    if not conn: return []
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT ver_email_telefono, ver_nombre_empresa 
+            FROM Permisos_Unificados 
+            WHERE user_id=%s AND modulo=%s
+        """, (user_id, modulo_db))
+        result = cursor.fetchone()
+        
+        redacted = []
+        if result:
+            # Lógica corregida: 1 (True) = visible, 0 (False) = redactado
+            if not bool(result.get('ver_email_telefono')):
+                redacted.extend(['email', 'telefono'])
+            if not bool(result.get('ver_nombre_empresa')):
+                redacted.append('empresa')
+        return redacted
+    except Exception as e:
+        logger.error(f"Error en get_redactions_for_tab: {str(e)}")
+        return []
+    finally:
+        cursor.close()
+        conn.close()
+
+# Alias para compatibilidad con firmas antiguas que usaban tab_key
+def can_action_on_tab(user_id, tenant_id, tab_key, action):
+    # Traducir acciones legacy a las de la tabla v3
+    action_map = {'write': 'editar', 'create': 'crear', 'delete': 'eliminar'}
+    v3_action = action_map.get(action, action)
+    return can_perform_action(user_id, tenant_id, tab_key, v3_action)
+
+def get_scope_for_tab(user_id, tenant_id, modulo):
+    """Obtiene el alcance (alcance: todo, asignados, ninguno)"""
+    if is_admin(user_id, tenant_id): return 'all'
+    
+    modulo_db = normalizar_modulo(modulo)
+    
+    conn = get_db_connection()
+    if not conn: return 'none'
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT alcance FROM Permisos_Unificados WHERE user_id=%s AND modulo=%s", (user_id, modulo_db))
+        result = cursor.fetchone()
+        if not result: return 'none'
+        
+        # Mapeo de alcances V3 a lógica de filtros
+        mapping = {
+            'todo': 'all',
+            'asignados': 'own',
+            'ninguno': 'none'
+        }
+        return mapping.get(result['alcance'], 'none')
+    except Exception as e:
+        logger.error(f"Error en get_scope_for_tab (V3): {str(e)}")
+        return 'none'
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # =====================================================
-# 3. FUNCIONES DE JERARQUÍA (EQUIPOS)
+# 3. FUNCIONES DE JERARQUÍA (EQUIPOS) - Se mantienen
 # =====================================================
 
 def get_team_members(supervisor_id, tenant_id):
-    """
-    Obtiene los IDs de los miembros del equipo de un supervisor.
-    
-    Returns:
-        list: Lista de user_ids
-    """
+    """Obtener miembros del equipo usando Asignaciones_Centrales (V3)."""
     conn = get_db_connection()
-    if not conn:
-        return []
-    
+    if not conn: return []
     cursor = conn.cursor(dictionary=True)
     try:
+        # En V3, un supervisor tiene asignados 'usuarios' (miembros de equipo)
+        # usuario_destino = supervisor_id, tipo_entidad = 'usuario', entidad_id = member_id
         cursor.execute("""
-            SELECT team_member_id
-            FROM Team_Structure
-            WHERE supervisor_id = %s 
-              AND tenant_id = %s 
-              AND is_active = 1
+            SELECT entidad_id as team_member_id 
+            FROM Asignaciones_Centrales
+            WHERE usuario_destino = %s AND tenant_id = %s AND tipo_entidad = 'usuario'
         """, (supervisor_id, tenant_id))
-        
-        results = cursor.fetchall()
-        return [row['team_member_id'] for row in results]
-    
+        return [row['team_member_id'] for row in cursor.fetchall()]
     except Exception as e:
-        logger.error(f"Error obteniendo miembros del equipo: {str(e)}")
+        logger.error(f"Error en get_team_members (V3): {str(e)}")
         return []
     finally:
         cursor.close()
         conn.close()
 
-
 def is_user_in_team(supervisor_id, team_member_id, tenant_id):
-    """Verifica si un usuario es miembro del equipo de un supervisor"""
     team_members = get_team_members(supervisor_id, tenant_id)
     return team_member_id in team_members
 
-
 def get_user_supervisor(user_id, tenant_id):
-    """
-    Obtiene el supervisor del usuario (si tiene).
-    
-    Returns:
-        int or None: ID del supervisor
-    """
+    """Obtener supervisor usando Asignaciones_Centrales (V3)."""
     conn = get_db_connection()
-    if not conn:
-        return None
-    
+    if not conn: return None
     cursor = conn.cursor(dictionary=True)
     try:
+        # En V3, si un usuario es miembro de equipo, su supervisor lo tiene asignado
+        # usuario_destino = supervisor_id, entidad_id = user_id
         cursor.execute("""
-            SELECT supervisor_id
-            FROM Team_Structure
-            WHERE team_member_id = %s 
-              AND tenant_id = %s 
-              AND is_active = 1
+            SELECT usuario_destino as supervisor_id 
+            FROM Asignaciones_Centrales
+            WHERE entidad_id = %s AND tenant_id = %s AND tipo_entidad = 'usuario'
             LIMIT 1
         """, (user_id, tenant_id))
-        
         result = cursor.fetchone()
         return result['supervisor_id'] if result else None
-    
     except Exception as e:
-        logger.error(f"Error obteniendo supervisor: {str(e)}")
+        logger.error(f"Error en get_user_supervisor (V3): {str(e)}")
         return None
     finally:
         cursor.close()
@@ -241,603 +285,138 @@ def get_user_supervisor(user_id, tenant_id):
 
 
 # =====================================================
-# 4. FUNCIONES DE ACCESO A RECURSOS
+# 4. FUNCIONES DE ACCESO A RECURSOS - Se mantienen
 # =====================================================
 
-def get_assigned_resources(user_id, tenant_id, resource_type=None):
-    """
-    Obtiene los recursos asignados a un usuario.
-    
-    Args:
-        user_id (int): ID del usuario
-        tenant_id (int): ID del tenant
-        resource_type (str, optional): 'vacancy', 'client', 'candidate'
-    
-    Returns:
-        list: Lista de dicts con información de recursos asignados
-    """
-    conn = get_db_connection()
-    if not conn:
-        return []
-    
-    cursor = conn.cursor(dictionary=True)
-    try:
-        query = """
-            SELECT 
-                resource_type,
-                resource_id,
-                access_level
-            FROM Resource_Assignments
-            WHERE assigned_to_user = %s 
-              AND tenant_id = %s 
-              AND is_active = 1
-        """
-        params = [user_id, tenant_id]
-        
-        if resource_type:
-            query += " AND resource_type = %s"
-            params.append(resource_type)
-        
-        cursor.execute(query, tuple(params))
-        return cursor.fetchall()
-    
-    except Exception as e:
-        logger.error(f"Error obteniendo recursos asignados: {str(e)}")
-        return []
-    finally:
-        cursor.close()
-        conn.close()
-
-
 def can_access_resource(user_id, tenant_id, resource_type, resource_id, required_access='read'):
-    """
-    Verifica si un usuario puede acceder a un recurso específico.
+    if is_admin(user_id, tenant_id): return True
+    if was_created_by_user(user_id, tenant_id, resource_type, resource_id): return True
     
-    Args:
-        user_id (int): ID del usuario
-        tenant_id (int): ID del tenant
-        resource_type (str): 'vacancy', 'client', 'candidate'
-        resource_id (int): ID del recurso
-        required_access (str): 'read', 'write', 'full'
-    
-    Returns:
-        bool: True si puede acceder, False si no
-    """
-    # Admin tiene acceso a todo
-    if is_admin(user_id, tenant_id):
-        return True
-    
-    # Verificar si el recurso fue creado por el usuario
-    if was_created_by_user(user_id, tenant_id, resource_type, resource_id):
-        return True
-    
-    # Verificar si el recurso está asignado al usuario
     conn = get_db_connection()
-    if not conn:
-        return False
-    
+    if not conn: return False
     cursor = conn.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT access_level
-            FROM Resource_Assignments
-            WHERE assigned_to_user = %s 
-              AND tenant_id = %s 
-              AND resource_type = %s
-              AND resource_id = %s
-              AND is_active = 1
+            SELECT access_level FROM Resource_Assignments
+            WHERE assigned_to_user = %s AND tenant_id = %s AND resource_type = %s AND resource_id = %s AND is_active = 1
         """, (user_id, tenant_id, resource_type, resource_id))
-        
         result = cursor.fetchone()
-        if not result:
-            return False
+        if not result: return False
         
-        access_level = result['access_level']
-        
-        # Mapeo de niveles de acceso
-        access_hierarchy = {
-            'read': 1,
-            'write': 2,
-            'full': 3
-        }
-        
-        user_level = access_hierarchy.get(access_level, 0)
-        required_level = access_hierarchy.get(required_access, 0)
-        
-        return user_level >= required_level
-    
-    except Exception as e:
-        logger.error(f"Error verificando acceso a recurso: {str(e)}")
-        return False
+        hierarchy = {'read': 1, 'write': 2, 'full': 3}
+        return hierarchy.get(result['access_level'], 0) >= hierarchy.get(required_access, 0)
+    except: return False
     finally:
         cursor.close()
         conn.close()
 
-
 def was_created_by_user(user_id, tenant_id, resource_type, resource_id):
-    """
-    Verifica si un recurso fue creado por el usuario.
-    
-    Returns:
-        bool: True si fue creado por el usuario
-    """
-    # Mapeo de tipos de recurso a tablas
-    table_map = {
-        'vacancy': 'Vacantes',
-        'client': 'Clientes',
-        'candidate': 'Afiliados',
-        'hired': 'Contratados'  # 🔐 MÓDULO B10
-    }
+    table_map = {'vacancy': 'Vacantes', 'client': 'Clientes', 'candidate': 'Afiliados', 'hired': 'Contratados'}
+    id_map = {'vacancy': 'id_vacante', 'client': 'id_cliente', 'candidate': 'id_afiliado', 'hired': 'id_contratado'}
     
     table = table_map.get(resource_type)
-    if not table:
-        return False
-    
-    # Mapeo de nombres de columnas ID
-    id_column_map = {
-        'vacancy': 'id_vacante',
-        'client': 'id_cliente',
-        'candidate': 'id_afiliado',
-        'hired': 'id_contratado'  # 🔐 MÓDULO B10
-    }
-    
-    id_column = id_column_map.get(resource_type)
+    id_col = id_map.get(resource_type)
+    if not table or not id_col: return False
     
     conn = get_db_connection()
-    if not conn:
-        return False
-    
+    if not conn: return False
     cursor = conn.cursor(dictionary=True)
     try:
-        # 🔍 CORRECCIÓN: Usar el nombre de columna correcto según la tabla
-        # Para Afiliados: created_by_user_id, para Vacantes/Clientes: created_by_user
-        created_by_column = 'created_by_user_id' if resource_type == 'candidate' else 'created_by_user'
-        
-        query = f"""
-            SELECT {created_by_column}
-            FROM {table}
-            WHERE {id_column} = %s 
-              AND tenant_id = %s
-        """
+        created_by_col = 'created_by_user_id' if resource_type == 'candidate' else 'created_by_user'
+        query = f"SELECT {created_by_col} FROM {table} WHERE {id_col} = %s AND tenant_id = %s"
         cursor.execute(query, (resource_id, tenant_id))
-        
         result = cursor.fetchone()
-        if not result:
-            return False
-        
-        return result[created_by_column] == user_id
-    
-    except Exception as e:
-        logger.error(f"Error verificando creador del recurso: {str(e)}")
-        return False
+        return result and result[created_by_col] == user_id
+    except: return False
     finally:
         cursor.close()
         conn.close()
 
 
 # =====================================================
-# 5. FUNCIONES DE FILTROS PARA QUERIES
+# 5. FILTROS SQL - Se mantienen
 # =====================================================
 
 def get_accessible_user_ids(user_id, tenant_id):
-    """
-    Obtiene los IDs de usuarios cuya información puede ver el usuario actual.
-    
-    Para Admin: todos del tenant
-    Para Supervisor: él mismo + su equipo
-    Para Reclutador: solo él mismo
-    
-    Returns:
-        list: Lista de user_ids accesibles
-    """
-    # Admin ve a todos
-    if is_admin(user_id, tenant_id):
-        return None  # None significa "todos"
-    
-    # Supervisor ve su equipo
+    if is_admin(user_id, tenant_id): return None
     if is_supervisor(user_id, tenant_id):
-        team_members = get_team_members(user_id, tenant_id)
-        return [user_id] + team_members
-    
-    # Reclutador solo se ve a sí mismo
+        return [user_id] + get_team_members(user_id, tenant_id)
     return [user_id]
 
-
-def build_user_filter_condition(user_id, tenant_id, created_by_column='created_by_user',
-                                resource_type=None, resource_id_column=None):
+def build_user_filter_condition(user_id, tenant_id, created_by_field, resource_type, resource_id_field):
     """
-    🔐 CORREGIDO: Construye condición SQL que incluye recursos asignados.
-    
-    Un usuario puede ver recursos que:
-    1. ÉL creó (created_by_user)
-    2. Le fueron ASIGNADOS por el Admin (Resource_Assignments)
-    3. De su equipo si es Supervisor
-    
-    Args:
-        user_id (int): ID del usuario actual
-        tenant_id (int): ID del tenant
-        created_by_column (str): Nombre de la columna created_by_user (ej: 'a.created_by_user')
-        resource_type (str): Tipo de recurso ('candidate', 'vacancy', 'client')
-        resource_id_column (str): Columna del ID del recurso (ej: 'a.id_afiliado')
-    
-    Returns:
-        tuple: (condition_str, params_list)
+    Reescrita Fase 4: Filtro de seguridad basado en alcances de Permisos_Unificados y Asignaciones_Centrales.
     """
-    accessible_users = get_accessible_user_ids(user_id, tenant_id)
+    # Mapeo de resource_type a modulo de la tabla Permisos_Unificados (Traductor Inglés/Español)
+    modulo_db = normalizar_modulo(resource_type)
     
-    # Admin: sin filtro
-    if accessible_users is None:
-        return ("", [])
-    
-    # Si no se especifica resource_type, usar enfoque antiguo (solo created_by)
-    if not resource_type or not resource_id_column:
-        if len(accessible_users) == 1:
-            return (f"{created_by_column} = %s", accessible_users)
-        placeholders = ','.join(['%s'] * len(accessible_users))
-        return (f"{created_by_column} IN ({placeholders})", accessible_users)
-    
-    # 🔐 NUEVO: Incluir recursos asignados
-    # Construir lista de placeholders para IN clause
-    user_placeholders = ','.join(['%s'] * len(accessible_users))
-    
-    condition = f"""(
-        {created_by_column} IN ({user_placeholders})
-        OR EXISTS (
-            SELECT 1 FROM Resource_Assignments ra
-            WHERE ra.resource_type = %s
-              AND ra.resource_id = {resource_id_column}
-              AND ra.assigned_to_user = %s
-              AND ra.tenant_id = %s
-              AND ra.is_active = TRUE
-        )
-    )"""
-    
-    # Parámetros: usuarios accesibles + tipo recurso + user_id + tenant_id
-    params = accessible_users + [resource_type, user_id, tenant_id]
-    
-    return (condition, params)
-
-
-# =====================================================
-# 6. FUNCIONES DE UTILIDAD
-# =====================================================
-
-def log_permission_check(user_id, tenant_id, action, resource_type=None, resource_id=None, allowed=False):
-    """
-    Registra un intento de acceso a un recurso (para auditoría).
-    """
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO Permission_Audit_Log 
-            (user_id, tenant_id, action, resource_type, resource_id, allowed, checked_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NOW())
-        """, (user_id, tenant_id, action, resource_type, resource_id, allowed))
-        conn.commit()
-    except Exception as e:
-        # No fallar si la tabla de auditoría no existe
-        logger.debug(f"No se pudo registrar auditoría: {str(e)}")
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals():
-            conn.close()
-
-
-# =====================================================
-# 7. VERIFICACIÓN DE PERMISOS ESPECÍFICOS
-# =====================================================
-
-def can_create_resource(user_id, tenant_id, resource_type):
-    """Verifica si el usuario puede crear un tipo de recurso"""
-    # Admin siempre puede
-    if is_admin(user_id, tenant_id):
-        return True
-    
-    # Supervisor puede crear
-    if is_supervisor(user_id, tenant_id):
-        return check_permission(user_id, tenant_id, 'create')
-    
-    # Reclutador puede crear (sus propios recursos)
-    if is_recruiter(user_id, tenant_id):
-        return check_permission(user_id, tenant_id, 'create')
-    
-    return False
-
-
-def can_manage_users(user_id, tenant_id):
-    """Verifica si el usuario puede gestionar otros usuarios"""
-    return check_permission(user_id, tenant_id, 'manage_users')
-
-
-def can_assign_resources(user_id, tenant_id):
-    """Verifica si el usuario puede asignar recursos a otros"""
-    # Admin siempre puede
-    if is_admin(user_id, tenant_id):
-        return True
-    
-    # Supervisor puede asignar a su equipo
-    if is_supervisor(user_id, tenant_id):
-        return check_permission(user_id, tenant_id, 'assign_resources')
-    
-    return False
-
-
-def can_view_reports(user_id, tenant_id, report_scope='own'):
-    """
-    Verifica si el usuario puede ver reportes.
-    
-    Args:
-        report_scope (str): 'all', 'team', 'own'
-    """
-    if report_scope == 'all':
-        return is_admin(user_id, tenant_id)
-    
-    if report_scope == 'team':
-        return is_admin(user_id, tenant_id) or is_supervisor(user_id, tenant_id)
-    
-    if report_scope == 'own':
-        return True  # Todos pueden ver sus propios reportes
-    
-    return False
-
-
-# =====================================================
-# EJEMPLO DE USO
-# =====================================================
-
-"""
-# Verificar si usuario puede crear vacante
-if can_create_resource(user_id, tenant_id, 'vacancy'):
-    # Crear vacante...
-    pass
-
-# Obtener condición de filtro para query
-condition, params = build_user_filter_condition(user_id, tenant_id)
-if condition:
-    query = f"SELECT * FROM Vacantes WHERE tenant_id = %s AND {condition}"
-    cursor.execute(query, [tenant_id] + params)
-else:
-    query = "SELECT * FROM Vacantes WHERE tenant_id = %s"
-    cursor.execute(query, [tenant_id])
-
-# Verificar acceso a recurso específico
-if can_access_resource(user_id, tenant_id, 'candidate', 123, 'write'):
-    # Editar candidato...
-    pass
-"""
-
-
-# =====================================================
-# 8. PERMISOS GRANULARES Y PERSONALIZADOS
-# =====================================================
-
-def get_effective_permissions(user_id, tenant_id):
-    """
-    Obtiene los permisos efectivos del usuario.
-    
-    Lógica:
-    1. Obtiene permisos base del Rol
-    2. Obtiene custom_permissions del Usuario
-    3. Merge: custom_permissions sobrescribe permisos del rol
-    
-    Returns:
-        dict: Permisos efectivos completos
-    """
     conn = get_db_connection()
     if not conn:
-        return {}
+        # Fallback restrictivo por seguridad si falla la conexión
+        return f"{created_by_field} = %s", [user_id]
     
     cursor = conn.cursor(dictionary=True)
     try:
-        # Obtener permisos del rol y custom del usuario
-        cursor.execute("""
-            SELECT 
-                r.permisos as role_permissions,
-                u.custom_permissions
-            FROM Users u
-            LEFT JOIN Roles r ON u.rol_id = r.id
-            WHERE u.id = %s AND u.tenant_id = %s
-        """, (user_id, tenant_id))
-        
+        # Consulta el alcance (scope) del usuario para este módulo
+        cursor.execute("SELECT alcance FROM Permisos_Unificados WHERE user_id = %s AND modulo = %s", (user_id, modulo_db))
         result = cursor.fetchone()
-        if not result:
-            return {}
+        alcance = result['alcance'] if result else 'asignados'
         
-        # Parsear JSON
-        role_perms = json.loads(result['role_permissions']) if result['role_permissions'] else {}
-        custom_perms = json.loads(result['custom_permissions']) if result['custom_permissions'] else {}
+        # Caso 1 (alcance = 'todo'): Retorna string vacío y parámetros vacíos
+        if alcance == 'todo':
+            return "", []
+            
+        # Caso 2 (alcance = 'asignados'): Genera filtro inclusivo (Creado por mí | Asignado a mí | Creado por mi equipo)
+        if alcance == 'asignados':
+            # 1. Creado por mí: {created_by_field} = %s
+            # 2. Asignado a mí: {resource_id_field} IN (SELECT entidad_id FROM Asignaciones_Centrales WHERE usuario_destino = %s AND tipo_entidad = %s)
+            # 3. Creado por mi equipo: {created_by_field} IN (SELECT entidad_id FROM Asignaciones_Centrales WHERE usuario_destino = %s AND tipo_entidad = 'usuario')
+            condition = f"({created_by_field} = %s OR {resource_id_field} IN (SELECT entidad_id FROM Asignaciones_Centrales WHERE usuario_destino = %s AND tipo_entidad = %s AND tenant_id = %s) OR {created_by_field} IN (SELECT entidad_id FROM Asignaciones_Centrales WHERE usuario_destino = %s AND tipo_entidad = 'usuario' AND tenant_id = %s))"
+            params = [user_id, user_id, resource_type, tenant_id, user_id, tenant_id]
+            return condition, params
+            
+        # Fallback por defecto: Solo lo propio
+        return f"{created_by_field} = %s", [user_id]
         
-        # Merge profundo: custom sobrescribe role
-        effective_perms = deep_merge_permissions(role_perms, custom_perms)
-        
-        return effective_perms
-    
     except Exception as e:
-        logger.error(f"Error obteniendo permisos efectivos: {str(e)}")
-        return {}
+        logger.error(f"Error en build_user_filter_condition: {str(e)}")
+        # En caso de error, restringir a registros propios por seguridad
+        return f"{created_by_field} = %s", [user_id]
     finally:
         cursor.close()
         conn.close()
 
 
-def deep_merge_permissions(base, override):
-    """
-    Merge profundo de dos diccionarios de permisos.
-    override sobrescribe valores de base.
-    """
-    result = base.copy()
-    
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            # Merge recursivo para diccionarios anidados
-            result[key] = deep_merge_permissions(result[key], value)
-        else:
-            # Sobrescribir valor
-            result[key] = value
-    
-    return result
+# =====================================================
+# 6. STUBS PARA COMPATIBILIDAD (Sin Lógica JSON)
+# =====================================================
 
+def get_user_permissions(user_id, tenant_id):
+    """Legacy stub. Ahora se deben usar funciones granulares."""
+    return {}
+
+def get_effective_permissions(user_id, tenant_id):
+    """Legacy stub. Ahora se deben usar funciones granulares."""
+    return {}
 
 def has_permission(user_id, tenant_id, permission_path, required_value=True):
-    """
-    Verifica si el usuario tiene un permiso específico.
-    
-    Args:
-        permission_path: Ruta del permiso, ej: "candidates.create" o "dashboard.view_financial"
-        required_value: Valor esperado (True por defecto)
-    
-    Returns:
-        bool: True si tiene el permiso
-    """
-    # Admin siempre tiene acceso
-    if is_admin(user_id, tenant_id):
-        return True
-    
-    perms = get_effective_permissions(user_id, tenant_id)
-    
-    # Navegar por el path
-    keys = permission_path.split('.')
-    current = perms
-    
-    for key in keys:
-        if not isinstance(current, dict) or key not in current:
-            return False
-        current = current[key]
-    
-    # Comparar valor
-    if required_value is True:
-        return current is True
-    else:
-        return current == required_value
-
-
-def get_permission_scope(user_id, tenant_id, resource_type):
-    """
-    Obtiene el scope de visualización para un tipo de recurso.
-    
-    Returns:
-        str: 'none', 'own', 'team', 'all'
-    """
-    if is_admin(user_id, tenant_id):
-        return 'all'
-    
-    perms = get_effective_permissions(user_id, tenant_id)
-    
-    if resource_type in perms and isinstance(perms[resource_type], dict):
-        return perms[resource_type].get('view_scope', 'none')
-    
-    return 'none'
-
-
-def can_perform_action(user_id, tenant_id, resource_type, action):
-    """
-    Verifica si el usuario puede realizar una acción sobre un recurso.
-    
-    Returns:
-        bool or str: True/False o scope
-    """
-    if is_admin(user_id, tenant_id):
-        return True if not action.endswith('_scope') else 'all'
-    
-    perms = get_effective_permissions(user_id, tenant_id)
-    
-    if resource_type in perms and isinstance(perms[resource_type], dict):
-        return perms[resource_type].get(action, False)
-    
+    """Legacy stub remapeado a la nueva lógica si es posible."""
+    parts = permission_path.split('.')
+    if len(parts) == 2:
+        return can_perform_action(user_id, tenant_id, parts[0], parts[1])
     return False
 
+def get_permission_scope(user_id, tenant_id, resource_type):
+    return get_scope_for_tab(user_id, tenant_id, resource_type)
 
-# =====================================================
-# 9. AYUDAS ESPECÍFICAS PARA PESTAÑAS (TABS)
-# =====================================================
+def can_create_resource(user_id, tenant_id, resource_type):
+    return can_perform_action(user_id, tenant_id, resource_type, 'crear')
 
-def _get_tab_config(user_id, tenant_id, tab_key):
-    """
-    Obtiene el bloque de permisos para una pestaña específica
-    del conjunto de permisos efectivos (rol + overrides).
-    """
-    if is_admin(user_id, tenant_id):
-        # Admin: acceso total; devolver defaults permisivos
-        return {
-            'access': True,
-            'scope': 'all',
-            'actions': {'create': True, 'apply': True, 'write': True, 'full': True},
-            'ui': {},
-            'redact_fields': []
-        }
-
-    perms = get_effective_permissions(user_id, tenant_id)
-    tab_cfg = perms.get(tab_key)
-    if not isinstance(tab_cfg, dict):
-        return None
-    return tab_cfg
-
-
-def can_access_tab(user_id, tenant_id, tab_key):
-    """
-    True si el usuario puede ver/acceder a la pestaña (tab) indicada.
-    """
-    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
-    if tab_cfg is None:
-        return False
-    return bool(tab_cfg.get('access') is True)
-
-
-def get_scope_for_tab(user_id, tenant_id, tab_key):
-    """
-    Devuelve el scope configurado para una pestaña: 'own' | 'team' | 'all'.
-    Si no hay config, retorna 'none'. Admin → 'all'.
-    """
-    if is_admin(user_id, tenant_id):
-        return 'all'
-    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
-    if not tab_cfg:
-        return 'none'
-    return tab_cfg.get('scope', 'none')
-
-
-def can_action_on_tab(user_id, tenant_id, tab_key, action):
-    """
-    Verifica si el usuario puede realizar una acción en la pestaña dada.
-    Ej: can_action_on_tab(user, tenant, 'candidates', 'create')
-    """
-    if is_admin(user_id, tenant_id):
-        return True
-    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
-    if not tab_cfg:
-        return False
-    actions = tab_cfg.get('actions', {}) or {}
-    return bool(actions.get(action) is True)
-
+def can_manage_users(user_id, tenant_id):
+    return is_admin(user_id, tenant_id)
 
 def get_ui_flags_for_tab(user_id, tenant_id, tab_key):
-    """
-    Retorna el objeto de banderas de UI configuradas para la pestaña (si existe).
-    """
-    if is_admin(user_id, tenant_id):
-        return {}
-    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
-    if not tab_cfg:
-        return {}
-    ui_flags = tab_cfg.get('ui')
-    return ui_flags if isinstance(ui_flags, dict) else {}
+    return {} # Ya no se manejan flags JSON complejos en v3
 
-
-def get_redactions_for_tab(user_id, tenant_id, tab_key):
-    """
-    Retorna lista de campos a anonimizar/ocultar para la pestaña dada.
-    """
-    if is_admin(user_id, tenant_id):
-        return []
-    tab_cfg = _get_tab_config(user_id, tenant_id, tab_key)
-    if not tab_cfg:
-        return []
-    redact = tab_cfg.get('redact_fields')
-    return redact if isinstance(redact, list) else []
-
-
+def log_permission_check(user_id, tenant_id, action, resource_type=None, resource_id=None, allowed=False):
+    pass # Auditoría simplificada

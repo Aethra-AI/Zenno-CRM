@@ -4,7 +4,7 @@ import logging
 import json
 
 # Configuración del orquestador
-AGENT_IMAGE_NAME = "openclaw-tenant-agent"
+AGENT_IMAGE_NAME = "esc-agent-v3"
 # Priorizar variable de entorno, de lo contrario usar carpeta local
 BASE_DATA_PATH = os.getenv("ESC_AGENTS_DATA_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "agents-data"))
 DOCKER_NETWORK = "esc-network"
@@ -46,7 +46,7 @@ class AgentOrchestrator:
         result = subprocess.run(["docker", "images", "-q", AGENT_IMAGE_NAME], capture_output=True, text=True)
         return len(result.stdout.strip()) > 0
 
-    def deploy_agent(self, tenant_id, tenant_api_key, llm_api_key, crm_url, pollination_key=None):
+    def deploy_agent(self, tenant_id, tenant_api_key, llm_api_key, crm_url, pollination_key=None, user_id=None):
         """
         Despliega o reinicia el agente único para un Tenant.
         """
@@ -60,22 +60,37 @@ class AgentOrchestrator:
         tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}")
         os.makedirs(tenant_data_path, exist_ok=True)
 
+        # Crear archivo access.json personalizado para dar permisos totales al CRM/Admin
+        access_json_path = os.path.join(tenant_data_path, "access.json")
+        with open(access_json_path, "w") as f:
+            json.dump({
+                "permissions": [
+                    {
+                        "sender_id": "*",
+                        "allowed_skills": ["*"],
+                        "allowed_tools": ["*"],
+                        "allowed_channels": ["*"],
+                        "can_provision_channels": True,
+                        "allowed_scopes": ["*"]
+                    }
+                ]
+            }, f, indent=2)
+
         # 1. Detener y eliminar contenedor anterior si existe
         logger.info(f"Limpiando instancia previa para Tenant {tenant_id}...")
         subprocess.run(["docker", "stop", container_name], capture_output=True)
         subprocess.run(["docker", "rm", container_name], capture_output=True)
 
         # 2. Comando de ejecución
-        # Cada agente tiene su propio volumen para MEMORY.md y sesión de WhatsApp
         cmd = [
             "docker", "run", "-d",
             "--name", container_name,
             "--network", DOCKER_NETWORK,
             "-p", f"{19000 + tenant_id}:18789",
-            "--memory", "1536m",
+            "--memory", "3072m",
             "--cpus", "1.0",
             "-v", f"{tenant_data_path}:/app/data",
-            "-e", "NODE_OPTIONS=--max-old-space-size=1024",
+            "-e", "NODE_OPTIONS=--max-old-space-size=2048",
             "-e", "NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache",
             "-e", "OPENCLAW_NO_RESPAWN=1",
             "-e", "OPENCLAW_STATE_PATH=/app/data",
@@ -83,15 +98,21 @@ class AgentOrchestrator:
             "-e", "OPENCLAW_TRUSTED_PROXIES=0.0.0.0/0",
             "-e", "OPENCLAW_ALLOW_ANONYMOUS_SENDER=true",
             "-e", "OPENCLAW_RPC_ENABLED=true",
+            "-e", f"ESC_AGENT_BASE_URL={os.getenv('ESC_AGENT_BASE_URL', 'https://149.130.160.182.sslip.io')}",
             "-e", f"OPENAI_API_KEY={llm_api_key}",
             "-e", f"ESC_TENANT_API_KEY={tenant_api_key}",
             "-e", f"ESC_CRM_URL={crm_url}",
+            "-e", f"ESC_USER_ID={user_id if user_id else ''}",
             "-e", f"POLLINATION_API_KEY={pollination_key or (os.getenv('POLLINATION_API_KEY') if os.getenv('POLLINATION_API_KEY') else '')}",
             "-e", f"BRAIN_MODEL={os.getenv('BRAIN_MODEL', 'moonshotai/kimi-k2.5')}",
             "-e", f"MOONSHOT_API_KEY={llm_api_key}",
             "-e", f"NVIDIA_API_KEY={llm_api_key}",
             "-e", f"GEMINI_API_KEY={os.getenv('GEMINI_API_KEY', '')}",
             "-e", f"GROQ_API_KEY={os.getenv('GROQ_API_KEY', '')}",
+            "-e", f"GATEWAY_TOKEN={os.getenv('GATEWAY_TOKEN', 'c7de318660eaba4aba18d6aab61d1f8807cabf0a4c458601')}",
+            "-e", f"OPENCLAW_GATEWAY_TOKEN={os.getenv('GATEWAY_TOKEN', 'c7de318660eaba4aba18d6aab61d1f8807cabf0a4c458601')}",
+            "-e", "OPENCLAW_GATEWAY_AUTH_MODE=token",
+            "-e", f"OPENCLAW_GATEWAY_MODE={os.getenv('OPENCLAW_GATEWAY_MODE', 'local')}",
             "-e", "OPENCLAW_GATEWAY_HOST=0.0.0.0",
             "--restart", "unless-stopped",
             AGENT_IMAGE_NAME

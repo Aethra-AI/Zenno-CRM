@@ -87,6 +87,7 @@ from permission_service import (
 )
 from werkzeug.utils import secure_filename
 from flask import Flask, jsonify, request, Response, send_file, send_from_directory, g, url_for, redirect
+from flask_sock import Sock
 import jwt
 import bcrypt
 
@@ -121,6 +122,7 @@ from datetime import datetime, timedelta
 # --- CONFIGURACIÓN INICIAL --- 
 load_dotenv()
 app = Flask(__name__)
+sock = Sock(app)
 app.config['SECRET_KEY'] = 'macarronconquesoysandia151123'
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # Permitir hasta 32MB para imágenes base64
 
@@ -426,7 +428,7 @@ def login():
         }), 500
     finally:
         if 'cursor' in locals() and cursor: cursor.close()
-        if 'conn' in locals() and conn.is_connected(): conn.close()
+        if 'conn' in locals() and conn and hasattr(conn, 'is_connected') and conn.is_connected(): conn.close()
 
 
 def token_required(f):
@@ -475,6 +477,86 @@ def token_required(f):
     return decorated
 
 
+def rbac_required(modulo, accion):
+    """
+    🛡️ DECORADOR MAESTRO DE SEGURIDAD (FASE 4)
+    Valida el par 'X-API-Key' + 'Authorization Bearer' y verifica permisos granulares.
+    """
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            # 1. Validar API Key
+            api_key = request.headers.get('X-API-Key')
+            if not api_key:
+                app.logger.warning(f"Acceso RBAC denegado: API Key ausente en {request.path}")
+                return jsonify({"error": "X-API-Key es requerida", "status": "forbidden"}), 403
+                
+            # 2. Validar JWT Token (Authorization Bearer)
+            auth_header = request.headers.get('Authorization')
+            if not auth_header or not auth_header.startswith('Bearer '):
+                app.logger.warning(f"Acceso RBAC denegado: Bearer token ausente en {request.path}")
+                return jsonify({"error": "Autorización Bearer requerida", "status": "unauthorized"}), 401
+            
+            token = auth_header.split(" ")[1]
+            try:
+                user_data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+                user_id = user_data.get('user_id')
+                tenant_id = user_data.get('tenant_id')
+                
+                if not user_id or not tenant_id:
+                    return jsonify({"error": "Token malformado: falta user_id o tenant_id"}), 401
+                
+                # Inyectar en contexto global g para uso en la ruta
+                g.current_user = user_data
+                g.current_tenant_id = tenant_id
+                
+            except jwt.ExpiredSignatureError:
+                return jsonify({"error": "Token expirado"}), 401
+            except Exception as e:
+                return jsonify({"error": f"Token inválido: {str(e)}"}), 401
+
+            # 3. Validar correspondencia API Key con Tenant (Cruce de Cables)
+            conn = get_db_connection()
+            if not conn:
+                return jsonify({"error": "Error de conexión a base de datos"}), 500
+            
+            cursor = conn.cursor(dictionary=True)
+            try:
+                # Verificar si la API Key pertenece al tenant del usuario
+                cursor.execute("""
+                    SELECT id FROM public_api_keys 
+                    WHERE api_key = %s AND tenant_id = %s AND activa = 1
+                """, (api_key, tenant_id))
+                key_match = cursor.fetchone()
+                
+                if not key_match and api_key != INTERNAL_API_KEY:
+                    app.logger.error(f"BRECHA DE SEGURIDAD DETECTADA: API Key no coincide con Tenant del usuario. UserID: {user_id}, TenantID: {tenant_id}")
+                    return jsonify({"error": "Inconsistencia de seguridad: API Key no autorizada para este usuario"}), 403
+
+                # 4. Validar Permisos mediante permission_service
+                from permission_service import can_perform_action as check_perm
+                if not check_perm(user_id, tenant_id, modulo, accion):
+                    app.logger.warning(f"ACCESO DENEGADO: Usuario {user_id} intentó {accion} en {modulo} sin permisos.")
+                    return jsonify({
+                        "error": "Permisos insuficientes", 
+                        "required": f"{modulo}.{accion}",
+                        "status": "denied"
+                    }), 403
+                
+                # Todo OK: Proceder a la ejecución
+                return f(*args, **kwargs)
+                
+            except Exception as e:
+                app.logger.error(f"Error en validación RBAC: {str(e)}")
+                return jsonify({"error": "Error interno validando permisos"}), 500
+            finally:
+                cursor.close()
+                conn.close()
+                
+        return decorated_function
+    return decorator
+
+
 def require_api_key(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -487,6 +569,17 @@ def require_api_key(f):
             return jsonify({"error": "Acceso no autorizado"}), 401
     return decorated_function
 
+
+def verify_token(token):
+    """
+    Función auxiliar para verificar un token JWT y devolver su contenido.
+    """
+    try:
+        data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+        return data
+    except Exception as e:
+        app.logger.warning(f"Error al verificar token JWT: {str(e)}")
+        return None
 
 def public_api_key_required(f):
     """
@@ -571,6 +664,31 @@ def public_api_key_required(f):
             # Almacenar datos de la API Key en el contexto
             g.api_key_data = api_key_data
             g.tenant_id = api_key_data['tenant_id']
+            
+            # --- JWT PASSTHROUGH ---
+            g.current_user = None
+            auth_header = request.headers.get('Authorization')
+            if auth_header and 'Bearer ' in auth_header:
+                try:
+                    token = auth_header.split(" ")[1]
+                    user_data = verify_token(token)
+                    if user_data:
+                        g.current_user = user_data
+                        g.current_tenant_id = user_data.get('tenant_id')
+                except Exception as e:
+                    app.logger.warning(f"Error procesando Authorization header: {str(e)}")
+
+            # Si no hay JWT, asignar identidad de sistema nivel Tenant
+            if not g.current_user:
+                g.current_user = {
+                    'user_id': None,
+                    'email': 'system@api.internal',
+                    'rol': 'api_client',
+                    'tenant_id': api_key_data['tenant_id'],
+                    'is_system': True
+                }
+                g.current_tenant_id = api_key_data['tenant_id']
+            # ----------------------
             
             # Ejecutar la función
             response = f(*args, **kwargs)
@@ -949,8 +1067,8 @@ def _get_candidate_id(conn, candidate_id: int = None, identity_number: str = Non
         cursor = conn.cursor(dictionary=True)
         clean_identity = str(identity_number).replace('-', '').strip()
         tenant_id = get_current_tenant_id()
-        query = "SELECT id_afiliado FROM Afiliados WHERE identidad = %s LIMIT 1"
-        cursor.execute(query, (clean_identity,))
+        query = "SELECT id_afiliado FROM Afiliados WHERE identidad = %s AND tenant_id = %s LIMIT 1"
+        cursor.execute(query, (clean_identity, tenant_id))
         result = cursor.fetchone()
         cursor.close()
         if result:
@@ -969,8 +1087,8 @@ def get_candidates_by_ids(ids: list):
         if not safe_ids: return json.dumps([])
         tenant_id = get_current_tenant_id()
         placeholders = ','.join(['%s'] * len(safe_ids))
-        query = f"SELECT id_afiliado, nombre_completo, telefono FROM Afiliados WHERE id_afiliado IN ({placeholders})"
-        cursor.execute(query, tuple(safe_ids))
+        query = f"SELECT id_afiliado, nombre_completo, telefono FROM Afiliados WHERE id_afiliado IN ({placeholders}) AND tenant_id = %s"
+        cursor.execute(query, tuple(safe_ids) + (tenant_id,))
         results = cursor.fetchall()
         for r in results:
             r['telefono'] = clean_phone_number(r.get('telefono'))
@@ -1008,8 +1126,9 @@ def get_vacancy_details(vacancy_name: str):
     if not conn: return json.dumps({"error": "DB connection failed"})
     cursor = conn.cursor(dictionary=True)
     try:
-        query = "SELECT cargo_solicitado, empresa FROM Vacantes v JOIN Clientes c ON v.id_cliente = c.id_cliente WHERE v.cargo_solicitado LIKE %s LIMIT 1"
-        cursor.execute(query, (f"%{vacancy_name}%",))
+        tenant_id = get_current_tenant_id()
+        query = "SELECT cargo_solicitado, empresa FROM Vacantes v JOIN Clientes c ON v.id_cliente = c.id_cliente WHERE v.cargo_solicitado LIKE %s AND v.tenant_id = %s LIMIT 1"
+        cursor.execute(query, (f"%{vacancy_name}%", tenant_id))
         result = cursor.fetchone()
         return json.dumps(result)
     finally:
@@ -1025,8 +1144,8 @@ def get_candidate_id_by_identity(identity_number: str):
     try:
         clean_identity = str(identity_number).replace('-', '').strip()
         tenant_id = get_current_tenant_id()
-        query = "SELECT id_afiliado FROM Afiliados WHERE identidad = %s LIMIT 1"
-        cursor.execute(query, (clean_identity,))
+        query = "SELECT id_afiliado FROM Afiliados WHERE identidad = %s AND tenant_id = %s LIMIT 1"
+        cursor.execute(query, (clean_identity, tenant_id))
         result = cursor.fetchone()
         return json.dumps(result)
     finally:
@@ -3587,12 +3706,16 @@ def handle_candidate_tags(id_afiliado):
         if not cursor.fetchone():
             return jsonify({"error": "Candidato no encontrado"}), 404
         
-        # 🔐 MÓDULO B14: Verificar acceso al candidato según método
+        # 🔐 MÓDULO B14: Verificar acceso al candidato según método y RBAC adicional
         if request.method == 'GET':
             if not can_access_resource(user_id, tenant_id, 'candidate', id_afiliado, 'read'):
                 app.logger.warning(f"Usuario {user_id} intentó ver tags de candidato {id_afiliado} sin permisos")
                 return jsonify({'error': 'No tienes acceso a este candidato'}), 403
         else:  # POST o DELETE requieren permiso de escritura
+            # RBAC ADICIONAL: Verificar permiso 'editar' en el módulo 'candidatos'
+            if not has_permission(user_id, tenant_id, 'candidatos', 'editar'):
+                return jsonify({'error': 'No tienes permisos para editar candidatos'}), 403
+
             if not can_access_resource(user_id, tenant_id, 'candidate', id_afiliado, 'write'):
                 app.logger.warning(f"Usuario {user_id} intentó modificar tags de candidato {id_afiliado} sin permisos")
                 return jsonify({'error': 'No tienes acceso para modificar este candidato'}), 403
@@ -4265,13 +4388,13 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
                 a.puntuacion as score,
                 a.fecha_registro as createdAt,
                 a.ultimo_contacto as lastContact,
-                a.disponibilidad as availability,
+                a.disponibilidad_rotativos as availability,
                 NULL as desiredSalary,
                 a.grado_academico as education,
-                a.habilidades as skills,
+                a.skills as skills,
                 a.cargo_solicitado as position,
                 a.observaciones as observations,
-                a.comentarios as comments,
+                a.observaciones as comments,
                 a.linkedin as linkedin,
                 a.portfolio as portfolio,
                 a.skills as additional_skills,
@@ -4318,6 +4441,7 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
         if user_id and tenant_id:
             condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
             if condition:
+                # Appending the condition to base query via conditions list
                 conditions.append(f"({condition})")
                 params.extend(filter_params)
 
@@ -4394,7 +4518,7 @@ def _internal_search_candidates(term=None, tags=None, experience=None, city=None
             params.append(status)
             
         if availability:
-            conditions.append("a.estado = %s")
+            conditions.append("a.disponibilidad_rotativos = %s")
             params.append(availability)
             
         if min_score and min_score.isdigit():
@@ -4563,26 +4687,21 @@ class BatchProcessor:
             for i in range(0, len(candidate_ids), batch_size):
                 batch = candidate_ids[i:i + batch_size]
                 
-                # Insertar asignaciones en lote
+                # Insertar asignaciones en lote (V3: Usar Asignaciones_Centrales)
                 placeholders = ','.join(['(%s, %s, %s, %s, %s)'] * len(batch))
                 values = []
                 
                 for candidate_id in batch:
-                    values.extend([candidate_id, target_user_id, 'candidate', access_level, tenant_id])
+                    # Columnas: tenant_id, usuario_destino, tipo_entidad, entidad_id, nivel_acceso
+                    values.extend([tenant_id, target_user_id, 'candidate', candidate_id, access_level])
                 
                 sql = f"""
-                    INSERT IGNORE INTO Resource_Assignments 
-                    (resource_id, assigned_to_user, resource_type, access_level, tenant_id, is_active)
+                    INSERT IGNORE INTO Asignaciones_Centrales 
+                    (tenant_id, usuario_destino, tipo_entidad, entidad_id, nivel_acceso)
                     VALUES {placeholders}
                 """
                 
-                # Agregar valores de fecha y activo
-                final_values = []
-                for j in range(0, len(values), 5):
-                    final_values.extend(values[j:j+5])
-                    final_values.extend([1])  # is_active=1
-                
-                cursor.execute(sql, final_values)
+                cursor.execute(sql, values)
                 conn.commit()
                 
                 # Actualizar progreso
@@ -5607,12 +5726,18 @@ def get_dashboard_metrics():
         # 7. Ingresos generados - 🔐 CORRECCIÓN: Solo Admin puede ver datos financieros
         ingresos_totales = 0
         if is_admin(user_id, tenant_id):
-            cursor.execute("""
-                SELECT SUM(COALESCE(tarifa_servicio, 0)) as ingresos_totales
-                FROM Contratados
-                WHERE fecha_contratacion >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
-                AND tenant_id = %s
-            """, (tenant_id,))
+            hired_condition, hired_params = build_user_filter_condition(user_id, tenant_id, 'c.created_by_user', 'hired', 'c.id_contratado')
+            sql = """
+                SELECT SUM(COALESCE(c.tarifa_servicio, 0)) as ingresos_totales
+                FROM Contratados c
+                WHERE c.fecha_contratacion >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+                AND c.tenant_id = %s
+            """
+            params = [tenant_id]
+            if hired_condition:
+                sql += f" AND ({hired_condition})"
+                params.extend(hired_params)
+            cursor.execute(sql, tuple(params))
             ingresos_totales = cursor.fetchone()['ingresos_totales'] or 0
         
         # 8. Top 5 clientes por actividad (filtrado por usuario)
@@ -5623,15 +5748,21 @@ def get_dashboard_metrics():
                 COUNT(DISTINCT p.id_postulacion) as total_postulaciones,
                 COUNT(DISTINCT co.id_contratado) as total_contrataciones
             FROM Clientes c
-            LEFT JOIN Vacantes v ON c.id_cliente = v.id_cliente AND v.tenant_id = %s
+            LEFT JOIN Vacantes v ON c.id_cliente = v.id_cliente AND v.tenant_id = %s {vacancy_join_cond}
             LEFT JOIN Postulaciones p ON v.id_vacante = p.id_vacante AND p.tenant_id = %s
             LEFT JOIN Contratados co ON v.id_vacante = co.id_vacante AND co.tenant_id = %s
             WHERE c.tenant_id = %s
         """
-        params_clientes = [tenant_id, tenant_id, tenant_id, tenant_id]
+        
+        # Preparar parámetros y condición de JOIN
+        vacancy_join_cond = f"AND ({vacancy_condition})" if vacancy_condition else ""
+        sql = sql.replace("{vacancy_join_cond}", vacancy_join_cond)
+        
+        params_clientes = [tenant_id]
         if vacancy_condition:
-            sql += f" AND ({vacancy_condition})"
             params_clientes.extend(vacancy_params)
+        params_clientes.extend([tenant_id, tenant_id, tenant_id])
+        
         sql += " GROUP BY c.id_cliente, c.empresa ORDER BY total_postulaciones DESC LIMIT 5"
         cursor.execute(sql, tuple(params_clientes))
         top_clientes_raw = cursor.fetchall()
@@ -5649,7 +5780,7 @@ def get_dashboard_metrics():
         # 9. Efectividad por usuario (FILTRADO POR USUARIO) 🔐
         sql = """
             SELECT 
-                'Usuario Demo' as usuario,
+                %s as usuario,
                 COUNT(DISTINCT p.id_postulacion) as total_postulaciones,
                 COUNT(DISTINCT co.id_contratado) as total_contrataciones
             FROM Postulaciones p
@@ -5657,7 +5788,7 @@ def get_dashboard_metrics():
             LEFT JOIN Contratados co ON p.id_afiliado = co.id_afiliado AND p.id_vacante = co.id_vacante
             WHERE p.tenant_id = %s AND v.tenant_id = %s AND (co.tenant_id = %s OR co.tenant_id IS NULL)
         """
-        params_efectividad = [tenant_id, tenant_id, tenant_id]
+        params_efectividad = [user_data.get('nombre', 'Usuario'), tenant_id, tenant_id, tenant_id]
         if vacancy_condition:
             sql += f" AND ({vacancy_condition})"
             params_efectividad.extend(vacancy_params)
@@ -5817,7 +5948,7 @@ def get_dashboard_metrics():
         
         # 14. Usuarios efectividad (para UserReports)
         usuarios_efectividad = [{
-            'nombre': 'Usuario Demo',
+            'nombre': user_data.get('nombre'),
             'postulaciones': efectividad_usuario['total_postulaciones'],
             'contrataciones': efectividad_usuario['total_contrataciones'],
             'tasa_exito': round((efectividad_usuario['total_contrataciones'] / efectividad_usuario['total_postulaciones'] * 100) if efectividad_usuario['total_postulaciones'] > 0 else 0, 1),
@@ -5934,23 +6065,11 @@ def get_candidates():
         """
         params = [tenant_id]
         
-        # 🔐 Fase 3: Aplicar filtro por scope de pestaña (own/team/all)
-        if tab_scope in ('own', 'team'):
-            # Determinar usuarios accesibles según scope
-            if tab_scope == 'own':
-                accessible_users = [user_id]
-            else:  # team
-                accessible_users = get_accessible_user_ids(user_id, tenant_id) or [user_id]
-            placeholders = ','.join(['%s'] * len(accessible_users))
-            query += f" AND (a.created_by_user_id IN ({placeholders}) OR EXISTS (\n"
-            query += "    SELECT 1 FROM Resource_Assignments ra\n"
-            query += "    WHERE ra.resource_type = %s\n"
-            query += "      AND ra.resource_id = a.id_afiliado\n"
-            query += "      AND ra.assigned_to_user = %s\n"
-            query += "      AND ra.tenant_id = %s\n"
-            query += "      AND ra.is_active = 1))"
-            params.extend(accessible_users)
-            params.extend(['candidate', user_id, tenant_id])
+        # 🔐 Fase 4: Aplicar filtro según Permisos_Unificados y Asignaciones_Centrales
+        candidate_condition, candidate_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
+        if candidate_condition:
+            query += f" AND ({candidate_condition})"
+            params.extend(candidate_params)
         
         # Aplicar filtros - búsqueda palabra por palabra
         if search:
@@ -6941,7 +7060,7 @@ def advanced_search_candidates():
                 a.fecha_registro as createdAt,
                 a.habilidades as skills,
                 a.cv_url,
-                a.disponibilidad as availability
+                a.disponibilidad_rotativos as availability
             FROM Afiliados a
             WHERE 1=1
         """
@@ -7012,7 +7131,7 @@ def advanced_search_candidates():
         
         if filters.get('availability') and len(filters['availability']) > 0:
             placeholders = ','.join(['%s'] * len(filters['availability']))
-            conditions.append(f"a.disponibilidad IN ({placeholders})")
+            conditions.append(f"a.disponibilidad_rotativos IN ({placeholders})")
             params.extend(filters['availability'])
         
         if filters.get('minSalary') is not None:
@@ -7027,7 +7146,7 @@ def advanced_search_candidates():
             conditions.append("a.cv_url IS NOT NULL")
         
         if filters.get('remote'):
-            conditions.append("(a.disponibilidad LIKE '%remoto%' OR a.disponibilidad LIKE '%remote%')")
+            conditions.append("(a.disponibilidad_rotativos LIKE '%remoto%' OR a.disponibilidad_rotativos LIKE '%remote%')")
         
         # Aplicar condiciones
         if conditions:
@@ -7279,6 +7398,10 @@ def handle_candidate_profile(id_afiliado):
             return jsonify(perfil)
             
         elif request.method == 'PUT':
+            # RBAC ADICIONAL: Verificar permiso 'editar' en el módulo 'candidatos'
+            if not has_permission(user_id, tenant_id, 'candidatos', 'editar'):
+                return jsonify({'error': 'No tienes permisos para editar candidatos'}), 403
+
             data = request.get_json()
             
             # 🔐 CORRECCIÓN CRÍTICA: Verificar acceso de escritura
@@ -7784,11 +7907,11 @@ def handle_applications():
             print(f"DEBUG: Received application data: {data}")
             
             # Verificar que el afiliado y la vacante existen
-            cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s", (data['id_afiliado'],))
+            cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s AND tenant_id = %s", (data['id_afiliado'], tenant_id))
             if not cursor.fetchone():
                 return jsonify({"success": False, "message": "Afiliado no encontrado"}), 404
                 
-            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s", (data['id_vacante'],))
+            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (data['id_vacante'], tenant_id))
             if not cursor.fetchone():
                 return jsonify({"success": False, "message": "Vacante no encontrada"}), 404
             
@@ -9468,8 +9591,7 @@ def validate_password_strength(password):
 
 @app.route('/api/users', methods=['POST'])
 @token_required
-@admin_required
-def create_user_route(current_user_id):
+def create_user_route():
     """
     Crea un nuevo usuario en el sistema.
     
@@ -9489,6 +9611,7 @@ def create_user_route(current_user_id):
     - 500: Error del servidor
     """
     try:
+        current_user_id = g.current_user.get('user_id')
         app.logger.info(f"=== Creando nuevo usuario - Admin ID: {current_user_id} ===")
         
         # Verificar que el contenido sea JSON
@@ -9842,11 +9965,11 @@ def get_affiliate_links(user_id):
 
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 @token_required
-@admin_required
 def delete_user_route(user_id):
     """Elimina un usuario (borrado lógico)."""
     # No permitir que un usuario se elimine a sí mismo
-    if g.user_id == user_id:
+    current_user_id = g.current_user.get('user_id')
+    if current_user_id == user_id:
         return jsonify({'error': 'No puedes eliminar tu propio usuario'}), 400
     
     result = delete_user(user_id)
@@ -9970,11 +10093,20 @@ def update_role_permissions(role_id):
         # Convertir permisos a JSON string
         permisos_json = json.dumps(permisos)
         
-        # Actualizar permisos
+        # Actualizar permisos en la tabla Roles
         cursor.execute("""
             UPDATE Roles 
             SET permisos = %s 
             WHERE id = %s
+        """, (permisos_json, role_id))
+        
+        # ⚡️ BARRIDO DE SEGURIDAD (FASE 5): Sincronizar Permisos_Unificados para todos los usuarios con este rol
+        # Esto asegura que el cambio de permisos del rol se refleje inmediatamente en la tabla unificada.
+        cursor.execute("""
+            UPDATE Permisos_Unificados pu
+            JOIN Users u ON pu.id_usuario = u.id
+            SET pu.permisos_rol = %s
+            WHERE u.rol_id = %s
         """, (permisos_json, role_id))
         
         conn.commit()
@@ -9997,294 +10129,112 @@ def update_role_permissions(role_id):
         return jsonify({'error': 'Error al actualizar permisos'}), 500
 
 # ===============================================================
-# SECCIÓN 7.5: GESTIÓN DE EQUIPOS (TEAM_STRUCTURE)
+# SECCIÓN 7.5: GESTIÓN DE EQUIPOS (ASIGNACIONES_CENTRALES v3)
 # ===============================================================
 
-@app.route('/api/teams/my-team', methods=['GET'])
+@app.route('/api/teams', methods=['GET', 'POST'])
 @token_required
-def get_my_team():
-    """Obtener miembros del equipo del supervisor actual."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
-        
-        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden ver equipos
-        if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
-            return jsonify({'error': 'No tienes permisos para ver equipos'}), 403
-        
-        # Si es supervisor, obtener su equipo
-        # Si es admin, obtener todos los equipos (parámetro opcional)
-        supervisor_id = user_id
-        if is_admin(user_id, tenant_id):
-            supervisor_id = request.args.get('supervisor_id', user_id, type=int)
-        
-        # Obtener datos del supervisor
-        cursor.execute("""
-            SELECT id, nombre, email 
-            FROM Users 
-            WHERE id = %s AND tenant_id = %s
-        """, (supervisor_id, tenant_id))
-        supervisor = cursor.fetchone()
-        
-        if not supervisor:
-            return jsonify({'error': 'Supervisor no encontrado'}), 404
-        
-        # Obtener miembros del equipo
-        cursor.execute("""
-            SELECT 
-                u.id, u.nombre, u.email, u.telefono, u.activo,
-                r.nombre as rol_nombre,
-                ts.assigned_at,
-                ts.id as team_structure_id
-            FROM Team_Structure ts
-            JOIN Users u ON ts.team_member_id = u.id
-            LEFT JOIN Roles r ON u.rol_id = r.id
-            WHERE ts.supervisor_id = %s 
-            AND ts.tenant_id = %s
-            AND ts.is_active = TRUE
-            ORDER BY ts.assigned_at DESC
-        """, (supervisor_id, tenant_id))
-        
-        team_members = cursor.fetchall()
-        
-        # Convertir datetime a string
-        for member in team_members:
-            if member.get('assigned_at') and hasattr(member['assigned_at'], 'isoformat'):
-                member['assigned_at'] = member['assigned_at'].isoformat()
-        
-        cursor.close()
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'supervisor': supervisor,
-            'team_members': team_members,
-            'total_members': len(team_members)
-        })
-        
-    except Exception as e:
-        app.logger.error(f"Error en get_my_team: {str(e)}")
-        return jsonify({'error': 'Error al obtener el equipo'}), 500
+def manage_teams_v3():
+    """Ruta unificada para ver y asignar miembros de equipo (FASE 5)."""
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    tenant_id = get_current_tenant_id()
+    user_id = g.current_user.get('user_id')
+    
+    if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
+        return jsonify({'error': 'No tienes permisos para gestionar equipos'}), 403
 
+    if request.method == 'GET':
+        supervisor_id = request.args.get('supervisor_id', user_id, type=int)
+        cursor.execute("""
+            SELECT u.id, u.nombre, u.email
+            FROM Asignaciones_Centrales ac
+            JOIN Users u ON ac.entidad_id = u.id
+            WHERE ac.usuario_destino = %s AND ac.tenant_id = %s AND ac.tipo_entidad = 'usuario'
+        """, (supervisor_id, tenant_id))
+        members = cursor.fetchall()
+        return jsonify({'success': True, 'team_members': members})
 
-@app.route('/api/teams/members', methods=['POST'])
-@token_required
-def add_team_member():
-    """Agregar un miembro al equipo."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
-        
-        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden agregar miembros
-        if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
-            return jsonify({'error': 'No tienes permisos para gestionar equipos'}), 403
-        
+    else: # POST
         data = request.get_json()
         team_member_id = data.get('team_member_id')
-        supervisor_id = data.get('supervisor_id')
+        supervisor_id = data.get('supervisor_id', user_id)
         
-        if not team_member_id:
-            return jsonify({'error': 'Se requiere team_member_id'}), 400
-        
-        # Si es supervisor, solo puede agregar a SU equipo
-        if is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
-            if supervisor_id and supervisor_id != user_id:
-                return jsonify({'error': 'No puedes agregar miembros a otro equipo'}), 403
-            supervisor_id = user_id
-        
-        # Si es admin y no especifica supervisor, usar su propio ID
-        if not supervisor_id:
-            supervisor_id = user_id
-        
-        # Verificar que el supervisor existe y es realmente supervisor
+        # Insertar usando Asignaciones_Centrales
         cursor.execute("""
-            SELECT u.id, r.nombre as rol_nombre
-            FROM Users u
-            JOIN Roles r ON u.rol_id = r.id
-            WHERE u.id = %s AND u.tenant_id = %s AND u.activo = TRUE
-        """, (supervisor_id, tenant_id))
-        supervisor = cursor.fetchone()
-        
-        if not supervisor:
-            return jsonify({'error': 'Supervisor no encontrado'}), 404
-        
-        if supervisor['rol_nombre'] not in ['Supervisor', 'Administrador']:
-            return jsonify({'error': 'El usuario especificado no es supervisor'}), 400
-        
-        # Verificar que el miembro existe y es Reclutador
-        cursor.execute("""
-            SELECT u.id, u.nombre, u.email, r.nombre as rol_nombre
-            FROM Users u
-            JOIN Roles r ON u.rol_id = r.id
-            WHERE u.id = %s AND u.tenant_id = %s AND u.activo = TRUE
-        """, (team_member_id, tenant_id))
-        member = cursor.fetchone()
-        
-        if not member:
-            return jsonify({'error': 'Miembro no encontrado'}), 404
-        
-        if member['rol_nombre'] != 'Reclutador':
-            return jsonify({'error': 'Solo reclutadores pueden ser miembros de equipo'}), 400
-        
-        # Verificar que no esté ya en el equipo
-        cursor.execute("""
-            SELECT id FROM Team_Structure 
-            WHERE supervisor_id = %s 
-            AND team_member_id = %s 
-            AND is_active = TRUE
-            AND tenant_id = %s
-        """, (supervisor_id, team_member_id, tenant_id))
-        
-        if cursor.fetchone():
-            return jsonify({'error': 'El miembro ya está en el equipo'}), 409
-        
-        # Insertar en Team_Structure
-        cursor.execute("""
-            INSERT INTO Team_Structure 
-            (tenant_id, supervisor_id, team_member_id, assigned_by, is_active)
-            VALUES (%s, %s, %s, %s, TRUE)
-        """, (tenant_id, supervisor_id, team_member_id, user_id))
-        
-        team_structure_id = cursor.lastrowid
+            INSERT INTO Asignaciones_Centrales (tenant_id, usuario_destino, entidad_id, tipo_entidad)
+            VALUES (%s, %s, %s, 'usuario')
+        """, (tenant_id, supervisor_id, team_member_id))
         conn.commit()
-        
-        app.logger.info(f"Usuario {user_id} agregó a {team_member_id} al equipo de supervisor {supervisor_id}")
-        
-        cursor.close()
-        conn.close()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Miembro agregado al equipo exitosamente',
-            'team_structure_id': team_structure_id,
-            'member': {
-                'id': member['id'],
-                'nombre': member['nombre'],
-                'email': member['email']
-            }
-        }), 201
-        
-    except Exception as e:
-        app.logger.error(f"Error en add_team_member: {str(e)}")
-        if 'conn' in locals():
-            conn.rollback()
-        return jsonify({'error': 'Error al agregar miembro al equipo'}), 500
+        return jsonify({'success': True, 'message': 'Asignado exitosamente'}), 201
 
+@app.route('/api/teams/assign', methods=['POST'])
+@token_required
+def assign_team_member_v3():
+    """Asignar un miembro a un supervisor (Ruta específica FASE 5)."""
+    # Reutilizamos la lógica del POST anterior o la implementamos aquí directamente
+    return manage_teams_v3()
 
 @app.route('/api/teams/members/<int:team_member_id>', methods=['DELETE'])
 @token_required
-def remove_team_member(team_member_id):
-    """Remover un miembro del equipo."""
+def remove_team_member_v3(team_member_id):
+    """Remover un miembro del equipo en Asignaciones_Centrales."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
+        user_id = g.current_user.get('user_id')
         
-        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden remover miembros
         if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
             return jsonify({'error': 'No tienes permisos para gestionar equipos'}), 403
-        
-        # Parámetro opcional: supervisor_id (solo para admins)
-        supervisor_id = request.args.get('supervisor_id', type=int)
-        
-        # Si es supervisor, solo puede remover de SU equipo
-        if is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
-            if supervisor_id and supervisor_id != user_id:
-                return jsonify({'error': 'No puedes remover miembros de otro equipo'}), 403
-            supervisor_id = user_id
-        
-        # Si no se especifica supervisor_id, buscar en qué equipo está el miembro
-        if not supervisor_id:
-            cursor.execute("""
-                SELECT supervisor_id FROM Team_Structure 
-                WHERE team_member_id = %s 
-                AND is_active = TRUE
-                AND tenant_id = %s
-                LIMIT 1
-            """, (team_member_id, tenant_id))
-            result = cursor.fetchone()
-            if result:
-                supervisor_id = result['supervisor_id']
-        
-        if not supervisor_id:
-            return jsonify({'error': 'No se encontró al miembro en ningún equipo activo'}), 404
-        
-        # Soft delete: marcar como inactivo
+            
+        supervisor_id = request.args.get('supervisor_id', user_id, type=int)
+
         cursor.execute("""
-            UPDATE Team_Structure 
-            SET is_active = FALSE 
-            WHERE team_member_id = %s 
-            AND supervisor_id = %s 
-            AND tenant_id = %s
-            AND is_active = TRUE
-        """, (team_member_id, supervisor_id, tenant_id))
-        
-        if cursor.rowcount == 0:
-            return jsonify({'error': 'Miembro no encontrado en el equipo'}), 404
+            DELETE FROM Asignaciones_Centrales 
+            WHERE usuario_destino = %s AND entidad_id = %s 
+            AND tipo_entidad = 'usuario' AND tenant_id = %s
+        """, (supervisor_id, team_member_id, tenant_id))
         
         conn.commit()
-        
-        app.logger.info(f"Usuario {user_id} removió a {team_member_id} del equipo de supervisor {supervisor_id}")
-        
         cursor.close()
         conn.close()
         
-        return jsonify({
-            'success': True,
-            'message': 'Miembro removido del equipo exitosamente'
-        })
-        
+        return jsonify({'success': True, 'message': 'Miembro removido exitosamente'})
     except Exception as e:
-        app.logger.error(f"Error en remove_team_member: {str(e)}")
-        if 'conn' in locals():
-            conn.rollback()
-        return jsonify({'error': 'Error al remover miembro del equipo'}), 500
+        app.logger.error(f"Error en remove_team_member_v3: {str(e)}")
+        return jsonify({'error': 'Error al remover miembro'}), 500
 
 
 @app.route('/api/teams/available-members', methods=['GET'])
 @token_required
-def get_available_members():
-    """Obtener lista de usuarios disponibles para agregar al equipo."""
+def get_available_members_v3():
+    """Obtener lista de usuarios disponibles para agregar al equipo (no asignados)."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
+        user_id = g.current_user.get('user_id')
         
-        # 🔐 MÓDULO B16: Solo Supervisores y Admins pueden ver disponibles
         if not is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
             return jsonify({'error': 'No tienes permisos para ver miembros disponibles'}), 403
         
-        # Si es admin, puede especificar supervisor_id
         supervisor_id = request.args.get('supervisor_id', user_id, type=int)
         
-        # Si es supervisor, solo puede ver disponibles para SU equipo
-        if is_supervisor(user_id, tenant_id) and not is_admin(user_id, tenant_id):
-            supervisor_id = user_id
-        
-        # Obtener reclutadores que NO están en el equipo
+        # Obtener reclutadores que NO están asignados a ESTE supervisor
         cursor.execute("""
             SELECT 
                 u.id, u.nombre, u.email, u.telefono,
                 r.nombre as rol_nombre
             FROM Users u
             LEFT JOIN Roles r ON u.rol_id = r.id
-            LEFT JOIN Team_Structure ts ON u.id = ts.team_member_id 
-                AND ts.supervisor_id = %s 
-                AND ts.is_active = TRUE
+            LEFT JOIN Asignaciones_Centrales ac ON u.id = ac.entidad_id 
+                AND ac.usuario_destino = %s 
+                AND ac.tipo_entidad = 'usuario'
             WHERE u.tenant_id = %s
             AND u.activo = TRUE
             AND r.nombre = 'Reclutador'
-            AND ts.id IS NULL
+            AND ac.id IS NULL
             ORDER BY u.nombre
         """, (supervisor_id, tenant_id))
         
@@ -10298,39 +10248,36 @@ def get_available_members():
             'available_members': available_members,
             'total': len(available_members)
         })
-        
     except Exception as e:
-        app.logger.error(f"Error en get_available_members: {str(e)}")
+        app.logger.error(f"Error en get_available_members_v3: {str(e)}")
         return jsonify({'error': 'Error al obtener miembros disponibles'}), 500
 
 
 @app.route('/api/teams/all', methods=['GET'])
 @token_required
-def get_all_teams():
-    """Ver TODOS los equipos del tenant (solo Admins)."""
+def get_all_teams_v3():
+    """Ver TODOS los equipos del tenant (solo Admins) usando Asignaciones_Centrales."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
+        user_id = g.current_user.get('user_id')
         
-        # 🔐 MÓDULO B16: Solo Admins pueden ver todos los equipos
         if not is_admin(user_id, tenant_id):
             return jsonify({'error': 'No tienes permisos para ver todos los equipos'}), 403
         
-        # Obtener todos los supervisores y sus equipos
+        # Obtener todos los supervisores y el conteo de sus miembros en Asignaciones_Centrales
         cursor.execute("""
             SELECT 
                 s.id as supervisor_id,
                 s.nombre as supervisor_nombre,
                 s.email as supervisor_email,
-                COUNT(ts.id) as total_members
+                COUNT(ac.id) as total_members
             FROM Users s
-            LEFT JOIN Team_Structure ts ON s.id = ts.supervisor_id 
-                AND ts.is_active = TRUE
-                AND ts.tenant_id = %s
             LEFT JOIN Roles r ON s.rol_id = r.id
+            LEFT JOIN Asignaciones_Centrales ac ON s.id = ac.usuario_destino 
+                AND ac.tipo_entidad = 'usuario'
+                AND ac.tenant_id = %s
             WHERE s.tenant_id = %s
             AND s.activo = TRUE
             AND r.nombre = 'Supervisor'
@@ -10340,15 +10287,14 @@ def get_all_teams():
         
         teams = cursor.fetchall()
         
-        # Para cada supervisor, obtener nombres de miembros
         for team in teams:
             cursor.execute("""
                 SELECT u.nombre 
-                FROM Team_Structure ts
-                JOIN Users u ON ts.team_member_id = u.id
-                WHERE ts.supervisor_id = %s 
-                AND ts.tenant_id = %s
-                AND ts.is_active = TRUE
+                FROM Asignaciones_Centrales ac
+                JOIN Users u ON ac.entidad_id = u.id
+                WHERE ac.usuario_destino = %s 
+                AND ac.tenant_id = %s
+                AND ac.tipo_entidad = 'usuario'
                 ORDER BY u.nombre
             """, (team['supervisor_id'], tenant_id))
             
@@ -10363,93 +10309,77 @@ def get_all_teams():
             'teams': teams,
             'total_teams': len(teams)
         })
-        
     except Exception as e:
-        app.logger.error(f"Error en get_all_teams: {str(e)}")
+        app.logger.error(f"Error en get_all_teams_v3: {str(e)}")
         return jsonify({'error': 'Error al obtener todos los equipos'}), 500
 
 
 # ===============================================================
-# SECCIÓN 7.6: ASIGNACIÓN DE RECURSOS (RESOURCE_ASSIGNMENTS)
+# SECCIÓN 7.6: ASIGNACIÓN DE RECURSOS (ASIGNACIONES_CENTRALES v3)
 # ===============================================================
 
 @app.route('/api/users/<int:user_id>/assignments', methods=['GET'])
 @token_required
-def get_user_assignments(user_id):
-    """Obtener recursos asignados a un usuario."""
+def get_user_assignments_v3(user_id):
+    """Obtener recursos asignados a un usuario usando Asignaciones_Centrales."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
         current_user_id = g.current_user.get('user_id')
         
-        # 🔐 Admin puede ver de cualquiera, Supervisor solo de su equipo
         if not is_admin(current_user_id, tenant_id):
             if is_supervisor(current_user_id, tenant_id):
-                # Verificar que el usuario es miembro de su equipo
                 team = get_team_members(current_user_id, tenant_id)
                 if user_id not in team:
                     return jsonify({'error': 'No tienes acceso a este usuario'}), 403
             else:
                 return jsonify({'error': 'No tienes permisos para ver asignaciones'}), 403
         
-        # Obtener asignaciones activas
+        # Obtener asignaciones vía Asignaciones_Centrales
         cursor.execute("""
             SELECT 
-                ra.id,
-                ra.resource_type,
-                ra.resource_id,
-                ra.access_level,
-                ra.assigned_at,
-                u.nombre as assigned_by_name,
+                ac.id,
+                ac.tipo_entidad as resource_type,
+                ac.entidad_id as resource_id,
                 CASE 
-                    WHEN ra.resource_type = 'vacancy' THEN v.cargo_solicitado
-                    WHEN ra.resource_type = 'client' THEN c.empresa
-                    WHEN ra.resource_type = 'candidate' THEN a.nombre_completo
+                    WHEN ac.tipo_entidad = 'vacante' THEN v.cargo_solicitado
+                    WHEN ac.tipo_entidad = 'cliente' THEN c.empresa
+                    WHEN ac.tipo_entidad = 'candidato' THEN af.nombre_completo
                 END as resource_name
-            FROM Resource_Assignments ra
-            LEFT JOIN Users u ON ra.assigned_by_user = u.id
-            LEFT JOIN Vacantes v ON ra.resource_type = 'vacancy' AND ra.resource_id = v.id_vacante
-            LEFT JOIN Clientes c ON ra.resource_type = 'client' AND ra.resource_id = c.id_cliente
-            LEFT JOIN Afiliados a ON ra.resource_type = 'candidate' AND ra.resource_id = a.id_afiliado
-            WHERE ra.assigned_to_user = %s 
-            AND ra.tenant_id = %s
-            AND ra.is_active = TRUE
-            ORDER BY ra.assigned_at DESC
+            FROM Asignaciones_Centrales ac
+            LEFT JOIN Vacantes v ON ac.tipo_entidad = 'vacante' AND ac.entidad_id = v.id_vacante
+            LEFT JOIN Clientes c ON ac.tipo_entidad = 'cliente' AND ac.entidad_id = c.id_cliente
+            LEFT JOIN Afiliados af ON ac.tipo_entidad = 'candidato' AND ac.entidad_id = af.id_afiliado
+            WHERE ac.usuario_destino = %s 
+            AND ac.tenant_id = %s
+            AND ac.tipo_entidad IN ('vacante', 'candidato', 'cliente')
+            ORDER BY ac.fecha_asignacion DESC
         """, (user_id, tenant_id))
         
         assignments = cursor.fetchall()
-        
-        # Convertir datetime a string
         for assignment in assignments:
             if assignment.get('assigned_at'):
                 assignment['assigned_at'] = assignment['assigned_at'].isoformat()
         
         cursor.close()
         conn.close()
-        
-        return jsonify({
-            'success': True,
-            'assignments': assignments,
-            'total': len(assignments)
-        })
-        
+        return jsonify({'success': True, 'assignments': assignments, 'total': len(assignments)})
     except Exception as e:
-        app.logger.error(f"Error en get_user_assignments: {str(e)}")
+        app.logger.error(f"Error en get_user_assignments_v3: {str(e)}")
         return jsonify({'error': 'Error al obtener asignaciones'}), 500
 
 
 @app.route('/api/users/<int:user_id>/assignments', methods=['POST'])
 @token_required
-def assign_resource_to_user(user_id):
-    """Asignar un recurso específico a un usuario."""
+def assign_resource_to_user_v3(user_id):
+    """Asignar un recurso (vacante, cliente, candidato) a un usuario."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
         current_user_id = g.current_user.get('user_id')
         
-        # 🔐 Admin puede asignar a cualquiera, Supervisor solo a su equipo
         if not is_admin(current_user_id, tenant_id):
             if is_supervisor(current_user_id, tenant_id):
                 team = get_team_members(current_user_id, tenant_id)
@@ -10459,69 +10389,51 @@ def assign_resource_to_user(user_id):
                 return jsonify({'error': 'No tienes permisos para asignar recursos'}), 403
         
         data = request.get_json()
-        resource_type = data.get('resource_type')  # 'vacancy', 'client', 'candidate'
-        resource_id = data.get('resource_id')
-        access_level = data.get('access_level', 'write')  # 'read', 'write', 'full'
+        tipo_entidad = data.get('resource_type') # 'vacante', 'cliente', 'candidato'
+        id_entidad = data.get('resource_id')
         
-        if not all([resource_type, resource_id]):
+        if tipo_entidad == 'vacancy': tipo_entidad = 'vacante'
+        if tipo_entidad == 'candidate': tipo_entidad = 'candidato'
+        if tipo_entidad == 'client': tipo_entidad = 'cliente'
+        
+        if not all([tipo_entidad, id_entidad]):
             return jsonify({'error': 'Se requiere resource_type y resource_id'}), 400
         
-        # Verificar que el usuario existe
-        cursor.execute("SELECT id FROM Users WHERE id = %s AND tenant_id = %s", (user_id, tenant_id))
-        if not cursor.fetchone():
-            return jsonify({'error': 'Usuario no encontrado'}), 404
-        
-        # Verificar que el recurso existe y pertenece al tenant
-        if resource_type == 'vacancy':
-            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (resource_id, tenant_id))
-        elif resource_type == 'client':
-            cursor.execute("SELECT id_cliente FROM Clientes WHERE id_cliente = %s AND tenant_id = %s", (resource_id, tenant_id))
-        elif resource_type == 'candidate':
-            cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s AND tenant_id = %s", (resource_id, tenant_id))
+        # Verificar existencia del recurso
+        if tipo_entidad == 'vacante':
+            cursor.execute("SELECT id_vacante FROM Vacantes WHERE id_vacante = %s AND tenant_id = %s", (id_entidad, tenant_id))
+        elif tipo_entidad == 'cliente':
+            cursor.execute("SELECT id_cliente FROM Clientes WHERE id_cliente = %s AND tenant_id = %s", (id_entidad, tenant_id))
+        elif tipo_entidad == 'candidato':
+            cursor.execute("SELECT id_afiliado FROM Afiliados WHERE id_afiliado = %s AND tenant_id = %s", (id_entidad, tenant_id))
         else:
             return jsonify({'error': 'Tipo de recurso inválido'}), 400
-        
+            
         if not cursor.fetchone():
             return jsonify({'error': 'Recurso no encontrado'}), 404
-        
-        # Verificar si ya existe la asignación
+            
+        # Verificar duplicado
         cursor.execute("""
-            SELECT id FROM Resource_Assignments 
-            WHERE assigned_to_user = %s 
-            AND resource_type = %s 
-            AND resource_id = %s
-            AND is_active = TRUE
-            AND tenant_id = %s
-        """, (user_id, resource_type, resource_id, tenant_id))
+            SELECT id FROM Asignaciones_Centrales 
+            WHERE usuario_destino = %s AND tipo_entidad = %s AND entidad_id = %s AND tenant_id = %s
+        """, (user_id, tipo_entidad, id_entidad, tenant_id))
         
         if cursor.fetchone():
             return jsonify({'error': 'El recurso ya está asignado a este usuario'}), 409
-        
-        # Insertar asignación
+            
+        # Insertar
         cursor.execute("""
-            INSERT INTO Resource_Assignments 
-            (tenant_id, resource_type, resource_id, assigned_to_user, assigned_by_user, access_level, is_active)
-            VALUES (%s, %s, %s, %s, %s, %s, TRUE)
-        """, (tenant_id, resource_type, resource_id, user_id, current_user_id, access_level))
+            INSERT INTO Asignaciones_Centrales 
+            (tenant_id, usuario_destino, entidad_id, tipo_entidad)
+            VALUES (%s, %s, %s, %s)
+        """, (tenant_id, user_id, id_entidad, tipo_entidad))
         
-        assignment_id = cursor.lastrowid
         conn.commit()
-        
-        app.logger.info(f"Usuario {current_user_id} asignó {resource_type} {resource_id} a usuario {user_id}")
-        
         cursor.close()
         conn.close()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Recurso asignado exitosamente',
-            'assignment_id': assignment_id
-        }), 201
-        
+        return jsonify({'success': True, 'message': 'Recurso asignado exitosamente'}), 201
     except Exception as e:
-        app.logger.error(f"Error en assign_resource_to_user: {str(e)}")
-        if 'conn' in locals():
-            conn.rollback()
+        app.logger.error(f"Error en assign_resource_to_user_v3: {str(e)}")
         return jsonify({'error': 'Error al asignar recurso'}), 500
 
 
@@ -10530,7 +10442,7 @@ def assign_resource_to_user(user_id):
 def get_user_custom_permissions(user_id):
     """
     Obtener permisos personalizados de un usuario.
-    🔐 SOLO ADMIN puede ver y configurar permisos personalizados.
+    Refactorizado para leer desde la tabla 'Permisos_Unificados'.
     """
     try:
         conn = get_db_connection()
@@ -10542,10 +10454,10 @@ def get_user_custom_permissions(user_id):
         if not is_admin(current_user_id, tenant_id):
             return jsonify({'error': 'Solo administradores pueden ver permisos personalizados'}), 403
         
-        # Obtener usuario con permisos del rol y custom
+        # 1. Obtener datos básicos del usuario y su rol
         cursor.execute("""
             SELECT 
-                u.id, u.nombre, u.email, u.custom_permissions,
+                u.id, u.nombre, u.email,
                 r.nombre as rol_nombre, r.permisos as rol_permissions
             FROM Users u
             LEFT JOIN Roles r ON u.rol_id = r.id
@@ -10554,13 +10466,42 @@ def get_user_custom_permissions(user_id):
         
         user = cursor.fetchone()
         if not user:
+            cursor.close()
+            conn.close()
             return jsonify({'error': 'Usuario no encontrado'}), 404
         
-        # Parsear JSON
+        # Parsear JSON de rol para compatibilidad
         role_perms = json.loads(user['rol_permissions']) if user['rol_permissions'] else {}
-        custom_perms = json.loads(user['custom_permissions']) if user['custom_permissions'] else {}
         
-        # Obtener permisos efectivos (merge)
+        # 2. Obtener permisos desde la nueva tabla 'Permisos_Unificados'
+        cursor.execute("""
+            SELECT 
+                modulo, ver, crear, editar, eliminar, 
+                ver_email_telefono, ver_nombre_empresa, ver_estadisticas_globales, 
+                alcance
+            FROM Permisos_Unificados
+            WHERE user_id = %s AND tenant_id = %s
+        """, (user_id, tenant_id))
+        
+        db_permissions = cursor.fetchall()
+        
+        # 3. Formatear para el Frontend (React)
+        # Convertir 1/0 a True/False y asegurar la estructura esperada
+        formatted_permissions = []
+        for p in db_permissions:
+            formatted_permissions.append({
+                'modulo': p['modulo'],
+                'ver': bool(p['ver']),
+                'crear': bool(p['crear']),
+                'editar': bool(p['editar']),
+                'eliminar': bool(p['eliminar']),
+                'ver_email_telefono': bool(p['ver_email_telefono']),
+                'ver_nombre_empresa': bool(p['ver_nombre_empresa']),
+                'ver_estadisticas_globales': bool(p['ver_estadisticas_globales']),
+                'alcance': p['alcance']
+            })
+            
+        # 4. Obtener permisos efectivos (Lógica interna)
         effective_perms = get_effective_permissions(user_id, tenant_id)
         
         cursor.close()
@@ -10575,13 +10516,13 @@ def get_user_custom_permissions(user_id):
                 'rol': user['rol_nombre']
             },
             'role_permissions': role_perms,
-            'custom_permissions': custom_perms,
+            'custom_permissions': formatted_permissions,  # Ahora es un ARRAY de objetos
             'effective_permissions': effective_perms
         })
         
     except Exception as e:
         app.logger.error(f"Error en get_user_custom_permissions: {str(e)}")
-        return jsonify({'error': 'Error al obtener permisos'}), 500
+        return jsonify({'error': f'Error al obtener permisos: {str(e)}'}), 500
 
 
 @app.route('/api/users/<int:user_id>/custom-permissions', methods=['PUT'])
@@ -10590,6 +10531,7 @@ def update_user_custom_permissions(user_id):
     """
     Actualizar permisos personalizados de un usuario.
     🔐 SOLO ADMIN puede configurar permisos personalizados.
+    Refactorizado para escribir en la tabla 'Permisos_Unificados' (V3).
     """
     try:
         conn = get_db_connection()
@@ -10603,55 +10545,105 @@ def update_user_custom_permissions(user_id):
             return jsonify({'error': 'Solo administradores pueden modificar permisos'}), 403
         
         data = request.get_json()
-        custom_permissions = data.get('custom_permissions', {})
+        # El frontend envía un array de objetos en 'custom_permissions'
+        custom_permissions_list = data.get('custom_permissions', [])
         
         # Verificar que el usuario existe
         cursor.execute("SELECT id, nombre FROM Users WHERE id = %s AND tenant_id = %s", (user_id, tenant_id))
         user = cursor.fetchone()
         if not user:
+            cursor.close()
+            conn.close()
             return jsonify({'error': 'Usuario no encontrado'}), 404
         
-        # Convertir a JSON string
-        permissions_json = json.dumps(custom_permissions) if custom_permissions else None
+        # --- LÓGICA DE ACTUALIZACIÓN ATÓMICA ---
         
-        # Actualizar permisos personalizados
+        # 1. Limpiar permisos actuales en la tabla unificada (Blindaje user_id/tenant_id)
         cursor.execute("""
-            UPDATE Users 
-            SET custom_permissions = %s
-            WHERE id = %s AND tenant_id = %s
-        """, (permissions_json, user_id, tenant_id))
+            DELETE FROM Permisos_Unificados 
+            WHERE user_id = %s AND tenant_id = %s
+        """, (user_id, tenant_id))
+        
+        # 2. Inserción masiva de los nuevos permisos recibidos
+        if custom_permissions_list:
+            # Traductor de módulos Frontend (Español) -> Backend (Inglés Plural)
+            # Para solucionar el bloqueo de los reclutadores al unificar el idioma.
+            module_translation = {
+                'candidatos': 'candidates',
+                'vacantes': 'vacancies',
+                'clientes': 'clients',
+                'usuarios': 'users',
+                'reportes': 'reports'
+            }
+
+            insert_query = """
+                INSERT INTO Permisos_Unificados (
+                    user_id, tenant_id, modulo, 
+                    ver, crear, editar, eliminar, 
+                    ver_email_telefono, ver_nombre_empresa, ver_estadisticas_globales, 
+                    alcance
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            # Preparar los datos para execute_many
+            values_to_insert = []
+            for p in custom_permissions_list:
+                modulo_raw = p.get('modulo', '')
+                # Traducir a inglés plural si existe en el mapeo, sino usar el original
+                modulo_final = module_translation.get(modulo_raw.lower(), modulo_raw)
+                
+                values_to_insert.append((
+                    user_id,
+                    tenant_id,
+                    modulo_final,
+                    1 if p.get('ver') else 0,
+                    1 if p.get('crear') else 0,
+                    1 if p.get('editar') else 0,
+                    1 if p.get('eliminar') else 0,
+                    1 if p.get('ver_email_telefono') else 0,
+                    1 if p.get('ver_nombre_empresa') else 0,
+                    1 if p.get('ver_estadisticas_globales') else 0,
+                    p.get('alcance', 'ninguno')
+                ))
+            
+            if values_to_insert:
+                cursor.executemany(insert_query, values_to_insert)
+        
+        # 3. Limpieza Legacy (Desactivado/Backup en Users)
+        # Se mantiene solo como backup si es estrictamente necesario, pero la fuente de verdad es la tabla unificada.
+        # permissions_json = json.dumps(custom_permissions_list) if custom_permissions_list else None
+        # cursor.execute("UPDATE Users SET custom_permissions = %s WHERE id = %s AND tenant_id = %s", (permissions_json, user_id, tenant_id))
         
         conn.commit()
         
-        app.logger.info(f"✅ Admin {current_user_id} actualizó permisos personalizados de usuario {user_id} ({user['nombre']})")
+        app.logger.info(f"✅ Admin {current_user_id} actualizó permisos (V3) de usuario {user_id} ({user['nombre']})")
         
         cursor.close()
         conn.close()
         
         return jsonify({
             'success': True,
-            'message': f"Permisos actualizados para {user['nombre']}",
+            'message': f"Permisos actualizados correctamente para {user['nombre']} (V3)",
             'user_id': user_id
         })
         
     except Exception as e:
-        app.logger.error(f"Error en update_user_custom_permissions: {str(e)}")
         if 'conn' in locals():
             conn.rollback()
-        return jsonify({'error': 'Error al actualizar permisos'}), 500
+        app.logger.error(f"Error en update_user_custom_permissions: {str(e)}")
+        return jsonify({'error': f'Error al actualizar permisos: {str(e)}'}), 500
 
 
 @app.route('/api/users/<int:user_id>/assignments/<int:assignment_id>', methods=['DELETE'])
 @token_required
-def remove_user_assignment(user_id, assignment_id):
-    """Remover una asignación de recurso."""
+def remove_user_assignment_v3(user_id, assignment_id):
+    """Remover una asignación de recurso en Asignaciones_Centrales."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
         tenant_id = get_current_tenant_id()
         current_user_id = g.current_user.get('user_id')
         
-        # 🔐 Admin puede remover cualquiera, Supervisor solo de su equipo
         if not is_admin(current_user_id, tenant_id):
             if is_supervisor(current_user_id, tenant_id):
                 team = get_team_members(current_user_id, tenant_id)
@@ -10660,35 +10652,23 @@ def remove_user_assignment(user_id, assignment_id):
             else:
                 return jsonify({'error': 'No tienes permisos para remover asignaciones'}), 403
         
-        # Soft delete
+        # Eliminar asignación (hard delete en v3 según directiva)
         cursor.execute("""
-            UPDATE Resource_Assignments 
-            SET is_active = FALSE 
+            DELETE FROM Asignaciones_Centrales 
             WHERE id = %s 
-            AND assigned_to_user = %s
+            AND usuario_destino = %s
             AND tenant_id = %s
-            AND is_active = TRUE
         """, (assignment_id, user_id, tenant_id))
         
         if cursor.rowcount == 0:
             return jsonify({'error': 'Asignación no encontrada'}), 404
         
         conn.commit()
-        
-        app.logger.info(f"Usuario {current_user_id} removió asignación {assignment_id} de usuario {user_id}")
-        
         cursor.close()
         conn.close()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Asignación removida exitosamente'
-        })
-        
+        return jsonify({'success': True, 'message': 'Asignación removida exitosamente'})
     except Exception as e:
-        app.logger.error(f"Error en remove_user_assignment: {str(e)}")
-        if 'conn' in locals():
-            conn.rollback()
+        app.logger.error(f"Error en remove_user_assignment_v3: {str(e)}")
         return jsonify({'error': 'Error al remover asignación'}), 500
 
 # ===============================================================
@@ -11879,7 +11859,10 @@ def get_client_vacancies(client_id):
                 'code': 'FORBIDDEN'
             }), 403
         
-        cursor.execute("""
+        # 🔐 MÓDULO B9: Filtrar por usuario según rol
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
+        
+        query = """
             SELECT 
                 v.id_vacante,
                 v.cargo_solicitado,
@@ -11892,8 +11875,16 @@ def get_client_vacancies(client_id):
                 v.created_at
             FROM Vacantes v
             WHERE v.id_cliente = %s AND v.tenant_id = %s
-            ORDER BY v.fecha_apertura DESC
-        """, (client_id, tenant_id))
+        """
+        
+        params = [client_id, tenant_id]
+        if condition:
+            query += f" AND ({condition})"
+            params.extend(filter_params)
+            
+        query += " ORDER BY v.fecha_apertura DESC"
+        
+        cursor.execute(query, tuple(params))
         
         vacancies = cursor.fetchall()
         
@@ -11936,7 +11927,10 @@ def get_client_applications(client_id):
                 'code': 'FORBIDDEN'
             }), 403
         
-        cursor.execute("""
+        # 🔐 MÓDULO B9: Filtrar por usuario según rol
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
+        
+        query = """
             SELECT
                 p.id_postulacion,
                 p.id_afiliado,
@@ -11953,8 +11947,16 @@ def get_client_applications(client_id):
             LEFT JOIN Afiliados a ON p.id_afiliado = a.id_afiliado
             LEFT JOIN Vacantes v ON p.id_vacante = v.id_vacante
             WHERE v.id_cliente = %s AND v.tenant_id = %s AND a.tenant_id = %s
-            ORDER BY p.fecha_aplicacion DESC
-        """, (client_id, tenant_id, tenant_id))
+        """
+        
+        params = [client_id, tenant_id, tenant_id]
+        if condition:
+            query += f" AND ({condition})"
+            params.extend(filter_params)
+            
+        query += " ORDER BY p.fecha_aplicacion DESC"
+        
+        cursor.execute(query, tuple(params))
         
         applications = cursor.fetchall()
         
@@ -11993,7 +11995,10 @@ def get_client_hired_candidates(client_id):
                 'code': 'FORBIDDEN'
             }), 403
         
-        cursor.execute("""
+        # 🔐 MÓDULO B9: Filtrar por usuario según rol
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'v.created_by_user', 'vacancy', 'v.id_vacante')
+        
+        query = """
             SELECT 
                 co.id_contratado,
                 a.id_afiliado,
@@ -12011,8 +12016,16 @@ def get_client_hired_candidates(client_id):
             JOIN Vacantes v ON co.id_vacante = v.id_vacante
             WHERE v.id_cliente = %s 
             AND co.tenant_id = %s
-            ORDER BY co.fecha_contratacion DESC
-        """, (client_id, tenant_id))
+        """
+        
+        params = [client_id, tenant_id]
+        if condition:
+            query += f" AND ({condition})"
+            params.extend(filter_params)
+            
+        query += " ORDER BY co.fecha_contratacion DESC"
+        
+        cursor.execute(query, tuple(params))
         
         hired_candidates = cursor.fetchall()
         
@@ -14559,54 +14572,60 @@ def export_candidates_to_excel():
         # Consulta base
         query = """
             SELECT 
-                id_afiliado,
-                nombre_completo,
-                email,
-                telefono,
-                ciudad,
-                identidad,
-                grado_academico,
-                cv_url,
-                linkedin,
-                portfolio,
-                skills,
-                experiencia,
-                disponibilidad,
-                disponibilidad_rotativos,
-                transporte_propio,
-                comentarios,
-                observaciones,
-                estado,
-                puntuacion,
-                fecha_registro,
-                ultima_actualizacion
-            FROM Afiliados 
-            WHERE tenant_id = %s
+                a.id_afiliado,
+                a.nombre_completo,
+                a.email,
+                a.telefono,
+                a.ciudad,
+                a.identidad,
+                a.grado_academico,
+                a.cv_url,
+                a.linkedin,
+                a.portfolio,
+                a.skills,
+                a.experiencia,
+                a.disponibilidad,
+                a.disponibilidad_rotativos,
+                a.transporte_propio,
+                a.comentarios,
+                a.observaciones,
+                a.estado,
+                a.puntuacion,
+                a.fecha_registro,
+                a.ultima_actualizacion
+            FROM Afiliados a
+            WHERE a.tenant_id = %s
         """
         params = [tenant_id]
         
+        # 🔐 Aplicar filtros de permisos (RBAC)
+        condition, filter_params = build_user_filter_condition(user_id, tenant_id, 'a.created_by_user_id', 'candidate', 'a.id_afiliado')
+        if condition:
+            query += f" AND ({condition})"
+            params.extend(filter_params)
+        
         # Aplicar filtros
         if city_filter:
-            query += " AND ciudad LIKE %s"
+            query += " AND a.ciudad LIKE %s"
             params.append(f"%{city_filter}%")
         
         if status_filter:
-            query += " AND estado = %s"
+            query += " AND a.estado = %s"
             params.append(status_filter)
         
         if availability_filter:
-            query += " AND disponibilidad = %s"
+            query += " AND a.disponibilidad = %s"
             params.append(availability_filter)
         
         if date_from:
-            query += " AND DATE(fecha_registro) >= %s"
+            query += " AND DATE(a.fecha_registro) >= %s"
             params.append(date_from)
         
         if date_to:
-            query += " AND DATE(fecha_registro) <= %s"
+            query += " AND DATE(a.fecha_registro) <= %s"
             params.append(date_to)
         
-        query += " ORDER BY fecha_registro DESC"
+        query += " ORDER BY a.fecha_registro DESC"
         
         # Ejecutar consulta
         cursor.execute(query, params)
@@ -16417,6 +16436,10 @@ def search_candidates_public():
                 'error': 'API Key no tiene permisos para consultar candidatos'
             }), 403
         
+        # 🔐 SEGURIDAD POR USUARIO (MÓDULO 1): Obtener ID de usuario desde headers
+        user_id_header = request.headers.get('X-ESC-User-ID')
+        target_user_id = int(user_id_header) if user_id_header and user_id_header.isdigit() else None
+        
         # Obtener parámetros de búsqueda
         term = request.args.get('q', '').strip()
         if not term:
@@ -16440,7 +16463,7 @@ def search_candidates_public():
             tenant_id=tenant_id,  # Forzar tenant de la API Key
             limit=limit,
             offset=0,
-            user_id=None  # No hay usuario específico en API pública
+            user_id=None  # 🔐 Ignorar filtro de usuario para API pública por ahora
         )
         
         # FILTRAR información sensible - solo datos básicos
@@ -16453,7 +16476,7 @@ def search_candidates_public():
                 'estado': candidate.get('status', 'Activo'),
                 'experiencia': candidate.get('experience'),
                 'cargo_solicitado': candidate.get('position'),
-                'fecha_registro': candidate.get('createdAt').isoformat() if candidate.get('createdAt') else None
+                'fecha_registro': candidate.get('createdAt')
                 # NO incluir: teléfono, email, identidad, observaciones, etc.
             })
         
@@ -16636,41 +16659,6 @@ def role_permissions(role_id):
         if 'conn' in locals(): conn.close()
 
 
-@app.route('/api/users/<int:target_user_id>/custom-permissions', methods=['GET', 'PUT'])
-@token_required
-def user_custom_permissions(target_user_id):
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-        tenant_id = get_current_tenant_id()
-        user_data = g.current_user
-        user_id = user_data.get('user_id')
-
-        # Solo admins/gestores de usuarios
-        if not (is_admin(user_id, tenant_id) or can_manage_users(user_id, tenant_id)):
-            return jsonify({'error': 'No autorizado'}), 403
-
-        if request.method == 'GET':
-            cursor.execute("SELECT id, custom_permissions FROM Users WHERE id = %s", (target_user_id,))
-            rec = cursor.fetchone()
-            if not rec:
-                return jsonify({'error': 'Usuario no encontrado'}), 404
-            return jsonify({'success': True, 'data': rec})
-        else:
-            payload = request.get_json() or {}
-            custom = json.dumps(payload.get('custom_permissions', payload), ensure_ascii=False)
-            cursor.execute("UPDATE Users SET custom_permissions = %s WHERE id = %s", (custom, target_user_id))
-            conn.commit()
-            return jsonify({'success': True})
-    except Exception as e:
-        if 'conn' in locals():
-            conn.rollback()
-        return jsonify({'error': str(e)}), 500
-    finally:
-        if 'cursor' in locals(): cursor.close()
-        if 'conn' in locals(): conn.close()
-
-
 # --- ENDPOINTS PARA EL AGENTE OPENCLAW ---
 @app.route('/api/agents/deploy', methods=['POST'])
 @app.route('/api/agents/activate', methods=['POST'])
@@ -16708,7 +16696,8 @@ def deploy_tenant_agent_endpoint():
             tenant_api_key=api_key_str,
             llm_api_key=master_llm_key,
             crm_url=crm_internal_url,
-            pollination_key=pollination_key
+            pollination_key=pollination_key,
+            user_id=user_id
         )
 
         if success:
@@ -16758,7 +16747,7 @@ def get_or_create_agent_session(user_id, tenant_id, session_id=None, title=None)
         cursor.close()
         conn.close()
 
-def save_agent_chat_message(session_id, tenant_id, role, content):
+def save_agent_chat_message(session_id, tenant_id, role, content, thinking=None):
     """Guarda un mensaje (usuario o asistente) en la base de datos"""
     conn = get_db_connection()
     if not conn: return
@@ -16768,9 +16757,9 @@ def save_agent_chat_message(session_id, tenant_id, role, content):
         save_content = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
         
         cursor.execute("""
-            INSERT INTO AgentMessages (id_session, tenant_id, rol, contenido)
-            VALUES (%s, %s, %s, %s)
-        """, (session_id, tenant_id, role, save_content))
+            INSERT INTO AgentMessages (id_session, tenant_id, rol, contenido, thinking)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (session_id, tenant_id, role, save_content, thinking))
         conn.commit()
     except Exception as e:
         logger.error(f"Error guardando mensaje chat: {e}")
@@ -16868,23 +16857,43 @@ def proxy_agent_chat():
     user_role = g.current_user.get('rol')
     target_agent_id = "main" if user_role == 'Administrador' else f"sub-{user_id}"
     
+    # ⚠️ GUARDIA DE IDIOMA Y FORMATO: Forzamos Español y limpieza total.
+    crm_pretraining = (
+        "[SISTEMA: Conexión con el CRM de ESC establecida exitosamente.\n"
+        "Variables de entorno ESC_CRM_URL, ESC_TENANT_API_KEY y ESC_USER_ID verificadas y activas.\n"
+        "Tienes permiso total para usar la skill 'esc_crm' con las herramientas: search_candidates, get_candidate_details, get_vacancies y register_application.\n"
+        "REGLA DE ORO: Responde EXCLUSIVAMENTE en ESPAÑOL. Prohibido usar caracteres de otros idiomas (incluyendo chino).\n"
+        "REGLA DE FORMATO: Para mostrar una imagen, escribe solo su nombre (ej: foto.jpg). El backend la renderizará automáticamente.]\n\n"
+    )
+    
+    system_identity_prefix = crm_pretraining
+    if target_agent_id != "main":
+        system_identity_prefix += f"[SISTEMA: Estás actuando como el sub-agente asignado al Usuario ID: {user_id} ({user_role}).]\n\n"
+
     try:
         # 🟢 CONSTRUCCIÓN DEL PAYLOAD NATIVO
-        # Enviamos el mensaje multimodal tal cual, pero si hay archivos físicos, le damos los nombres para que el agente NO alucine.
         content_payload = message
         if saved_files:
             file_list = ", ".join([f"{f['name']}" for f in saved_files])
             prefix = f"[SISTEMA: El usuario ha subido los archivos: {file_list}. Han sido guardados en tu workspace para que los analices si es necesario.]\n\n"
             
             if isinstance(message, list):
-                # Inyectar prefijo en el primer bloque de texto
                 text_block = next((b for b in content_payload if b['type'] == 'text'), None)
                 if text_block:
-                    text_block['text'] = prefix + text_block['text']
+                    text_block['text'] = system_identity_prefix + prefix + text_block['text']
                 else:
-                    content_payload.insert(0, {"type": "text", "text": prefix})
+                    content_payload.insert(0, {"type": "text", "text": system_identity_prefix + prefix})
             else:
-                content_payload = prefix + str(message)
+                content_payload = system_identity_prefix + prefix + str(message)
+        elif system_identity_prefix:
+            if isinstance(message, list):
+                text_block = next((b for b in content_payload if b['type'] == 'text'), None)
+                if text_block:
+                    text_block['text'] = system_identity_prefix + text_block['text']
+                else:
+                    content_payload.insert(0, {"type": "text", "text": system_identity_prefix})
+            else:
+                content_payload = system_identity_prefix + str(message)
 
         payload = {
             "model": target_agent_id,
@@ -16905,25 +16914,149 @@ def proxy_agent_chat():
         if response.status_code == 200:
             res_json = response.json()
             if 'choices' in res_json and len(res_json['choices']) > 0:
-                bot_text = res_json['choices'][0]['message']['content']
-                save_agent_chat_message(db_session_id, tenant_id, 'assistant', bot_text)
-                return jsonify({"response": bot_text, "session_id": db_session_id}), 200
+                # 🟢 SOPORTE MULTIMODAL Y TRADUCCIÓN DE ARCHIVOS LOCALES
+                bot_message = res_json['choices'][0]['message']
+                bot_content = bot_message.get('content')
+                
+                # Procesar contenido para convertir referencias a archivos locales en bloques nativos
+                if isinstance(bot_content, str) or isinstance(bot_content, list):
+                    tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}")
+                    
+                    # Función interna para procesar texto y detectar archivos
+                    def process_media_placeholders(text):
+                        import re
+                        import base64
+                        import mimetypes
+                        
+                        tenant_data_path = os.path.join(BASE_DATA_PATH, f"tenant_{tenant_id}")
+                        
+                        # 1. Definir extensiones y patrón de búsqueda de archivos
+                        # Buscamos cualquier cosa que parezca un nombre de archivo de imagen o documento
+                        file_exts = '(?:jpeg|jpg|png|gif|pdf|docx|csv)'
+                        filename_pattern = r'[a-zA-Z0-9_\-\.]+\.' + file_exts
+                        
+                        # 2. Buscar TODOS los archivos mencionados en el texto
+                        # Este patrón busca el nombre del archivo solo o dentro de cualquier URL/Markdown
+                        all_matches = list(re.finditer(filename_pattern, text))
+                        
+                        if not all_matches:
+                            return text
+                            
+                        processed_blocks = []
+                        last_idx = 0
+                        seen_files = set()
+                        
+                        for match in all_matches:
+                            filename = match.group(0)
+                            start_pos = match.start()
+                            end_pos = match.end()
+                            
+                            # Intentar detectar si este archivo está envuelto en Markdown o URL técnica
+                            # Retrocedemos para ver si hay ![...] o [...] 
+                            # Avanzamos para ver si hay ) o ]
+                            
+                            actual_start = start_pos
+                            actual_end = end_pos
+                            
+                            # Limpieza hacia atrás (Markdown/URLs)
+                            # Buscamos patrones como ![...](... o [...](... o simplemente /media/
+                            # Retrocedemos hasta encontrar un espacio o el inicio de un bloque Markdown
+                            while actual_start > last_idx:
+                                char_before = text[actual_start-1]
+                                if char_before in ['(', '[', '!', '/', '$', '{', ' ', '\n']:
+                                    actual_start -= 1
+                                    # Si llegamos al inicio de un bloque Markdown ![...], nos detenemos ahí
+                                    if text[actual_start] == '!': break
+                                    if text[actual_start:actual_start+2] == '${': break
+                                else:
+                                    break
+                                    
+                            # Limpieza hacia adelante (Paréntesis, corchetes, restos de URL)
+                            while actual_end < len(text):
+                                char_after = text[actual_end]
+                                if char_after in [')', ']', ' ', '>', '\n']:
+                                    actual_end += 1
+                                    if char_after in [')', ']']: break # Cerramos el bloque
+                                else:
+                                    break
+
+                            # Añadir el texto humano limpio ANTES de la imagen
+                            prefix_text = text[last_idx:actual_start].strip(' \n\r\t')
+                            if prefix_text:
+                                processed_blocks.append({"type": "text", "text": prefix_text})
+                            
+                            # Procesar el archivo si existe y no ha sido visto
+                            if filename not in seen_files:
+                                filepath = os.path.join(tenant_data_path, filename)
+                                if os.path.exists(filepath):
+                                    try:
+                                        mime, _ = mimetypes.guess_type(filename)
+                                        mime = mime or 'image/jpeg'
+                                        
+                                        if mime.startswith('image/'):
+                                            with open(filepath, "rb") as f:
+                                                encoded = base64.b64encode(f.read()).decode('utf-8')
+                                                processed_blocks.append({
+                                                    "type": "image_url",
+                                                    "image_url": {"url": f"data:{mime};base64,{encoded}"}
+                                                })
+                                        else:
+                                            # Documentos no-imagen los dejamos como texto pero limpio
+                                            processed_blocks.append({"type": "text", "text": f"\n📄 {filename}\n"})
+                                        seen_files.add(filename)
+                                    except Exception as e:
+                                        app.logger.error(f"Error procesando {filename}: {e}")
+                                else:
+                                    # Si el archivo no existe físicamente, dejamos el nombre (por si es alucinación o error)
+                                    processed_blocks.append({"type": "text", "text": f" [{filename}] "})
+                            
+                            last_idx = actual_end
+
+                        # Añadir cualquier texto restante al final
+                        final_text = text[last_idx:].strip(' \n\r\t')
+                        if final_text:
+                            processed_blocks.append({"type": "text", "text": final_text})
+                            
+                        return processed_blocks if seen_files else text
+
+                    if isinstance(bot_content, str):
+                        result = process_media_placeholders(bot_content)
+                        if isinstance(result, list):
+                            bot_content = result
+                    elif isinstance(bot_content, list):
+                        new_content = []
+                        for block in bot_content:
+                            if block.get('type') == 'text' and 'text' in block:
+                                res = process_media_placeholders(block['text'])
+                                if isinstance(res, list):
+                                    new_content.extend(res)
+                                else:
+                                    new_content.append(block)
+                            else:
+                                new_content.append(block)
+                        bot_content = new_content
+
+                # Si es una lista (multimodal), convertir a JSON para la DB, si no dejar como string
+                bot_thinking = bot_message.get('reasoning_content')
+                save_agent_chat_message(db_session_id, tenant_id, 'assistant', bot_content, thinking=bot_thinking)
+                
+                return jsonify({
+                    "response": bot_content, 
+                    "thinking": bot_thinking,
+                    "session_id": db_session_id
+                }), 200
             return jsonify({"response": "Respuesta vacía del agente"}), 500
         else:
             app.logger.error(f"Error del Agente ({response.status_code}): {response.text}")
             return jsonify({"error": f"Error del Agente: {response.text}"}), response.status_code
 
+    except requests.exceptions.ConnectionError:
+        app.logger.error(f"Error de conexión: El contenedor del Tenant {tenant_id} no responde.")
+        return jsonify({"error": "El agente del Tenant no está disponible"}), 503
     except Exception as e:
         app.logger.error(f"Error en comunicación con el agente: {str(e)}")
-        return jsonify({"error": "No se pudo establecer conexión con el motor del agente."}), 503
+        return jsonify({"error": f"Error inesperado: {str(e)}"}), 500
 
-    except Exception as e:
-        app.logger.error(f"Error en comunicación con el agente: {str(e)}")
-        return jsonify({"error": "No se pudo establecer conexión con el motor del agente."}), 503
-
-    except Exception as e:
-        app.logger.error(f"Error en comunicación con el agente: {str(e)}")
-        return jsonify({"error": "No se pudo establecer conexión con el motor del agente."}), 503
 
 @app.route('/api/agents/sessions', methods=['GET'])
 @token_required
@@ -16973,7 +17106,7 @@ def get_agent_session_messages(session_id):
             target_id = session_id
 
         cursor.execute("""
-            SELECT rol, contenido, fecha 
+            SELECT rol, contenido, thinking, fecha 
             FROM AgentMessages 
             WHERE id_session = %s AND tenant_id = %s 
             ORDER BY fecha ASC
@@ -17102,6 +17235,41 @@ def post_public_application_agent():
         return jsonify({"success": True, "candidate_id": candidate_id}), 201
     except Exception as e:
         conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+@app.route('/api/public/candidates/<int:candidate_id>', methods=['GET'])
+@public_api_key_required
+def get_candidate_details_agent(candidate_id):
+    """Endpoint público para obtener el detalle de un candidato (usado por el agente)"""
+    tenant_id = g.tenant_id
+    user_id_header = request.headers.get('X-ESC-User-ID')
+    target_user_id = int(user_id_header) if user_id_header and user_id_header.isdigit() else None
+    
+    # 🔐 SEGURIDAD: Verificar acceso al recurso antes de mostrar detalles
+    if not can_access_resource(target_user_id, tenant_id, 'candidate', candidate_id, 'read'):
+        return jsonify({"error": "No tienes acceso a los detalles de este candidato"}), 403
+        
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # Consulta enriquecida pero segura
+        cursor.execute("""
+            SELECT id_afiliado, nombre_completo, identidad, telefono, email, 
+                   ciudad, experiencia, habilidades, cargo_solicitado, 
+                   grado_academico, observaciones, puntuacion, fecha_registro, estado
+            FROM Afiliados 
+            WHERE id_afiliado = %s AND tenant_id = %s
+        """, (candidate_id, tenant_id))
+        
+        candidate = cursor.fetchone()
+        if not candidate:
+            return jsonify({"error": "Candidato no encontrado"}), 404
+            
+        return jsonify(candidate), 200
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
         cursor.close()

@@ -42,7 +42,7 @@ COPY requirements_agent.txt /app/
 RUN pip3 install --break-system-packages -r requirements_agent.txt
 
 # Directorio para persistencia (Memoria y Sesiones)
-RUN mkdir -p /app/memory /app/data /app/.openclaw/agents/main/sessions /var/tmp/openclaw-compile-cache /app/.openclaw/workspace
+RUN mkdir -p /app/memory /app/data /app/.openclaw/agents/main/sessions /var/tmp/openclaw-compile-cache /app/.openclaw/workspace/skills
 RUN ln -sf /app/data /app/.openclaw/workspace
 RUN chmod -R 777 /app/.openclaw /app/data /app/memory
 
@@ -53,5 +53,5 @@ ENV HOME=/app
 # Exponer puerto para el Gateway de OpenClaw
 EXPOSE 18789
 
-# Comando de arranque: asegurar directorios, copiar acceso y arrancar
-CMD ["/bin/sh", "-c", "mkdir -p /app/.openclaw/agents/main/sessions && cp /app/access.json /app/.openclaw/access.json && ./node_modules/.bin/openclaw gateway run"]
+# Comando de arranque: asegurar directorios, copiar acceso, sincronizar skills y arrancar
+CMD ["/bin/sh", "-c", "mkdir -p /app/.openclaw/agents/main/sessions /app/.openclaw/workspace/skills && cp /app/access.json /app/.openclaw/access.json && cp -r /app/skills/* /app/.openclaw/workspace/skills/ && ./node_modules/.bin/openclaw gateway run"]

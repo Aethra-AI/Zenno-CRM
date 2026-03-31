@@ -65,6 +65,22 @@ class DatabaseMigrations:
             'description': 'Crear tablas AgentSessions y AgentMessages para historial centralizado tipo IDE',
             'execute': self._migration_006_agent_sessions
         })
+
+        # Migración 7: Captura de Thinking en Agentes
+        self.migrations.append({
+            'id': 7,
+            'name': 'add_thinking_to_agent_messages',
+            'description': 'Agregar columna thinking a AgentMessages para capturar el razonamiento del modelo',
+            'execute': self._migration_007_add_thinking_column
+        })
+
+        # Migración 8: Sistema de Permisos Unificados V3
+        self.migrations.append({
+            'id': 8,
+            'name': 'v7_unified_permissions_schema',
+            'description': 'Creación de la nueva estructura de tablas para el Sistema de Permisos V3',
+            'execute': self._migration_008_unified_permissions
+        })
     
     def _create_migrations_table(self, conn):
         """Crear tabla para trackear migraciones ejecutadas"""
@@ -600,6 +616,83 @@ class DatabaseMigrations:
         conn.commit()
         cursor.close()
         logger.info("   ✅ Tablas AgentSessions y AgentMessages creadas exitosamente")
+
+    def _migration_007_add_thinking_column(self, conn):
+        """
+        Migración 007: Captura de Thinking en Agentes
+        Agrega la columna 'thinking' a la tabla AgentMessages
+        """
+        cursor = conn.cursor()
+        
+        logger.info("   📏 Agregando columna 'thinking' a AgentMessages...")
+        
+        # Verificar si la columna ya existe
+        cursor.execute("""
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'AgentMessages' 
+              AND COLUMN_NAME = 'thinking'
+              AND TABLE_SCHEMA = DATABASE()
+        """)
+        
+        if cursor.fetchone() is not None:
+            logger.info("   ⏭️  Columna 'thinking' ya existe en AgentMessages")
+        else:
+            cursor.execute("""
+                ALTER TABLE AgentMessages 
+                ADD COLUMN thinking LONGTEXT NULL AFTER contenido
+            """)
+            logger.info("   ✅ Columna 'thinking' añadida a AgentMessages")
+        
+        conn.commit()
+        cursor.close()
+
+    def _migration_008_unified_permissions(self, conn):
+        """
+        Migración 008: Sistema de Permisos Unificados V3
+        Crea las tablas Permisos_Unificados y Asignaciones_Centrales
+        """
+        cursor = conn.cursor()
+        
+        logger.info("   📦 Creando tablas de Permisos Unificados V3...")
+        
+        # 1. Tabla Permisos_Unificados
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Permisos_Unificados (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                tenant_id INT NOT NULL,
+                user_id INT DEFAULT NULL,
+                api_key_id INT DEFAULT NULL,
+                modulo VARCHAR(50) NOT NULL COMMENT 'candidatos, vacantes, pipeline, clientes, dashboard, reportes, configuracion, usuarios',
+                ver BOOLEAN DEFAULT FALSE,
+                crear BOOLEAN DEFAULT FALSE,
+                editar BOOLEAN DEFAULT FALSE,
+                eliminar BOOLEAN DEFAULT FALSE,
+                ver_email_telefono BOOLEAN DEFAULT TRUE,
+                ver_nombre_empresa BOOLEAN DEFAULT TRUE,
+                ver_estadisticas_globales BOOLEAN DEFAULT TRUE,
+                alcance ENUM('todo', 'asignados', 'ninguno') DEFAULT 'ninguno',
+                UNIQUE KEY (tenant_id, user_id, modulo),
+                UNIQUE KEY (tenant_id, api_key_id, modulo)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        
+        # 2. Tabla Asignaciones_Centrales
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Asignaciones_Centrales (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                tenant_id INT NOT NULL,
+                usuario_destino INT NOT NULL COMMENT 'ID del usuario que recibe el acceso',
+                tipo_entidad ENUM('usuario', 'candidato', 'vacante', 'cliente') NOT NULL,
+                entidad_id INT NOT NULL,
+                nivel_acceso ENUM('ver', 'editar', 'full') DEFAULT 'ver',
+                UNIQUE KEY (tenant_id, usuario_destino, tipo_entidad, entidad_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+        
+        conn.commit()
+        cursor.close()
+        logger.info("   ✅ Tablas Permisos_Unificados y Asignaciones_Centrales creadas exitosamente")
 
 # Función helper para ejecutar migraciones desde app.py
 def run_database_migrations(db_config):

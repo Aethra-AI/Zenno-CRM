@@ -1,5 +1,5 @@
 ---
-name: esc-crm-integration
+name: esc_crm
 description: Skill de integración para que el agente Clawdbot interactúe con el Backend de ESC CRM. Permite consultar vacantes, buscar candidatos y registrar postulaciones usando la API Key del Tenant.
 ---
 
@@ -17,15 +17,23 @@ El agente requiere las siguientes variables de entorno configuradas en su conten
 
 ### 1. Gestión de Vacantes
 El agente puede consultar las vacantes activas para informar a los candidatos o prospectos.
-- **Endpoint**: `GET /api/public/vacancies` (Pendiente implementar en Backend o usar el existente adaptado).
+- **Función**: `get_vacancies(city, keyword, limit)`
 
-### 2. Búsqueda de Candidatos
-El agente puede verificar si un candidato ya existe por su nombre o número de identidad antes de registrarlo.
-- **Endpoint**: `GET /api/public/candidates`
+### 2. Búsqueda Inteligente de Candidatos (Keys)
+El agente puede buscar candidatos usando múltiples palabras clave (Keys) tal como se hace en la barra de búsqueda del CRM.
+- **Función**: `search_candidates(query, limit)`
+- **Uso**: Envía las palabras clave separadas por espacios. Ej: "SPS Mesero Bachiller".
 
-### 3. Registro de Postulaciones
+### 3. Detalle de Candidato
+Permite obtener toda la información de un perfil una vez identificado su ID.
+- **Función**: `get_candidate_details(candidate_id)`
+
+### 4. Registro de Postulaciones
 Cuando un candidato envía sus datos por WhatsApp, el agente puede insertarlos directamente en el CRM.
-- **Endpoint**: `POST /api/public/applications`
+- **Función**: `register_application(vacancy_id, candidate_data)`
+
+## Seguridad de Identidad Delegada
+Esta skill envía automáticamente el `X-ESC-User-ID` en cada petición. El CRM validará los permisos del usuario antes de devolver cualquier dato.
 
 ## Guía de Uso para el Agente
 

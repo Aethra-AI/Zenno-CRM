@@ -1,67 +1,64 @@
 {
-  "gateway": {
-    "mode": "local",
-    "bind": "lan",
-    "port": 18789,
-    "auth": {
-      "mode": "token",
-      "token": "esc-agent-token-secure-v2"
-    },
-    "controlUi": {
-      "allowedOrigins": [
-        "*"
-      ]
-    },
-    "http": {
-      "endpoints": {
-        "chatCompletions": {
-          "enabled": true
-        }
-      }
-    }
+  "meta": {
+    "lastTouchedVersion": "2026.3.13",
+    "lastTouchedAt": "2026-03-15T22:41:27.821Z"
   },
   "agents": {
     "defaults": {
       "model": {
         "primary": "moonshot/moonshotai/kimi-k2.5"
       },
-      "subagents": {
-        "maxConcurrent": 10
+      "compaction": {
+        "mode": "safeguard"
       }
     },
     "list": [
       {
         "id": "main",
+        "skills": [
+          "esc_crm",
+          "pollination"
+        ],
         "identity": {
           "name": "Asistente de Reclutamiento",
           "theme": "Profesional, proactivo y amable",
           "emoji": "🏢"
-        },
-        "skills": [
-          "esc-crm-integration",
-          "pollination"
-        ]
+        }
       }
     ]
   },
-  "models": {
-    "providers": {
-      "moonshot": {
-        "baseUrl": "https://integrate.api.nvidia.com/v1",
-        "api": "openai-completions",
-        "models": [
-          {
-            "id": "moonshotai/kimi-k2.5",
-            "name": "Kimi K2.5 (Nvidia)",
-            "reasoning": false
-          }
-        ]
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "channels": {},
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "controlUi": {
+      "allowedOrigins": ["*"]
+    },
+    "auth": {
+      "mode": "token",
+      "token": "c7de318660eaba4aba18d6aab61d1f8807cabf0a4c458601"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        },
+        "responses": {
+          "enabled": true
+        }
       }
     }
   },
   "skills": {
     "entries": {
-      "esc-crm-integration": {
+      "esc_crm": {
         "enabled": true,
         "config": {
           "url": "${ESC_CRM_URL}",
@@ -73,6 +70,21 @@
         "config": {
           "api_key": "${POLLINATION_API_KEY}"
         }
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "moonshot": {
+        "baseUrl": "https://integrate.api.nvidia.com/v1",
+        "api": "openai-completions",
+        "apiKey": "${NVIDIA_API_KEY}",
+        "models": [
+          {
+            "id": "moonshotai/kimi-k2.5",
+            "name": "Kimi K2.5 (Nvidia)"
+          }
+        ]
       }
     }
   }
